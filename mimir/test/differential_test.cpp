@@ -1828,7 +1828,8 @@ TEST_F(Differential, RestoreErrors) {
       {"RESTORE", "k", "0", "x", "IDLETIME", "1", "FREQ", "1"},
       {"RESTORE", "other", "0", corrupt},
       {"RESTORE", "k2", "5000", good},
-      {"PTTL", "k2"},
+      // In seconds: an exact PTTL races the clock between the two servers.
+      {"TTL", "k2"},
       {"RESTORE", "k2", "1", good, "ABSTTL", "REPLACE"},
       {"EXISTS", "k2"},
       {"RESTORE", "k3", "0", good, "IDLETIME", "10"},
