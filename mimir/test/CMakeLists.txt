@@ -8,6 +8,7 @@
 add_executable(mimir_tests
   command_bitmaps_test.cpp
   command_blocking_test.cpp
+  command_databases_test.cpp
   command_generic_test.cpp
   command_hashes_test.cpp
   command_hyperloglog_test.cpp

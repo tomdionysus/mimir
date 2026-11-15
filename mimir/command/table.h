@@ -49,6 +49,8 @@ class Database;
 // A connection's state, owned by its strand.
 struct Session {
   int64_t id = 0;
+  // The database SELECT chose.
+  size_t db = 0;
   resp::Protocol protocol = resp::Protocol::resp2;
   std::string name;
   std::string lib_name;

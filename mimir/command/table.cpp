@@ -211,7 +211,9 @@ const std::array specs{
     Spec{"randomkey", 1, "readonly", 0, 0, 0, Class::read, generic::randomkey},
     Spec{"touch", -2, "readonly fast", 1, -1, 1, Class::read, generic::touch},
     Spec{"flushall", -1, "write", 0, 0, 0, Class::admin, generic::flushall},
-    Spec{"flushdb", -1, "write", 0, 0, 0, Class::admin, generic::flushall},
+    Spec{"flushdb", -1, "write", 0, 0, 0, Class::admin, generic::flushdb},
+    Spec{"move", 3, "write fast", 1, 1, 1, Class::agreement, generic::move},
+    Spec{"swapdb", 3, "write fast", 0, 0, 0, Class::admin, generic::swapdb},
     // Streams: an append-only log. Appends are a sequence, so they commit by
     // agreement; deleting an entry merges.
     Spec{"xadd", -5, "write denyoom fast", 1, 1, 1, Class::agreement, streams::xadd},

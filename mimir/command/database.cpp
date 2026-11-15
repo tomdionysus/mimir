@@ -35,10 +35,12 @@ bool spec_allowed_subscribed(std::string_view name) {
 }  // namespace
 
 Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings settings)
-    : _wall(wall), _settings(std::move(settings)), _started_ms(wall.unix_ms()), _keys(wall), _random(std::random_device{}()) {
-  // What CONFIG GET answers, in Valkey's names: one database, no persistence
-  // of Valkey's kind, nothing evicted (ruling 9's eviction comes later).
-  _config = {{"databases", "1"},
+    : _wall(wall), _settings(std::move(settings)), _started_ms(wall.unix_ms()), _random(std::random_device{}()) {
+  const size_t count = std::max<size_t>(1, _settings.databases);
+  for (size_t i = 0; i < count; ++i) _dbs.push_back(std::make_unique<keyspace::Keyspace>(wall));
+  // What CONFIG GET answers, in Valkey's names: no persistence of Valkey's
+  // kind, nothing evicted (ruling 9's eviction comes later).
+  _config = {{"databases", std::to_string(count)},
              {"maxmemory", "0"},
              {"maxmemory-policy", "noeviction"},
              {"notify-keyspace-events", ""},
@@ -126,7 +128,9 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
     session.last_ms = _wall.unix_ms();
     session.last_command = std::string(spec->name);
     ++session.commands;
-    Call call{session, *this, _keys, reply, args};
+    // The database the command ran in, before it may change it (SELECT).
+    const size_t db = session.db;
+    Call call{session, *this, *_dbs[db], reply, args};
     try {
       spec->handler(call);
     } catch (const CommandError& e) {
@@ -138,8 +142,10 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
     if (call.blocked) {
       if (wake) {
         const uint64_t id = _next_wait++;
-        _waiters.emplace(id, Waiter{&session, call.block_args ? *call.block_args : args, call.block_keys, call.block_null_bulk, std::move(wake)});
-        for (const auto& key : call.block_keys) _waiting_on[key].push_back(id);
+        std::vector<std::string> keys;
+        for (const auto& key : call.block_keys) keys.push_back(scoped(db, key));
+        for (const auto& key : keys) _waiting_on[key].push_back(id);
+        _waiters.emplace(id, Waiter{&session, call.block_args ? *call.block_args : args, std::move(keys), call.block_null_bulk, std::move(wake)});
         executed.wait = id;
         executed.wait_seconds = call.block_seconds;
         return executed;
@@ -148,7 +154,7 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
       out.append(timeout_reply(session.protocol, call.block_null_bulk));
     } else {
       out.append(reply.bytes());
-      touch(*spec, args);
+      touch(*spec, args, db);
     }
     if (!_waiters.empty()) serve_ready(woken);
   }
@@ -160,7 +166,8 @@ void Database::run_locked(Session& session, const std::vector<std::string>& args
   // Queued commands were found and checked when queued.
   const Spec* spec = find_spec(args[0]);
   resp::Reply reply(session.protocol);
-  Call call{session, *this, _keys, reply, args};
+  const size_t db = session.db;
+  Call call{session, *this, *_dbs[db], reply, args};
   try {
     spec->handler(call);
   } catch (const CommandError& e) {
@@ -174,29 +181,72 @@ void Database::run_locked(Session& session, const std::vector<std::string>& args
     return;
   }
   out.raw(reply.bytes());
-  touch(*spec, args);
+  touch(*spec, args, db);
 }
 
-void Database::touch(const Spec& spec, const std::vector<std::string>& args) {
+std::string Database::scoped(size_t db, std::string_view key) {
+  std::string out = std::to_string(db);
+  out.push_back('\0');
+  out.append(key);
+  return out;
+}
+
+std::pair<size_t, std::string_view> Database::unscoped(std::string_view scoped_key) {
+  const size_t nul = scoped_key.find('\0');
+  size_t db = 0;
+  for (char c : scoped_key.substr(0, nul)) db = db * 10 + static_cast<size_t>(c - '0');
+  return {db, scoped_key.substr(nul + 1)};
+}
+
+void Database::touch(const Spec& spec, const std::vector<std::string>& args, size_t db) {
   if (spec.flags.find("write") == std::string_view::npos) return;
   if (spec.name == "flushall" || spec.name == "flushdb") {
-    for (auto& [key, sessions] : _watchers)
+    // FLUSHDB empties one database; its watches break, others' stand.
+    for (auto& [key, sessions] : _watchers) {
+      if (spec.name == "flushdb" && unscoped(key).first != db) continue;
       for (Session* s : sessions) s->watch_touched = true;
+    }
     return;
   }
   for (auto key : keys_of(spec, args)) {
-    if (!_waiting_on.empty()) _touched.emplace_back(key);
-    auto found = _watchers.find(std::string(key));
-    if (found == _watchers.end()) continue;
-    for (Session* s : found->second) s->watch_touched = true;
+    std::string named = scoped(db, key);
+    auto found = _watchers.find(named);
+    if (found != _watchers.end())
+      for (Session* s : found->second) s->watch_touched = true;
+    if (!_waiting_on.empty()) _touched.push_back(std::move(named));
+  }
+  // MOVE and COPY ... DB name a key in another database too.
+  if (spec.name == "move" || spec.name == "copy") {
+    for (size_t i = 0; i + 1 < args.size(); ++i) {
+      if (spec.name == "copy" && !iequals(args[i], "DB")) continue;
+      auto target = parse_integer(args[spec.name == "move" ? 2 : i + 1]);
+      if (!target || *target < 0) break;
+      const std::string& key = args[spec.name == "move" ? 1 : 2];
+      std::string named = scoped(static_cast<size_t>(*target), key);
+      auto found = _watchers.find(named);
+      if (found != _watchers.end())
+        for (Session* s : found->second) s->watch_touched = true;
+      if (!_waiting_on.empty()) _touched.push_back(std::move(named));
+      break;
+    }
+  }
+}
+
+void Database::swap_locked(size_t a, size_t b) {
+  std::swap(_dbs.at(a), _dbs.at(b));
+  for (auto& [key, sessions] : _watchers) {
+    const size_t db = unscoped(key).first;
+    if (db != a && db != b) continue;
+    for (Session* s : sessions) s->watch_touched = true;
   }
 }
 
 void Database::watch_locked(Session& session, const std::string& key) {
+  const std::string named = scoped(session.db, key);
   for (const auto& [watched, existed] : session.watched)
-    if (watched == key) return;
-  session.watched.emplace_back(key, _keys.contains(key));
-  _watchers[key].push_back(&session);
+    if (watched == named) return;
+  session.watched.emplace_back(named, _dbs[session.db]->contains(key));
+  _watchers[named].push_back(&session);
 }
 
 void Database::unwatch_locked(Session& session) {
@@ -216,8 +266,10 @@ bool Database::watch_broken_locked(Session& session) {
   // A key that held a value when watched and is gone with no write naming it
   // has expired meanwhile: that too breaks the watch, as Valkey has it since
   // 6.0.9.
-  for (const auto& [key, existed] : session.watched)
-    if (existed && !_keys.contains(key)) return true;
+  for (const auto& [named, existed] : session.watched) {
+    auto [db, key] = unscoped(named);
+    if (existed && !_dbs[db]->contains(key)) return true;
+  }
   return false;
 }
 
@@ -250,15 +302,17 @@ void Database::serve_ready(Woken& woken) {
     _touched.clear();
     std::sort(ready.begin(), ready.end());
     ready.erase(std::unique(ready.begin(), ready.end()), ready.end());
-    for (const std::string& key : ready) {
+    for (const std::string& named : ready) {
+      auto [db, key_view] = unscoped(named);
+      const std::string key(key_view);
       for (;;) {
-        auto queue = _waiting_on.find(key);
-        if (queue == _waiting_on.end() || queue->second.empty() || !_keys.contains(key)) break;
+        auto queue = _waiting_on.find(named);
+        if (queue == _waiting_on.end() || queue->second.empty() || !_dbs[db]->contains(key)) break;
         const uint64_t id = queue->second.front();
         Waiter& waiter = _waiters.at(id);
         const Spec* spec = find_spec(waiter.args[0]);
         resp::Reply reply(waiter.session->protocol);
-        Call call{*waiter.session, *this, _keys, reply, waiter.args};
+        Call call{*waiter.session, *this, *_dbs[db], reply, waiter.args};
         call.ready_key = &key;
         try {
           spec->handler(call);
@@ -274,7 +328,7 @@ void Database::serve_ready(Woken& woken) {
         woken.emplace_back(std::move(waiter.wake), reply.take());
         const std::vector<std::string> served_args = waiter.args;
         forget_waiter(id);
-        touch(*spec, served_args);
+        touch(*spec, served_args, db);
       }
     }
   }
@@ -296,7 +350,9 @@ size_t Database::waiting() {
 
 size_t Database::expire_step(size_t budget) {
   dannan::contract::Lock lock(_mutex);
-  return _keys.expire_step(budget);
+  size_t removed = 0;
+  for (auto& db : _dbs) removed += db->expire_step(budget);
+  return removed;
 }
 
 }  // namespace mimir::command
