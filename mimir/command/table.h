@@ -65,6 +65,13 @@ struct Session {
   size_t subscriptions = 0;
   size_t shard_subscriptions = 0;
 
+  // What CLIENT LIST shows of it: when it last ran a command and what.
+  uint64_t last_ms = 0;
+  std::string last_command;
+  uint64_t commands = 0;
+  // Closes the connection from any thread (CLIENT KILL); none in tests.
+  std::function<void()> kill;
+
   // A transaction: between MULTI and EXEC commands are queued; an error while
   // queueing aborts the EXEC. The keys WATCHed, each with whether it held a
   // value then; `watch_touched` is set, under the database's lock, by any

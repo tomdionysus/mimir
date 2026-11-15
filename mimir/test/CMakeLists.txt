@@ -13,6 +13,7 @@ add_executable(mimir_tests
   command_hyperloglog_test.cpp
   command_lists_test.cpp
   command_pubsub_test.cpp
+  command_server_test.cpp
   command_sets_test.cpp
   command_stream_groups_test.cpp
   command_streams_test.cpp

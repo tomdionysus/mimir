@@ -90,6 +90,11 @@ class Database {
   void watch_locked(Session& session, const std::string& key) DANNAN_REQUIRES(_mutex);
   void unwatch_locked(Session& session) DANNAN_REQUIRES(_mutex);
   bool watch_broken_locked(Session& session) DANNAN_REQUIRES(_mutex);
+  // For the server commands, under the lock: the connections known, and the
+  // settings CONFIG reads and writes.
+  std::map<int64_t, Session*>& sessions_locked() DANNAN_REQUIRES(_mutex) { return _sessions; }
+  std::map<std::string, std::string>& config_locked() DANNAN_REQUIRES(_mutex) { return _config; }
+  size_t waiting_locked() DANNAN_REQUIRES(_mutex) { return _waiters.size(); }
   // The lock the transaction commands are called under, for their annotations.
   dannan::contract::Mutex& lock_for_transactions() DANNAN_RETURN_CAPABILITY(_mutex) { return _mutex; }
 
@@ -101,6 +106,8 @@ class Database {
   PubSub& pubsub() noexcept { return _pubsub; }
 
   const DatabaseSettings& settings() const noexcept { return _settings; }
+  // When this database began, in Unix ms (LASTSAVE, INFO's uptime).
+  uint64_t started_ms() const noexcept { return _started_ms; }
   uint64_t now_ms() const noexcept { return _wall.unix_ms(); }
   // A random number for RANDOMKEY and SPOP's like. Called under the lock.
   uint64_t random() { return _random(); }
@@ -126,6 +133,7 @@ class Database {
 
   const dannan::contract::WallClock& _wall;
   const DatabaseSettings _settings;
+  const uint64_t _started_ms;
   PubSub _pubsub;
   std::atomic<int64_t> _next_client{1};
   dannan::contract::Mutex _mutex;
@@ -137,6 +145,10 @@ class Database {
   uint64_t _next_wait DANNAN_GUARDED_BY(_mutex) = 1;
   // The keys this command's writes named: what serve_ready looks at.
   std::vector<std::string> _touched DANNAN_GUARDED_BY(_mutex);
+  // The connections this database has seen, for CLIENT LIST and CLIENT KILL.
+  std::map<int64_t, Session*> _sessions DANNAN_GUARDED_BY(_mutex);
+  // Settings CONFIG SET may change, as text.
+  std::map<std::string, std::string> _config DANNAN_GUARDED_BY(_mutex);
   // Per key, the sessions watching it.
   std::unordered_map<std::string, std::vector<Session*>> _watchers DANNAN_GUARDED_BY(_mutex);
 };
