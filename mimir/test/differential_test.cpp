@@ -999,5 +999,81 @@ TEST_F(Differential, Scripting) {
   });
 }
 
+TEST_F(Differential, ScriptingSandbox) {
+  script({
+      {"EVAL", "redis.call = nil", "0"},
+      {"EVAL", "cjson.encode = nil", "0"},
+      {"EVAL", "string.foo = 1", "0"},
+      {"EVAL", "rawset(_G, 'x', 1)", "0"},
+      {"EVAL", "setmetatable(_G, nil)", "0"},
+      {"EVAL", "return x", "0"},
+      {"EVAL", "return _G.x", "0"},
+      {"EVAL", "return rawget(_G, 'x')", "0"},
+      {"EVAL", "return type(rawget(_G, 'pairs'))", "0"},
+      {"EVAL", "return type(getmetatable(_G))", "0"},
+      {"EVAL", "return getmetatable('').__index == string", "0"},
+      {"EVAL", "return ('abc'):upper()", "0"},
+      {"EVAL", "local f = loadstring('return 7'); return f()", "0"},
+      {"EVAL", "local f = loadstring('y = 1'); return pcall(f)", "0"},
+      {"EVAL", "local t = {}; t.x = 1; setmetatable(t, {}); rawset(t, 'y', 2); return t.x + t.y", "0"},
+      {"EVAL",
+       "local r = {} for _, n in ipairs({'dofile', 'loadfile', 'print', 'io', 'debug', 'package', 'require', 'module', 'getfenv', 'setfenv', 'newproxy', "
+       "'coroutine', 'load', 'gcinfo', 'unpack', 'select'}) do r[#r + 1] = n .. '=' .. type(rawget(_G, n)) end return r",
+       "0"},
+      {"EVAL", "return {type(os.clock), type(os.time)}", "0"},
+      {"EVAL", "local n = 0 for k, v in pairs(struct) do n = n + 1 end return n", "0"},
+      {"EVAL", "local n = 0 for k, v in pairs(bit) do n = n + 1 end return n", "0"},
+      {"EVAL", "local f, s = pairs(string); return s == string", "0"},
+      {"EVAL", "local n = 0 for i, v in ipairs({5, 6, 7}) do n = n + v end return n", "0"},
+  });
+}
+
+TEST_F(Differential, ScriptingLibraries) {
+  script({
+      {"EVAL", "return cjson.encode({1, 2, {a=1}})", "0"},
+      {"EVAL", "return cjson.encode({a=1.5, b='x'})", "0"},
+      {"EVAL", "return cjson.decode('[1,2,3.25]')", "0"},
+      {"EVAL", "return cjson.encode(cjson.decode('[]'))", "0"},
+      {"EVAL", "return cjson.encode(1/3)", "0"},
+      {"EVAL", "return cjson.encode({[1]=1, [3]=3})", "0"},
+      {"EVAL", "return cjson.encode({[1]=1, [30]=3})", "0"},
+      {"EVAL", "return cjson.decode('{\"a\":[1,{\"b\":null}]}').a[1]", "0"},
+      {"EVAL", "return cjson.decode('nope')", "0"},
+      {"EVAL", "return cjson.encode('a\"b\\\\c/\\n')", "0"},
+      {"EVAL", "return cjson.encode(1e300)", "0"},
+      {"EVAL", "return bit.band(0xff, 0x0f)", "0"},
+      {"EVAL", "return bit.tohex(255)", "0"},
+      {"EVAL", "return bit.tobit(4294967296 + 5)", "0"},
+      {"EVAL", "return {bit.bor(1, 2), bit.bxor(3, 1), bit.lshift(1, 4), bit.rshift(-1, 28), bit.arshift(-16, 2), bit.bnot(0), bit.rol(1, 33), bit.bswap(1)}",
+       "0"},
+      {"EVAL", "return cmsgpack.pack(1, 'a', {1, 2})", "0"},
+      {"EVAL", "return cmsgpack.pack({a=1}, -1, 300, 70000, 1.5, true, false, string.rep('x', 40))", "0"},
+      {"EVAL", "return {cmsgpack.unpack(cmsgpack.pack(1, 'a'))}", "0"},
+      {"EVAL", "return struct.pack('HH', 1, 2)", "0"},
+      {"EVAL", "return struct.pack('>i4', -2)", "0"},
+      {"EVAL", "return {struct.unpack('<HB', '\\1\\0\\7')}", "0"},
+      {"EVAL", "return struct.size('i4d')", "0"},
+      {"EVAL", "return struct.size('!8bd')", "0"},
+      {"EVAL", "return struct.pack('s', 'ab')", "0"},
+      {"EVAL", "return {struct.unpack('bc0', struct.pack('bc0', 3, 'xyz'))}", "0"},
+      {"EVAL", "return struct.pack('!4bi', 1, 2)", "0"},
+      {"EVAL", "return struct.pack('x')", "0"},
+      {"EVAL", "return struct.pack('<lLTfd', -3, 3, 4, 0.5, 0.25)", "0"},
+      {"EVAL", "return struct.pack('>I3i16', 65536, -1)", "0"},
+      {"EVAL", "return {struct.unpack('>I3i16', struct.pack('>I3i16', 65536, -1))}", "0"},
+      {"EVAL", "return {struct.unpack('>d', struct.pack('>d', 1.5))}", "0"},
+      {"EVAL", "return {struct.unpack('<h', '\\255\\255xx', 3)}", "0"},
+      {"EVAL", "return struct.pack('q', 1)", "0"},
+      {"EVAL", "return struct.pack('i33', 1)", "0"},
+      {"EVAL", "return struct.pack('!3i', 1)", "0"},
+      {"EVAL", "return struct.size('s')", "0"},
+      {"EVAL", "return struct.unpack('i', 'ab')", "0"},
+      {"EVAL", "return struct.unpack('s', 'ab')", "0"},
+      {"EVAL", "return struct.unpack('c0', 'ab')", "0"},
+      {"EVAL", "return struct.unpack('b', 'ab', 0)", "0"},
+      {"EVAL", "return struct.pack('c2', 'a')", "0"},
+  });
+}
+
 }  // namespace
 }  // namespace mimir

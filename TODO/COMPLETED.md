@@ -2,6 +2,23 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: scripting's libraries and sandbox (ruling 25)
+
+- `cjson`, `bit` and `cmsgpack` from Debian's packages (pkg-config for the
+  first two; cmsgpack ships no -dev, linked by name); `struct` written here
+  to the behaviour of the struct 0.2 Valkey bundles.
+- Valkey's read-only sandbox on Debian's Lua: every library and the globals
+  are read-only proxies; `rawget`, `rawset`, `setmetatable`, `next`, `pairs`,
+  `ipairs`, `loadstring` and `load` see through or refuse them, and never hand
+  a script the table beneath; `getmetatable` answers a read-only view. Removed
+  as Valkey removes them: `getfenv`, `setfenv`, `newproxy`, `module`,
+  `require`, beside the files.
+- The differential gate's findings, matched: "option 's' has no fixed size";
+  `getmetatable(_G)` a table. Known difference: `#` of a library table is 0.
+- Valkey 8.1.1 and the Lua packages installed on corvus-jupiter (note posted),
+  so either jupiter or uranus serves the differential gate.
+- Gate on corvus-jupiter: release 217 passed; differential 18 of 18.
+
 ## 2026-11-15: scripting (EVAL, EVALSHA, their read-only forms, SCRIPT)
 
 - Debian's Lua 5.1 by pkg-config (ruling 20), one interpreter for the node

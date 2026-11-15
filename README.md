@@ -28,7 +28,7 @@ Debian 13 (or any system with GCC 14 or Clang 19, CMake 3.24, Boost 1.83,
 OpenSSL 3, Lua 5.1, yaml-cpp and GoogleTest):
 
 ```
-apt-get install g++ cmake ninja-build pkg-config libboost-dev libssl-dev liblua5.1-0-dev libyaml-cpp-dev libgtest-dev
+apt-get install g++ cmake ninja-build pkg-config libboost-dev libssl-dev liblua5.1-0-dev lua-cjson-dev lua-bitop-dev lua-cmsgpack libyaml-cpp-dev libgtest-dev
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMIMIR_BUILD_TESTING=ON
 cmake --build build
 ./build/mimir_tests

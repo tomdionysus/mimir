@@ -30,6 +30,12 @@ find_package(Threads REQUIRED)
 # scripts are written for.
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LUA51 REQUIRED IMPORTED_TARGET lua5.1)
+# The libraries Valkey bundles for scripts (ruling 25): Debian's cjson and
+# bitop through pkg-config; cmsgpack ships only its runtime library, linked
+# by name.
+pkg_check_modules(LUA51_CJSON REQUIRED IMPORTED_TARGET lua5.1-cjson)
+pkg_check_modules(LUA51_BITOP REQUIRED IMPORTED_TARGET lua5.1-bitop)
+find_library(MIMIR_LUA51_CMSGPACK NAMES lua5.1-cmsgpack liblua5.1-cmsgpack.so.0 REQUIRED)
 
 # Dannan, the network layer, at its tag, cloned from the sibling checkout into
 # the build tree, so building Mimir never touches ../dannan.

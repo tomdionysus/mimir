@@ -17,6 +17,7 @@ add_library(mimir SHARED
   command/hashes.cpp
   command/hyperloglog.cpp
   command/lists.cpp
+  command/lua_struct.cpp
   command/pubsub.cpp
   command/pubsub_commands.cpp
   command/scripting.cpp
@@ -49,6 +50,6 @@ target_include_directories(mimir
 )
 target_link_libraries(mimir
   PUBLIC dannan::dannan Boost::headers OpenSSL::SSL OpenSSL::Crypto Threads::Threads
-  PRIVATE mimir_warnings PkgConfig::LUA51
+  PRIVATE mimir_warnings PkgConfig::LUA51 PkgConfig::LUA51_CJSON PkgConfig::LUA51_BITOP ${MIMIR_LUA51_CMSGPACK}
 )
 set_target_properties(mimir PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})

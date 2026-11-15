@@ -87,6 +87,10 @@ marked:
     `ack_level` everywhere: the YAML key, the session setting and the
     per-command form; code, wire, Status, logs and documents use the names.
     Rulings 7, 16, 17 and 23 are written in these names below.
+25. **Scripting's bundled libraries as Valkey's** (2026-11-15): `cjson`,
+    `cmsgpack` and `bit` from Debian's packages (lua-cjson, lua-cmsgpack,
+    lua-bitop), linked as system packages as ruling 20's Lua is; `struct`,
+    which Debian does not package, written here.
 
 ## Waiting on Tom
 

@@ -18,16 +18,24 @@
 #include <cstdio>
 #include <ctime>
 #include <exception>
+#include <utility>
 #include <vector>
 
 #include "mimir/command/args.h"
 #include "mimir/command/database.h"
 #include "mimir/command/handlers.h"
+#include "mimir/command/lua_struct.h"
 
 extern "C" {
 #include <lauxlib.h>
 #include <lua.h>
 #include <lualib.h>
+
+// Debian's lua-cjson, lua-bitop and lua-cmsgpack (ruling 25); cmsgpack ships
+// no header.
+int luaopen_cjson(lua_State* L);
+int luaopen_bit(lua_State* L);
+int luaopen_cmsgpack(lua_State* L);
 }
 
 namespace mimir::command {
@@ -310,8 +318,17 @@ int lua_os_clock(lua_State* L) {
   return 1;
 }
 
-// Globals are read-only, as Valkey 7 and later make them; reading one that
-// is not there is refused too.
+// The read-only sandbox, as Valkey 7 and later have it. Valkey marks tables
+// read-only in a patched Lua; on Debian's Lua each protected table is a proxy:
+// an empty table whose metatable reads through to the real one and refuses
+// every write. A script's globals are such a proxy over the real globals,
+// which refuses a read of a global that does not exist too. rawset and
+// setmetatable are wrapped to refuse a proxy, and the proxies' metatables are
+// hidden. Scripts see the proxies only; KEYS and ARGV are written to the real
+// globals beneath.
+constexpr const char* protected_key = "mimir.protected";
+constexpr const char* env_key = "mimir.env";
+
 int readonly_newindex(lua_State* L) {
   luaL_where(L, 1);
   lua_pushstring(L, "Attempt to modify a readonly table");
@@ -319,11 +336,162 @@ int readonly_newindex(lua_State* L) {
   return lua_error(L);
 }
 
-int missing_global(lua_State* L) {
+int global_index(lua_State* L) {
+  lua_pushvalue(L, 2);
+  lua_rawget(L, lua_upvalueindex(1));
+  if (!lua_isnil(L, -1)) return 1;
   luaL_where(L, 1);
-  lua_pushfstring(L, "Script attempted to access nonexistent global variable '%s'", luaL_optstring(L, 2, "?"));
+  lua_pushfstring(L, "Script attempted to access nonexistent global variable '%s'", lua_isstring(L, 2) ? lua_tostring(L, 2) : "?");
   lua_concat(L, 2);
   return lua_error(L);
+}
+
+bool is_protected(lua_State* L, int index) {
+  if (!lua_istable(L, index)) return false;
+  lua_getfield(L, LUA_REGISTRYINDEX, protected_key);
+  lua_pushvalue(L, index);
+  lua_rawget(L, -2);
+  const bool found = lua_toboolean(L, -1) != 0;
+  lua_pop(L, 2);
+  return found;
+}
+
+int refuse_readonly(lua_State* L) {
+  lua_pushstring(L, "Attempt to modify a readonly table");
+  return lua_error(L);
+}
+
+int safe_rawset(lua_State* L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  luaL_checkany(L, 2);
+  luaL_checkany(L, 3);
+  if (is_protected(L, 1)) return refuse_readonly(L);
+  lua_settop(L, 3);
+  lua_rawset(L, 1);
+  return 1;
+}
+
+void unwrap(lua_State* L, int index);
+
+// rawget on a proxy reads the table beneath it, as rawget on Valkey's
+// read-only tables does.
+int safe_rawget(lua_State* L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  luaL_checkany(L, 2);
+  lua_settop(L, 2);
+  unwrap(L, 1);
+  lua_rawget(L, 1);
+  return 1;
+}
+
+// Replaces the proxy at stack position `index` (positive) with the table
+// beneath it, in place: its metatable's __index, or the upvalue of the
+// globals' __index function.
+void unwrap(lua_State* L, int index) {
+  if (!is_protected(L, index)) return;
+  const int top = lua_gettop(L);
+  lua_getmetatable(L, index);
+  lua_getfield(L, -1, "__index");
+  if (lua_isfunction(L, -1)) lua_getupvalue(L, -1, 1);
+  lua_replace(L, index);
+  lua_settop(L, top);
+}
+
+// next, pairs and ipairs walk the table beneath a proxy; the script is handed
+// the proxy back as the iteration's state, never the table beneath.
+int safe_next(lua_State* L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  lua_settop(L, 2);
+  unwrap(L, 1);
+  if (lua_next(L, 1)) return 2;
+  lua_pushnil(L);
+  return 1;
+}
+
+int safe_pairs(lua_State* L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  lua_pushcfunction(L, safe_next);
+  lua_pushvalue(L, 1);
+  lua_pushnil(L);
+  return 3;
+}
+
+int safe_inext(lua_State* L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  const int i = luaL_checkint(L, 2) + 1;
+  lua_settop(L, 1);
+  unwrap(L, 1);
+  lua_pushinteger(L, i);
+  lua_rawgeti(L, 1, i);
+  return lua_isnil(L, -1) ? 0 : 2;
+}
+
+int safe_ipairs(lua_State* L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  lua_pushcfunction(L, safe_inext);
+  lua_pushvalue(L, 1);
+  lua_pushinteger(L, 0);
+  return 3;
+}
+
+int safe_setmetatable(lua_State* L) {
+  if (is_protected(L, 1)) return refuse_readonly(L);
+  lua_pushvalue(L, lua_upvalueindex(1));
+  lua_insert(L, 1);
+  lua_call(L, lua_gettop(L) - 1, LUA_MULTRET);
+  return lua_gettop(L);
+}
+
+// loadstring and load: what they compile runs on the script's globals.
+int safe_load(lua_State* L) {
+  const int argc = lua_gettop(L);
+  lua_pushvalue(L, lua_upvalueindex(1));
+  lua_insert(L, 1);
+  lua_call(L, argc, LUA_MULTRET);
+  if (lua_isfunction(L, 1)) {
+    lua_getfield(L, LUA_REGISTRYINDEX, env_key);
+    lua_setfenv(L, 1);
+  }
+  return lua_gettop(L);
+}
+
+// Replaces the table at the top with a read-only proxy over it; `index`
+// gives the proxy's __index when not the table itself. getmetatable on the
+// proxy answers a read-only view of its metatable (a table, as Valkey's),
+// which cannot be changed to undo the protection.
+void make_proxy(lua_State* L, lua_CFunction index = nullptr, bool view = true) {
+  const int real = lua_gettop(L);
+  lua_newtable(L);  // the proxy
+  lua_newtable(L);  // its metatable
+  if (index) {
+    lua_pushvalue(L, real);
+    lua_pushcclosure(L, index, 1);
+  } else {
+    lua_pushvalue(L, real);
+  }
+  lua_setfield(L, -2, "__index");
+  lua_pushcfunction(L, readonly_newindex);
+  lua_setfield(L, -2, "__newindex");
+  if (view) {
+    lua_pushvalue(L, -1);
+    make_proxy(L, nullptr, false);
+  } else {
+    lua_pushboolean(L, 0);
+  }
+  lua_setfield(L, -2, "__metatable");
+  lua_setmetatable(L, -2);
+  lua_getfield(L, LUA_REGISTRYINDEX, protected_key);
+  lua_pushvalue(L, -2);
+  lua_pushboolean(L, 1);
+  lua_rawset(L, -3);
+  lua_pop(L, 1);
+  lua_replace(L, real);
+}
+
+void wrap_global(lua_State* L, const char* name, lua_CFunction wrapper) {
+  lua_getglobal(L, name);
+  lua_pushcclosure(L, wrapper, 1);
+  lua_setglobal(L, name);
 }
 
 // The script's line where an error arose.
@@ -359,10 +527,18 @@ void install(lua_State* L) {
     lua_call(L, 0, 0);
   }
   lua_settop(L, 0);
-  // Valkey's sandbox: no files.
-  for (const char* gone : {"dofile", "loadfile", "print"}) {
+  // Valkey's sandbox: no files, no environments, no modules.
+  for (const char* gone : {"dofile", "loadfile", "print", "getfenv", "setfenv", "newproxy", "module", "require"}) {
     lua_pushnil(L);
     lua_setglobal(L, gone);
+  }
+  // The libraries Valkey bundles (ruling 25).
+  const std::pair<const char*, lua_CFunction> libraries[] = {
+      {"cjson", luaopen_cjson}, {"bit", luaopen_bit}, {"cmsgpack", luaopen_cmsgpack}, {"struct", open_struct}};
+  for (const auto& [name, open] : libraries) {
+    lua_pushcfunction(L, open);
+    lua_call(L, 0, 1);
+    lua_setglobal(L, name);
   }
   lua_newtable(L);
   const luaL_Reg functions[] = {
@@ -392,15 +568,37 @@ void install(lua_State* L) {
   lua_setglobal(L, "os");
   lua_pushcfunction(L, on_error);
   lua_setfield(L, LUA_REGISTRYINDEX, "mimir.on_error");
-  // Read-only globals.
-  lua_pushvalue(L, LUA_GLOBALSINDEX);
+  wrap_global(L, "rawset", safe_rawset);
+  wrap_global(L, "rawget", safe_rawget);
+  wrap_global(L, "setmetatable", safe_setmetatable);
+  wrap_global(L, "loadstring", safe_load);
+  wrap_global(L, "load", safe_load);
+  const std::pair<const char*, lua_CFunction> walkers[] = {{"next", safe_next}, {"pairs", safe_pairs}, {"ipairs", safe_ipairs}};
+  for (const auto& [name, walker] : walkers) {
+    lua_pushcfunction(L, walker);
+    lua_setglobal(L, name);
+  }
+  // Every library read-only, the globals last.
   lua_newtable(L);
-  lua_pushcfunction(L, readonly_newindex);
-  lua_setfield(L, -2, "__newindex");
-  lua_pushcfunction(L, missing_global);
+  lua_setfield(L, LUA_REGISTRYINDEX, protected_key);
+  for (const char* name : {"string", "table", "math", "coroutine", "os", "cjson", "bit", "cmsgpack", "struct", "redis"}) {
+    lua_getglobal(L, name);
+    make_proxy(L);
+    lua_setglobal(L, name);
+  }
+  lua_getglobal(L, "redis");
+  lua_setglobal(L, "server");
+  // Methods on strings read through the proxy, so string's identity holds.
+  lua_pushstring(L, "");
+  lua_getmetatable(L, -1);
+  lua_getglobal(L, "string");
   lua_setfield(L, -2, "__index");
-  lua_setmetatable(L, -2);
-  lua_pop(L, 1);
+  lua_pop(L, 2);
+  lua_pushvalue(L, LUA_GLOBALSINDEX);
+  make_proxy(L, global_index);
+  lua_pushvalue(L, -1);
+  lua_setglobal(L, "_G");
+  lua_setfield(L, LUA_REGISTRYINDEX, env_key);
 }
 
 void set_array(lua_State* L, const char* name, const std::vector<std::string>& items) {
@@ -431,6 +629,8 @@ void run_script(Call& call, const std::string& sha, const std::string& body, siz
       lua_pop(L, 1);
       throw CommandError("ERR Error compiling script (new function): " + message);
     }
+    lua_getfield(L, LUA_REGISTRYINDEX, env_key);
+    lua_setfenv(L, -2);
     lua_pushvalue(L, -1);
     lua_setfield(L, LUA_REGISTRYINDEX, function.c_str());
   }

@@ -11,7 +11,10 @@ classes of command, agreement in Dannan, durability, and the order.
   consumer groups), pub/sub, transactions, the server commands clients call,
   and configurable databases (ruling 21). Gates on corvus-uranus; counts in
   `COMPLETED.md`.
-- Scripting's EVAL, EVALSHA, their read-only forms and SCRIPT are in.
+- Scripting's EVAL, EVALSHA, their read-only forms and SCRIPT are in, with
+  Valkey's libraries (ruling 25) and its read-only sandbox (proxies on
+  Debian's Lua; `next`, `pairs`, `ipairs`, `rawget`, `rawset` and
+  `setmetatable` see through or refuse them; `#` of a library table is 0).
 - Next, in order: FUNCTION and FCALL; then keyspace
   notifications, DUMP and RESTORE, SORT, the GEO commands, LCS; then
   authentication with the built-in user list (ACL).
@@ -33,8 +36,8 @@ classes of command, agreement in Dannan, durability, and the order.
   --bind 127.0.0.1 --save "" --appendonly no --daemonize yes`, `mimir-node
   --listen 127.0.0.1 --port 7380 --databases 16 --seconds 60 &`, then `MIMIR_DIFF_MIMIR_PORT=7380
   MIMIR_DIFF_VALKEY_PORT=7379 ./mimir_tests --gtest_filter='Differential.*'`, and
-  `valkey-cli -p 7379 shutdown nosave` after. (Valkey 8.1.1 is installed there
-  with its service disabled.)
+  `valkey-cli -p 7379 shutdown nosave` after. (Valkey 8.1.1 is installed on
+  corvus-uranus and corvus-jupiter with its service disabled; either serves.)
 
 ## How work is done
 
@@ -52,9 +55,6 @@ scripting, databases, cross-slot commands, the levels for agreement and their
 names: `ack_level` with `ephemeral`, `persisted`, `decided`, `replicated`, the
 group standard relayed by Kvasir).
 Asked of him when it is reached:
-- Whether Valkey's bundled Lua libraries (`cjson`, `cmsgpack`, `bit`,
-  `struct`) come into scripting, and from where (Debian packages or written
-  here). Asked when the scripting step's gate passes.
 - `decided` for a merging write (the design's "Durability", Proposed): a
   majority holds it in memory before the answer.
 
