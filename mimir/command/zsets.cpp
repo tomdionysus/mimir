@@ -911,20 +911,22 @@ void zrandmember(Call& call) {
 }
 
 void zscan(Call& call) {
+  uint64_t cursor = 0;
   {
     const std::string& text = call.args[2];
-    uint64_t cursor = 0;
     auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), cursor);
     if (text.empty() || error != std::errc() || end != text.data() + text.size()) throw CommandError("ERR invalid cursor");
   }
   std::optional<std::string> pattern;
   bool noscores = false;
+  int64_t count = 10;
   for (size_t i = 3; i < call.args.size(); ++i) {
     const bool has_next = i + 1 < call.args.size();
     if (iequals(call.args[i], "MATCH") && has_next) {
       pattern = call.args[++i];
     } else if (iequals(call.args[i], "COUNT") && has_next) {
-      if (integer_argument(call.args[++i]) < 1) throw CommandError(syntax_error);
+      count = integer_argument(call.args[++i]);
+      if (count < 1) throw CommandError(syntax_error);
     } else if (iequals(call.args[i], "NOSCORES")) {
       noscores = true;
     } else {
@@ -932,18 +934,28 @@ void zscan(Call& call) {
     }
   }
   SortedSet* zset = zset_value(call.keys, call.args[1]);
-  std::vector<const SortedSet::Item*> kept;
-  if (zset)
+  std::vector<SortedSet::Item> kept;
+  uint64_t next = 0;
+  if (zset && zset->size() > keyspace::scan_whole) {
+    // A large sorted set a page at a time (ruling 30), COUNT a hint as
+    // Valkey's is.
+    auto [items, after] = zset->page(cursor, static_cast<size_t>(count));
+    next = after;
+    for (auto& item : items)
+      if (!pattern || keyspace::glob_match(*pattern, item.member)) kept.push_back(std::move(item));
+  } else if (zset) {
+    // The whole sorted set in one page, in score order, as Valkey answers for
+    // a small one.
     for (size_t r = 0; r < zset->size(); ++r)
-      if (!pattern || keyspace::glob_match(*pattern, zset->at(r).member)) kept.push_back(&zset->at(r));
-  // The whole sorted set in one page, as Valkey answers for a small one; a
-  // score is a bulk string here in either protocol, as Valkey's scan replies.
+      if (!pattern || keyspace::glob_match(*pattern, zset->at(r).member)) kept.push_back(zset->at(r));
+  }
+  // A score is a bulk string here in either protocol, as Valkey's scan replies.
   call.reply.array(2);
-  call.reply.bulk("0");
+  call.reply.bulk(std::to_string(next));
   call.reply.array(noscores ? kept.size() : kept.size() * 2);
-  for (const auto* item : kept) {
-    call.reply.bulk(item->member);
-    if (!noscores) call.reply.bulk(resp::format_double(item->score));
+  for (const auto& item : kept) {
+    call.reply.bulk(item.member);
+    if (!noscores) call.reply.bulk(resp::format_double(item.score));
   }
 }
 

@@ -34,8 +34,9 @@ Set& Set::operator=(const Set& other) {
   _index.clear();
   _members = other._members;
   _shape = other._shape;
+  _order.restart();
   _index.reserve(_members.size());
-  for (auto it = _members.begin(); it != _members.end(); ++it) _index.emplace(std::string_view(*it), it);
+  for (auto it = _members.begin(); it != _members.end(); ++it) _index.emplace(std::string_view(*it), Entry{it, _order.next()});
   return *this;
 }
 
@@ -53,17 +54,26 @@ bool Set::add(std::string_view member) {
   }
   _members.emplace_back(member);
   auto it = std::prev(_members.end());
-  _index.emplace(std::string_view(*it), it);
+  const uint64_t number = _order.next();
+  _index.emplace(std::string_view(*it), Entry{it, number});
+  _order.added(number, std::string_view(*it));
   return true;
 }
 
 bool Set::erase(std::string_view member) {
   auto found = _index.find(member);
   if (found == _index.end()) return false;
-  auto it = found->second;
+  const Entry entry = found->second;
+  _order.removed(entry.number);
   _index.erase(found);
-  _members.erase(it);
+  _members.erase(entry.member);
   return true;
+}
+
+std::pair<std::vector<std::string_view>, uint64_t> Set::page(uint64_t cursor, size_t count) {
+  return _order.page(cursor, count, [this](auto visit) {
+    for (const auto& [name, entry] : _index) visit(entry.number, std::string_view(*entry.member));
+  });
 }
 
 std::vector<std::string_view> Set::ordered() const {

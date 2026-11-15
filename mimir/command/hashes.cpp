@@ -242,21 +242,23 @@ void hrandfield(Call& call) {
 }
 
 void hscan(Call& call) {
+  uint64_t cursor = 0;
   {
     const std::string& text = call.args[2];
-    uint64_t cursor = 0;
     auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), cursor);
     if (text.empty() || error != std::errc() || end != text.data() + text.size()) throw CommandError("ERR invalid cursor");
   }
   std::optional<std::string> pattern;
   bool novalues = false;
+  int64_t count = 10;
   for (size_t i = 3; i < call.args.size(); ++i) {
     const std::string& option = call.args[i];
     const bool has_next = i + 1 < call.args.size();
     if (iequals(option, "MATCH") && has_next) {
       pattern = call.args[++i];
     } else if (iequals(option, "COUNT") && has_next) {
-      if (integer_argument(call.args[++i]) < 1) throw CommandError(syntax_error);
+      count = integer_argument(call.args[++i]);
+      if (count < 1) throw CommandError(syntax_error);
     } else if (iequals(option, "NOVALUES")) {
       novalues = true;
     } else {
@@ -264,14 +266,21 @@ void hscan(Call& call) {
     }
   }
   Hash* hash = hash_value(call.keys, call.args[1]);
-  // The whole hash in one page, as Valkey answers for a small one: the cursor
-  // is complete at once.
   std::vector<const Hash::Item*> kept;
-  if (hash)
+  uint64_t next = 0;
+  if (hash && hash->size() > keyspace::scan_whole) {
+    // A large hash a page at a time (ruling 30), COUNT a hint as Valkey's is.
+    auto [items, after] = hash->page(cursor, static_cast<size_t>(count));
+    next = after;
+    for (auto it : items)
+      if (!pattern || keyspace::glob_match(*pattern, it->first)) kept.push_back(&*it);
+  } else if (hash) {
+    // The whole hash in one page, as Valkey answers for a small one.
     for (const auto& item : *hash)
       if (!pattern || keyspace::glob_match(*pattern, item.first)) kept.push_back(&item);
+  }
   call.reply.array(2);
-  call.reply.bulk("0");
+  call.reply.bulk(std::to_string(next));
   call.reply.array(novalues ? kept.size() : kept.size() * 2);
   for (const auto* item : kept) {
     call.reply.bulk(item->first);

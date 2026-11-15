@@ -2,6 +2,27 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: HSCAN, SSCAN and ZSCAN page large collections (ruling 30)
+
+- `mimir/keyspace/scan_order.h`: every hash field, set member and sorted-set
+  member is numbered as it is added; a cursor is the number to go on from, so
+  an element present for the whole scan is returned exactly once (Valkey
+  promises at least once). The number-to-element index is built the first
+  time a collection is paged and kept from then on.
+- One page, cursor 0, for what Valkey keeps compact (a hash or sorted set of
+  at most 128 entries, an intset or listpack set), so the differential's
+  replies are unchanged; larger ones a page at a time, COUNT (default 10) a
+  bound on each.
+- Gate on node-d: release 285 passed (8 new); differential 32 of 32.
+
+## 2026-11-15: README after Lir's; rulings 29 and 30; the remote public
+
+- README rewritten in Lir's shape (why Mimir exists, what it does, the stack,
+  how to use it, layout, status). The maintainer made the remote public.
+- Ruling 29: MSET and DEL over several slots commit through the atomic commit
+  across slots. Ruling 30: SCAN paging, above. The cross-slot proposal sent to
+  Dannan and Kvasir, Kvasir's review taken, noted in Dannan's plan (item 7).
+
 ## 2026-11-15: ACL and AUTH (rulings 12, 27, 28)
 
 - `mimir/command/acl`: Valkey's users, passwords as SHA-256 (Dannan's), the
