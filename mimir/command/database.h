@@ -79,6 +79,20 @@ class Database {
   // Commands parked now.
   size_t waiting();
 
+  // A connection has gone: its watches end. Thread-safe.
+  void forget(Session& session);
+
+  // For the transaction commands, which run under the database's lock: one
+  // queued command run whole, its reply appended to `reply` (a blocking one
+  // answers its timeout); WATCH, UNWATCH, and whether a watched key has
+  // changed since it was watched (written, or expired, or flushed).
+  void run_locked(Session& session, const std::vector<std::string>& args, resp::Reply& reply) DANNAN_REQUIRES(_mutex);
+  void watch_locked(Session& session, const std::string& key) DANNAN_REQUIRES(_mutex);
+  void unwatch_locked(Session& session) DANNAN_REQUIRES(_mutex);
+  bool watch_broken_locked(Session& session) DANNAN_REQUIRES(_mutex);
+  // The lock the transaction commands are called under, for their annotations.
+  dannan::contract::Mutex& lock_for_transactions() DANNAN_RETURN_CAPABILITY(_mutex) { return _mutex; }
+
   // Active expiry: at most `budget` keys with an expiry examined. Speculative
   // work; thread-safe.
   size_t expire_step(size_t budget);
@@ -106,6 +120,8 @@ class Database {
   // `woken`, to be called after the lock is let go.
   void serve_ready(Woken& woken) DANNAN_REQUIRES(_mutex);
   void forget_waiter(uint64_t id) DANNAN_REQUIRES(_mutex);
+  // Marks the watchers of the keys a write named; every watcher for a flush.
+  void touch(const Spec& spec, const std::vector<std::string>& args) DANNAN_REQUIRES(_mutex);
   static std::string timeout_reply(resp::Protocol protocol, bool null_bulk);
 
   const dannan::contract::WallClock& _wall;
@@ -119,6 +135,8 @@ class Database {
   // Per key, the waits parked on it in the order they parked.
   std::unordered_map<std::string, std::deque<uint64_t>> _waiting_on DANNAN_GUARDED_BY(_mutex);
   uint64_t _next_wait DANNAN_GUARDED_BY(_mutex) = 1;
+  // Per key, the sessions watching it.
+  std::unordered_map<std::string, std::vector<Session*>> _watchers DANNAN_GUARDED_BY(_mutex);
 };
 
 }  // namespace mimir::command

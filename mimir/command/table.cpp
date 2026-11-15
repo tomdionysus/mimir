@@ -25,6 +25,18 @@ Class classify_expire(const std::vector<std::string>& args) {
   return Class::merge;
 }
 
+// The keys that follow a numkeys argument at `at`.
+std::vector<std::string_view> numkeys_from(const std::vector<std::string>& args, size_t at) {
+  std::vector<std::string_view> keys;
+  if (at >= args.size()) return keys;
+  auto count = parse_integer(args[at]);
+  if (!count || *count <= 0) return keys;
+  for (size_t i = at + 1; i < args.size() && i <= at + static_cast<size_t>(*count); ++i) keys.push_back(args[i]);
+  return keys;
+}
+std::vector<std::string_view> numkeys_first(const std::vector<std::string>& args) { return numkeys_from(args, 1); }
+std::vector<std::string_view> numkeys_second(const std::vector<std::string>& args) { return numkeys_from(args, 2); }
+
 // Valkey's arity, flags and key positions for each; Mimir's class.
 const std::array specs{
     // Strings.
@@ -81,13 +93,13 @@ const std::array specs{
     Spec{"lmove", 5, "write denyoom", 1, 2, 1, Class::agreement, lists::lmove},
     Spec{"rpoplpush", 3, "write denyoom", 1, 2, 1, Class::agreement, lists::rpoplpush},
     // LMPOP's keys follow numkeys; the table's positions cannot say where they end.
-    Spec{"lmpop", -4, "write", 0, 0, 0, Class::agreement, lists::lmpop},
+    Spec{"lmpop", -4, "write", 0, 0, 0, Class::agreement, lists::lmpop, nullptr, numkeys_first},
     // The blocking pops: agreement, and a wait where nothing is there yet.
     Spec{"blpop", -3, "write blocking", 1, -2, 1, Class::agreement, lists::blpop},
     Spec{"brpop", -3, "write blocking", 1, -2, 1, Class::agreement, lists::brpop},
     Spec{"blmove", 6, "write denyoom blocking", 1, 2, 1, Class::agreement, lists::blmove},
     Spec{"brpoplpush", 4, "write denyoom blocking", 1, 2, 1, Class::agreement, lists::brpoplpush},
-    Spec{"blmpop", -5, "write blocking", 0, 0, 0, Class::agreement, lists::blmpop},
+    Spec{"blmpop", -5, "write blocking", 0, 0, 0, Class::agreement, lists::blmpop, nullptr, numkeys_second},
     // Hashes. Field writes merge; what depends on a field's value is configurable
     // or commits by agreement.
     Spec{"hset", -4, "write denyoom fast", 1, 1, 1, Class::merge, hashes::hset},
@@ -150,10 +162,10 @@ const std::array specs{
     Spec{"zremrangebylex", 4, "write", 1, 1, 1, Class::agreement, zsets::zremrangebylex},
     Spec{"zpopmin", -2, "write fast", 1, 1, 1, Class::agreement, zsets::zpopmin},
     Spec{"zpopmax", -2, "write fast", 1, 1, 1, Class::agreement, zsets::zpopmax},
-    Spec{"zmpop", -4, "write", 0, 0, 0, Class::agreement, zsets::zmpop},
+    Spec{"zmpop", -4, "write", 0, 0, 0, Class::agreement, zsets::zmpop, nullptr, numkeys_first},
     Spec{"bzpopmin", -3, "write fast blocking", 1, -2, 1, Class::agreement, zsets::bzpopmin},
     Spec{"bzpopmax", -3, "write fast blocking", 1, -2, 1, Class::agreement, zsets::bzpopmax},
-    Spec{"bzmpop", -5, "write blocking", 0, 0, 0, Class::agreement, zsets::bzmpop},
+    Spec{"bzmpop", -5, "write blocking", 0, 0, 0, Class::agreement, zsets::bzmpop, nullptr, numkeys_second},
     Spec{"zrandmember", -2, "readonly", 1, 1, 1, Class::read, zsets::zrandmember},
     Spec{"zscan", -3, "readonly", 1, 1, 1, Class::read, zsets::zscan},
     // The combining commands' keys follow numkeys.
@@ -188,6 +200,12 @@ const std::array specs{
     Spec{"touch", -2, "readonly fast", 1, -1, 1, Class::read, generic::touch},
     Spec{"flushall", -1, "write", 0, 0, 0, Class::admin, generic::flushall},
     Spec{"flushdb", -1, "write", 0, 0, 0, Class::admin, generic::flushall},
+    // Transactions: queued, then run whole under one hold of the lock.
+    Spec{"multi", 1, "noscript loading stale fast allow_busy", 0, 0, 0, Class::connection, transactions::multi},
+    Spec{"exec", 1, "noscript loading stale skip_slowlog", 0, 0, 0, Class::connection, transactions::exec},
+    Spec{"discard", 1, "noscript loading stale fast allow_busy", 0, 0, 0, Class::connection, transactions::discard},
+    Spec{"watch", -2, "noscript loading stale fast allow_busy", 1, -1, 1, Class::connection, transactions::watch},
+    Spec{"unwatch", 1, "noscript loading stale fast allow_busy", 0, 0, 0, Class::connection, transactions::unwatch},
     // Publish and subscribe: at most once, on this node and (in the cluster)
     // the nodes with announced interest.
     Spec{"subscribe", -2, "pubsub noscript loading stale", 0, 0, 0, Class::connection, pubsub::subscribe},
@@ -254,6 +272,7 @@ std::span<const Spec> all_specs() noexcept { return specs; }
 Class class_of(const Spec& spec, const std::vector<std::string>& args) { return spec.classify ? spec.classify(args) : spec.cls; }
 
 std::vector<std::string_view> keys_of(const Spec& spec, const std::vector<std::string>& args) {
+  if (spec.find_keys) return spec.find_keys(args);
   std::vector<std::string_view> keys;
   if (spec.first_key <= 0) return keys;
   const int count = static_cast<int>(args.size());

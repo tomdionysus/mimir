@@ -22,6 +22,7 @@ add_library(mimir SHARED
   command/sets.cpp
   command/strings.cpp
   command/table.cpp
+  command/transactions.cpp
   command/zsets.cpp
   keyspace/glob.cpp
   keyspace/hash.cpp

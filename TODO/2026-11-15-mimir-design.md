@@ -60,6 +60,11 @@ marked:
     principal exists, is enabled, and its version; Mimir holds that, not
     `lugh:directory.read`.
 
+19. **Anything that can use agreement waits for Dannan's agreement
+    primitive** (Tom to Dannan, relayed 2026-11-15: "consensus/agreement is a
+    huge part of higher order behaviour"). Mimir builds no consensus, no lease
+    standing in for it and no workaround meanwhile; stage 3 has no interim path.
+
 ## Waiting on Tom
 
 Nothing. Proposed and not yet put to him: the shard count is one value for the

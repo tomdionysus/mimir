@@ -670,6 +670,48 @@ TEST_F(Differential, HyperLogLog) {
   same({"GET", "big"});
 }
 
+TEST_F(Differential, Transactions) {
+  script({
+      {"EXEC"},
+      {"DISCARD"},
+      {"MULTI"},
+      {"MULTI"},
+      {"WATCH", "x"},
+      {"INCR", "foo"},
+      {"SET", "a", "abc"},
+      {"LPOP", "a"},
+      {"BLPOP", "empty", "0"},
+      {"EXEC"},
+      {"MULTI"},
+      {"SET", "a"},
+      {"SET", "b", "1"},
+      {"EXEC"},
+      {"EXISTS", "b"},
+      {"MULTI"},
+      {"NOSUCH"},
+      {"EXEC"},
+      {"MULTI"},
+      {"SET", "k", "v"},
+      {"DISCARD"},
+      {"EXISTS", "k"},
+      {"SET", "w", "1"},
+      {"WATCH", "w"},
+      {"UNWATCH"},
+      {"MULTI"},
+      {"GET", "w"},
+      {"EXEC"},
+  });
+  // A watch broken by another connection's write.
+  Client mimir_other(*port_from("MIMIR_DIFF_MIMIR_PORT"));
+  Client valkey_other(*port_from("MIMIR_DIFF_VALKEY_PORT"));
+  same({"WATCH", "w"});
+  EXPECT_EQ(mimir_other.call({"INCR", "w"}), valkey_other.call({"INCR", "w"}));
+  same({"MULTI"});
+  same({"SET", "w", "100"});
+  same({"EXEC"});
+  same({"GET", "w"});
+}
+
 TEST_F(Differential, PubSub) {
   // A second pair of connections subscribes on each server.
   Client mimir_sub(*port_from("MIMIR_DIFF_MIMIR_PORT"));

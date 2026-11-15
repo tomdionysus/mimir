@@ -63,6 +63,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
     --_server->_open;
     _closing = true;
     _server->_database.pubsub().drop(_session.id);
+    _server->_database.forget(_session);
     if (_wait) {
       _server->_database.cancel_wait(*_wait);
       _wait.reset();
