@@ -34,7 +34,9 @@ marked:
    Dannan**, for Mimir and for whoever else needs it.
 7. **Three durability levels, per command or per session:** 0, written to
    memory, acknowledged at once; 1, written to local disk, then acknowledged;
-   2, replicated, acknowledged once a majority of the key's replicas have it.
+   2, replicated, acknowledged once a majority of the key's replicas have it
+   on disk (Tom chose "Majority is enough", described as "acknowledged once a
+   majority have it on disk; the rest catch up behind").
 8. **The hybrid logical clock lives in Dannan, and Mimir waits for it**; Mimir
    writes no temporary copy.
 9. **Eviction works properly whichever node a client talks to.**

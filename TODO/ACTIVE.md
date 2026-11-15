@@ -6,12 +6,19 @@ classes of command, agreement in Dannan, durability, and the order.
 
 ## Resume here
 
-- Step 1 (the skeleton) and step 2a (RESP, the keyspace, strings, keys,
-  connection commands, `mimir-node`) are on `develop`. Gate: `tools/ci.sh
-  release` on corvus-uranus; the count is in `COMPLETED.md`.
-- Next: step 2b, the remaining types, in this order: lists, hashes, sets,
-  sorted sets, then bitmaps and HyperLogLog, streams, pub/sub, transactions
-  (`MULTI`/`EXEC`/`WATCH`), then scripting (needs Tom: Lua is a dependency).
+- Steps 1, 2a and 2b's first part are on `develop` and pushed: strings, keys,
+  connection commands, lists (not blocking), hashes, sets, sorted sets. Gates
+  on corvus-uranus; counts in `COMPLETED.md`.
+- Next, in order: blocking list and sorted-set pops (BLPOP, BRPOP, BLMOVE,
+  BRPOPLPUSH, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP: the server parks a connection
+  on keys with a deadline), bitmaps and HyperLogLog, streams, pub/sub,
+  transactions (`MULTI`/`EXEC`/`WATCH`), then scripting (needs Tom: Lua is a
+  dependency).
+- Known costs to revisit: HSCAN, SSCAN and ZSCAN answer the whole collection in
+  one page (Valkey does that for small ones only); a cursor over large ones is
+  owed, since a very large page holds the database lock (law 2).
+- Hosted CI failed on every job until `ae3c874` (the Dannan URL made a path);
+  check the runs from that commit on.
 - The differential gate (`Differential.*`, `mimir/test/differential_test.cpp`)
   grows with each type. Run by hand on corvus-uranus: `valkey-server --port 7379
   --bind 127.0.0.1 --save "" --appendonly no --daemonize yes`, `mimir-node
@@ -32,6 +39,15 @@ classes of command, agreement in Dannan, durability, and the order.
 ## Waiting on Tom
 
 Nothing blocks the single-node stage. Asked of him when it is reached:
+- The levels for agreement commands, and the switch's spelling. Tom ruled for
+  Kvasir (2026-11-15, Kvasir's design, "Acknowledgement levels"): level 1 is
+  local disk with the cluster's decision after, the default level is YAML with
+  no built-in value (a node without one refuses to start), and on a minority
+  side 0 and 1 are held and decided at heal while 2 is refused. Mimir's design
+  proposed that an agreement command treats 1 as 2; Kvasir's ruling went the
+  other way. Mimir asks Tom whether its levels follow Kvasir's rulings, and
+  for one spelling of the switch for both projects (Kvasir proposes a session
+  variable, a per-statement hint and a YAML key).
 - Scripting (`EVAL`, `FUNCTION`): Valkey's is Lua 5.1, which would be a
   dependency (Lua's own C sources, MIT). Recommendation to come with the step.
 - Databases: Mimir has one (SELECT 0 only; COPY ... DB n refused), as
