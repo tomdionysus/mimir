@@ -59,13 +59,14 @@ group standard relayed by Kvasir).
 Asked of him when it is reached:
 - `decided` for a merging write (the design's "Durability", Proposed): a
   majority holds it in memory before the answer.
-- The shard map under Dannan's reconfiguration: open. Dannan proposed an
-  agreed map on a root set; Mimir answered with one register per shard on a
-  founding set moved by transfer() afterwards. Tom, relayed by Kvasir
-  (2026-11-15), challenged the premise of any root: "Dannan, and its
-  predecessor code in Macha, were explicitly written to avoid this. What went
-  wrong?" Dannan and Kvasir are answering him; nothing of a root is settled,
-  and Mimir builds nothing on it.
+- The shard map: settled by Tom to Dannan (relayed 2026-11-15): "No root
+  except at genesis. A root may start with only one node." Names hash to
+  fixed slots (Mimir's shards); every slot is touched at founding on the
+  genesis set (one node may be all of it); afterwards each slot's set lives in
+  its own acceptors and moves only by transfer(), proposed by placement.
+  Nodes advertise the slots they serve as a bitmap, a hint; a refusal is the
+  authority. Mimir asked Dannan to size the bitmap by the configured shard
+  count (ruling 15), not a fixed 32 bytes.
 
 ## Proposed, not yet put to Tom
 
