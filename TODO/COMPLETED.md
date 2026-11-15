@@ -2,6 +2,16 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: session handoff
+
+- Landed this session (each entry below has its gate): scripting with
+  Valkey's libraries and sandbox, FUNCTION, keyspace notifications, DUMP and
+  RESTORE, a fuzz-found parser defect, hosted CI's leak and clang findings,
+  SORT, GEO, LCS. Rulings 24 to 28 recorded.
+- Final gate: release 257 passed; differential 31 of 31; hosted CI green on
+  all seven jobs at `d4f18e9`. `develop` at `d0766f5`, pushed.
+- Stopped before ACL; its preparation is in ACTIVE.md. No claims held.
+
 ## 2026-11-15: LCS
 
 - LCS with LEN, IDX, MINMATCHLEN and WITHMATCHLEN, the table walked back
