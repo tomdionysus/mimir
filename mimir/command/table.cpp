@@ -49,6 +49,16 @@ const std::array specs{
     Spec{"getrange", 4, "readonly", 1, 1, 1, Class::read, strings::getrange},
     Spec{"substr", 4, "readonly", 1, 1, 1, Class::read, strings::getrange},
     Spec{"setrange", 4, "write denyoom", 1, 1, 1, Class::configurable, strings::setrange},
+    // Bitmaps: strings read and written by bit. Setting bits merges (a bit is
+    // a register); BITOP's store and BITFIELD's increments depend on the value
+    // before them.
+    Spec{"setbit", 4, "write denyoom", 1, 1, 1, Class::merge, bitmaps::setbit},
+    Spec{"getbit", 3, "readonly fast", 1, 1, 1, Class::read, bitmaps::getbit},
+    Spec{"bitcount", -2, "readonly", 1, 1, 1, Class::read, bitmaps::bitcount},
+    Spec{"bitpos", -3, "readonly", 1, 1, 1, Class::read, bitmaps::bitpos},
+    Spec{"bitop", -4, "write denyoom", 2, -1, 1, Class::agreement, bitmaps::bitop},
+    Spec{"bitfield", -2, "write denyoom", 1, 1, 1, Class::configurable, bitmaps::bitfield},
+    Spec{"bitfield_ro", -2, "readonly fast", 1, 1, 1, Class::read, bitmaps::bitfield_ro},
     // Lists. Pushes merge; what depends on positions or pops commits by agreement.
     Spec{"lpush", -3, "write denyoom fast", 1, 1, 1, Class::merge, lists::lpush},
     Spec{"rpush", -3, "write denyoom fast", 1, 1, 1, Class::merge, lists::rpush},

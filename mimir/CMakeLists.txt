@@ -10,6 +10,7 @@
 # "mimir/<subsystem>/x.h".
 add_library(mimir SHARED
   command/args.cpp
+  command/bitmaps.cpp
   command/connection.cpp
   command/database.cpp
   command/generic.cpp
