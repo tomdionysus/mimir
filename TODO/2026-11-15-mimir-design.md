@@ -110,6 +110,15 @@ marked:
     exact): on a plaintext connection AUTH and HELLO's AUTH answer an error
     saying AUTH needs TLS, and the connection stays the `default` user with
     whatever it may do; the YAML setting `auth.plaintext: true` lifts it.
+29. **Multi-slot merge writes commit atomically by agreement** (2026-11-15):
+    MSET, DEL, UNLINK and their kin over several slots go through the atomic
+    commit across replica sets, as agreement writes, so ruling 22 holds as
+    written. A minority side refuses them; over one slot they stay merge
+    writes.
+30. **HSCAN, SSCAN and ZSCAN page a large collection** (2026-11-15): one page
+    for a collection Valkey keeps compact (at most 128 entries), as Valkey
+    answers; a larger one paged by COUNT through a per-element insertion
+    sequence, so an element present for the whole scan is returned.
 
 ## Waiting on Tom
 

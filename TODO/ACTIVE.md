@@ -2,7 +2,7 @@
 
 Last updated: 2026-11-15 (ACL landed). `COMPLETED.md` is the record, with
 gate counts. The design is `TODO/2026-11-15-mimir-design.md`: Tom's rulings
-("Ruled", 1 to 28), the two classes of command, agreement in Dannan,
+("Ruled", 1 to 30), the two classes of command, agreement in Dannan,
 durability, and the order.
 
 ## Resume here
@@ -33,11 +33,20 @@ durability, and the order.
 - Atomic commit across slots (Dannan 0.9 plan item 7), which ruling 22's
   cross-slot commands need: Mimir's proposal is
   `TODO/2026-11-15-cross-slot-commit-proposal.md` (a record register in one
-  slot, intents in the others, older wins), sent to Dannan and Kvasir for
-  review. Its merge-class question (MSET and DEL across slots) is Tom's.
+  slot, intents in the others), reviewed by Kvasir (intents at the hosted
+  system's granularity, its own conflict rule, an HLC commit stamp, known
+  writes) and noted in Dannan's plan under item 7, after the fast path, the
+  harness, the file-system interface and the hybrid clock. Ruling 29: MSET
+  and DEL over several slots commit through it.
+- Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
+  (`c524a28`, not merged): per-slot records, transfer(), settle, a
+  caller-named slot, a slot-table fingerprint per request, hint(space, slot).
+  The AcceptorStore interface changed (load(slot, names, every, done),
+  keep(slot, held, done), optional records()): read `agree/agreement.h` there
+  before building Mimir's store.
 - Pinned to Dannan 0.8.3. Dannan's 0.9 is on its develop.
-- Known costs to revisit: HSCAN, SSCAN and ZSCAN answer the whole collection
-  in one page; a cursor over large ones is owed (law 2).
+- In hand: ruling 30, HSCAN, SSCAN and ZSCAN paging a collection of more
+  than 128 entries through a per-element insertion sequence.
 
 ## The differential gate
 
