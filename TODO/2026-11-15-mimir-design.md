@@ -32,10 +32,10 @@ marked:
    a strict read**, which is confirmed with a majority and refused without one.
 6. **The agreement mechanism (leaderless consensus per key) is built in
    Dannan**, for Mimir and for whoever else needs it.
-7. **Three durability levels, per command or per session:** 0, written to
-   memory, acknowledged at once; 1, written to local disk, then acknowledged;
-   2, replicated, acknowledged once a majority of the key's replicas have it
-   on disk (the maintainer chose "Majority is enough", described as "acknowledged once a
+7. **Three durability levels, per command or per session** (named by ruling
+   24): `ephemeral`, written to memory, acknowledged at once; `persisted`,
+   written to local disk, then acknowledged; `replicated`, acknowledged once a
+   majority of the key's replicas have it on disk (the maintainer chose "Majority is enough", described as "acknowledged once a
    majority have it on disk; the rest catch up behind").
 8. **The hybrid logical clock lives in Dannan, and Mimir waits for it**; Mimir
    writes no temporary copy.
@@ -51,10 +51,11 @@ marked:
     Mimir does not poll.
 
 15. **The shard count is configurable, 256 by default.**
-16. **An agreement command observes every write acknowledged at level 2.** A
-    plain write at level 0 or 1 may be ordered before it and lose; a client
-    that needs them ordered uses level 2 for the plain writes.
-17. **Until Dagda's log exists, levels 1 and 2 are refused**, with an error
+16. **An agreement command observes every write acknowledged at
+    `replicated`.** A plain write at `ephemeral` or `persisted` may be ordered
+    before it and lose; a client that needs them ordered uses `replicated` for
+    the plain writes.
+17. **Until Dagda's log exists, `persisted` and `replicated` are refused**, with an error
     saying persistence is not available.
 18. **Lugh is asked for a narrow scope** answering only whether a named
     principal exists, is enabled, and its version; Mimir holds that, not
@@ -73,9 +74,19 @@ marked:
     slots** (MGET, MSET, DEL, the STOREs, MULTI/EXEC): in the cluster stage
     this needs a cross-shard commit on Dannan's agreement.
 23. **An agreement command decides, then answers, at every level**: the
-    level governs durability only (memory, local disk, majority on disk), so a
+    level governs durability only (memory, local disk, majority on disk), so
+    for an agreement command `ephemeral` gives what `decided` names, and a
     lock or a popped element is never handed out twice. (Kvasir's levels,
     ruled for SQL, differ.)
+24. **The acknowledgement levels are named, not numbered, one standard for the
+    group** (the maintainer to Kvasir, relayed 2026-11-15; the standard is
+    `../kvasir/TODO/2026-11-15-ack-levels-standard.md`): `ephemeral` (was 0,
+    answered at once), `persisted` (was 1, the node's own disk), `decided` (a
+    majority has agreed the write, in memory, disks after) and `replicated`
+    (was 2, a majority of the replicas on disk), ordered so. The setting is
+    `ack_level` everywhere: the YAML key, the session setting and the
+    per-command form; code, wire, Status, logs and documents use the names.
+    Rulings 7, 16, 17 and 23 are written in these names below.
 
 ## Waiting on the maintainer
 
@@ -153,11 +164,11 @@ pushes, `PFADD`, `SETBIT`.
   only when the shard's whole replica set on the roster holds the same maximum
   for it, a partitioned replica included, never on the reachable majority
   alone. A restarted node that recovers its previous incarnation's ops from
-  its level 1 log forwards them under their old dots first, and its higher
+  its `persisted` log forwards them under their old dots first, and its higher
   maximum holds the fold back until it has. Folded incarnations are kept as a
   small set, and an op from one that arrives later (from a node since removed
   from the roster) is dropped everywhere, deterministically, and counted. An
-  op at level 0 that died with its origin is lost, as level 0 says.
+  op at `ephemeral` that died with its origin is lost, as `ephemeral` says.
 - Ruling 3's commands run in this class where configured (per key pattern or
   per connection): counters sum, and two clients may be handed the same `INCR`
   result during a split.
@@ -170,8 +181,8 @@ pushes, `PFADD`, `SETBIT`.
   majority, to a key whose agreed version has since moved, is dropped and
   counted; the count is on Status.
 - **In ordinary running.** An agreement command reads the key at a majority. A
-  merging write acknowledged at level 2 is on a majority, so every later
-  agreement command sees it. One acknowledged at level 0 or 1 may still be on
+  merging write acknowledged at `replicated` is on a majority, so every later
+  agreement command sees it. One acknowledged at `ephemeral` or `persisted` may still be on
   one node only: an agreement command that commits before it arrives is ordered
   after it, and the write loses. That is the stated contract (ruling 16).
 
@@ -221,16 +232,31 @@ Dannan's design is `../dannan/TODO/2026-11-15-agreement-design.md` (CASPaxos,
   in the `Outcome`, since a change may run more than once across retries.
 - Catch-up after a restart owned by the store (a shard's state transferred
   whole), and names as bytes on the wire.
+
+Dannan's simulator found (2026-11-15) that a proposer whose commit's answers
+are lost retries and reads its own write. Every agreement command therefore
+tags its write with the command's id (node, connection, sequence), and a retry
+that finds its own tag answers from the effect already committed, not by
+running again: an LPOP retried must not pop twice, and a `SET NX` retried must
+answer OK, not nil. Dannan's harness (0.9.0) carries Mimir's reducer case as a
+named requirement: acceptors at one highest ballot holding different merged
+states, with a checker that refuses a reducer that moves the base back.
+
 Lugh's per-user lease for TOTP replay and Louhi's single active scheduler want
 the same guarantee and are the second and third consumers; Dagda's leases are
 not it (two holders are briefly possible, and fences carry the rest).
 
 ## Durability (ruling 7)
 
-- A session sets its level with a Mimir command; a command may carry one;
-  YAML sets the default. Valkey's `WAIT` and `WAITAOF` map onto levels 2 and 1
-  where their arguments allow (Proposed).
-- Level 1 and level 2 are Dagda's log: one op log per shard, group committed.
+- A session sets its `ack_level` with a Mimir command; a command may carry
+  one; the YAML key `ack_level` sets the default (ruling 24). Valkey's `WAIT`
+  and `WAITAOF` map onto `replicated` and `persisted` where their arguments
+  allow (Proposed).
+- `decided` for a merging write (Proposed): answered once a majority of the
+  key's replicas hold the write in memory, so ruling 16's guarantee holds for
+  it as for `replicated`, without waiting on disks. For an agreement command
+  it is what `ephemeral` already gives (ruling 23).
+- `persisted` and `replicated` are Dagda's log: one op log per shard, group committed.
   Only the node where an op originated appends it, since Dagda refuses an entry
   whose dot's origin is not the appender; one entry carries a tick's contiguous
   run of ops; the log refuses at its bound and never drops the oldest (Agreed,
@@ -242,12 +268,13 @@ not it (two holders are briefly possible, and fences carry the rest).
   agreed versions atomically with the state; a replica behind the log's
   truncation recovers by checkpoint transfer, never partial replay.
 - In Dagda's terms (Agreed, Dagda): each shard's op log is a replicas(3) log
-  opened with k = 2; level 2 is an append at replicated, level 1 an append at
-  persisted (the appender's own sync, which slice 4 must define for logs),
-  and level 0 never touches Dagda.
+  opened with k = 2; `replicated` is an append at Dagda's replicated,
+  `persisted` an append at Dagda's persisted (the appender's own sync, which
+  slice 4 must define for logs), and `ephemeral` and `decided` never touch
+  Dagda.
 - An agreement command always takes its majority round; the level says what
-  each acceptor does before it answers (memory, or its disk). At levels 1 and
-  2 an acceptor's promise and accepted value go to a node-local log on that
+  each acceptor does before it answers (memory, or its disk). At `persisted`
+  and `replicated` an acceptor's promise and accepted value go to a node-local log on that
   acceptor, appended under the acceptor's own dot with the proposer's op as
   bytes, never to the shard's replicated op log. A node-local log has no
   rollback, which an acceptor needs: a restored older segment must not make it
