@@ -2,6 +2,19 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: SORT and SORT_RO
+
+- Numbers or ALPHA, DESC, LIMIT, BY (a key's value or "->" a hash field; no
+  '*' sorts nothing), GET ("#" the element), STORE into a list with the
+  "sortstore" notification. A set left unsorted is sorted anyway into STORE
+  or in a script (Valkey's rule for determinism; scripts' sessions say so).
+  Ties broken as Valkey breaks them; a stable sort where Valkey's is not.
+- The differential gate's findings, matched: DESC reverses an unsorted list
+  whole. Found: Valkey's ALPHA collates by its environment's locale (a UTF-8
+  locale ignores '-'), so its order differs between deployments; Mimir's is
+  byte order, Valkey's under LC_ALL=C, which the gate now runs it under.
+- Gate on node-d: release 252 passed; differential 29 of 29.
+
 ## 2026-11-15: hosted CI's findings: a connection leak and a clang error
 
 - Hosted CI had failed its clang and asan jobs since the server commands step

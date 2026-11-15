@@ -18,7 +18,8 @@ classes of command, agreement in Dannan, durability, and the order.
 - FUNCTION and FCALL are in.
 - Keyspace notifications are in.
 - DUMP and RESTORE are in, FUNCTION DUMP and RESTORE with them.
-- Next, in order: SORT, the GEO commands, LCS; then
+- SORT and SORT_RO are in.
+- Next, in order: the GEO commands, LCS; then
   authentication with the built-in user list (ACL).
 - Pinned to Dannan 0.8.3. Dannan's 0.9 (agreement) is on its develop
   (`dc9ede1`); its simulation harness design
@@ -34,12 +35,14 @@ classes of command, agreement in Dannan, durability, and the order.
 - Hosted CI failed on every job until `ae3c874` (the Dannan URL made a path);
   check the runs from that commit on.
 - The differential gate (`Differential.*`, `mimir/test/differential_test.cpp`)
-  grows with each type. Run by hand on node-d: `valkey-server --port 7379
+  grows with each type. Run by hand on node-d: `LC_ALL=C valkey-server --port 7379
   --bind 127.0.0.1 --save "" --appendonly no --daemonize yes`, `mimir-node
   --listen 127.0.0.1 --port 7380 --databases 16 --seconds 60 &`, then `MIMIR_DIFF_MIMIR_PORT=7380
   MIMIR_DIFF_VALKEY_PORT=7379 ./mimir_tests --gtest_filter='Differential.*'`, and
   `valkey-cli -p 7379 shutdown nosave` after. (Valkey 8.1.1 is installed on
-  node-d and node-a with its service disabled; either serves.)
+  node-d and node-a with its service disabled; either serves.
+  `LC_ALL=C` because Valkey's SORT ALPHA collates by its environment's
+  locale; Mimir's is byte order, Valkey's under the C locale.)
 
 ## How work is done
 

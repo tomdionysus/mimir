@@ -95,6 +95,12 @@ void watch(Call&);
 void unwatch(Call&);
 }  // namespace transactions
 
+namespace sorting {
+void sort(Call&);
+void sort_ro(Call&);
+std::vector<std::string_view> sort_keys(const std::vector<std::string>&);
+}  // namespace sorting
+
 namespace scripts {
 void eval(Call&);
 void evalsha(Call&);

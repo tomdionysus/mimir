@@ -674,6 +674,7 @@ void run_script(Call& call, const std::string& sha, const std::string& body, siz
   Run run{&call, Session{}, read_only, sha, "user_script"};
   run.session.id = call.session.id;
   run.session.db = call.session.db;
+  run.session.scripted = true;
   lua_pushlightuserdata(L, &run);
   lua_setfield(L, LUA_REGISTRYINDEX, run_key);
   // The handler under the function on the stack.
@@ -998,6 +999,7 @@ void run_function(Call& call, bool read_only_command) DANNAN_NO_THREAD_SAFETY_AN
   Run run{&call, Session{}, no_writes, name, "user_function"};
   run.session.id = call.session.id;
   run.session.db = call.session.db;
+  run.session.scripted = true;
   lua_pushlightuserdata(L, &run);
   lua_setfield(L, LUA_REGISTRYINDEX, run_key);
   lua_getfield(L, LUA_REGISTRYINDEX, "mimir.on_error");
