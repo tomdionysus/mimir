@@ -69,6 +69,17 @@ void pfcount(Call&);
 void pfmerge(Call&);
 }  // namespace hyperloglog
 
+namespace streams {
+void xadd(Call&);
+void xlen(Call&);
+void xrange(Call&);
+void xrevrange(Call&);
+void xdel(Call&);
+void xtrim(Call&);
+void xsetid(Call&);
+void xread(Call&);
+}  // namespace streams
+
 namespace transactions {
 void multi(Call&);
 void exec(Call&);

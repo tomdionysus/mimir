@@ -37,6 +37,18 @@ std::vector<std::string_view> numkeys_from(const std::vector<std::string>& args,
 std::vector<std::string_view> numkeys_first(const std::vector<std::string>& args) { return numkeys_from(args, 1); }
 std::vector<std::string_view> numkeys_second(const std::vector<std::string>& args) { return numkeys_from(args, 2); }
 
+// XREAD's and XREADGROUP's keys: the first half of what follows STREAMS.
+std::vector<std::string_view> after_streams(const std::vector<std::string>& args) {
+  std::vector<std::string_view> keys;
+  for (size_t i = 1; i < args.size(); ++i) {
+    if (!iequals(args[i], "STREAMS")) continue;
+    const size_t rest = args.size() - i - 1;
+    for (size_t k = i + 1; k < i + 1 + rest / 2; ++k) keys.push_back(args[k]);
+    break;
+  }
+  return keys;
+}
+
 // Valkey's arity, flags and key positions for each; Mimir's class.
 const std::array specs{
     // Strings.
@@ -200,6 +212,16 @@ const std::array specs{
     Spec{"touch", -2, "readonly fast", 1, -1, 1, Class::read, generic::touch},
     Spec{"flushall", -1, "write", 0, 0, 0, Class::admin, generic::flushall},
     Spec{"flushdb", -1, "write", 0, 0, 0, Class::admin, generic::flushall},
+    // Streams: an append-only log. Appends are a sequence, so they commit by
+    // agreement; deleting an entry merges.
+    Spec{"xadd", -5, "write denyoom fast", 1, 1, 1, Class::agreement, streams::xadd},
+    Spec{"xlen", 2, "readonly fast", 1, 1, 1, Class::read, streams::xlen},
+    Spec{"xrange", -4, "readonly", 1, 1, 1, Class::read, streams::xrange},
+    Spec{"xrevrange", -4, "readonly", 1, 1, 1, Class::read, streams::xrevrange},
+    Spec{"xdel", -3, "write fast", 1, 1, 1, Class::merge, streams::xdel},
+    Spec{"xtrim", -4, "write", 1, 1, 1, Class::agreement, streams::xtrim},
+    Spec{"xsetid", -3, "write denyoom fast", 1, 1, 1, Class::agreement, streams::xsetid},
+    Spec{"xread", -4, "readonly blocking", 0, 0, 0, Class::read, streams::xread, nullptr, after_streams},
     // Transactions: queued, then run whole under one hold of the lock.
     Spec{"multi", 1, "noscript loading stale fast allow_busy", 0, 0, 0, Class::connection, transactions::multi},
     Spec{"exec", 1, "noscript loading stale skip_slowlog", 0, 0, 0, Class::connection, transactions::exec},

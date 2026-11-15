@@ -23,6 +23,8 @@ std::string_view type_name(Type type) noexcept {
       return "set";
     case Type::zset:
       return "zset";
+    case Type::stream:
+      return "stream";
   }
   return "none";
 }

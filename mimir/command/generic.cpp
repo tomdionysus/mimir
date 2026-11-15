@@ -83,7 +83,8 @@ void ttl_generic(Call& call, bool ms, bool absolute) {
 }
 
 std::optional<keyspace::Type> type_named(std::string_view name) {
-  for (keyspace::Type type : {keyspace::Type::string, keyspace::Type::list, keyspace::Type::hash, keyspace::Type::set, keyspace::Type::zset}) {
+  for (keyspace::Type type :
+       {keyspace::Type::string, keyspace::Type::list, keyspace::Type::hash, keyspace::Type::set, keyspace::Type::zset, keyspace::Type::stream}) {
     if (iequals(name, keyspace::type_name(type))) return type;
   }
   return std::nullopt;

@@ -100,6 +100,9 @@ struct Call {
   double block_seconds = 0;
   // Its timeout reply is a null bulk string (BLMOVE, BRPOPLPUSH), not a null array.
   bool block_null_bulk = false;
+  // The arguments the parked command is run with when woken, when they differ
+  // from those it came with (XREAD's "$" made the id it stood for).
+  std::optional<std::vector<std::string>> block_args;
 };
 
 using Handler = void (*)(Call&);
