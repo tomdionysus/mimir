@@ -87,16 +87,20 @@ marked:
     `ack_level` everywhere: the YAML key, the session setting and the
     per-command form; code, wire, Status, logs and documents use the names.
     Rulings 7, 16, 17 and 23 are written in these names below.
+25. **Scripting's bundled libraries as Valkey's** (2026-11-15): `cjson`,
+    `cmsgpack` and `bit` from Debian's packages (lua-cjson, lua-cmsgpack,
+    lua-bitop), linked as system packages as ruling 20's Lua is; `struct`,
+    which Debian does not package, written here.
 26. **No root except at genesis** (the maintainer to Dannan, relayed 2026-11-15: "No
     root except at genesis. A root may start with only one node."). Mimir's
     shards are Dannan's fixed slots: each is touched at founding on the
     genesis set (possibly one node), its replica set then lives in its own
     acceptors and moves only by Dannan's transfer(), proposed by placement as
-    nodes join. There is no shard-map register and no root role.
-25. **Scripting's bundled libraries as Valkey's** (2026-11-15): `cjson`,
-    `cmsgpack` and `bit` from Debian's packages (lua-cjson, lua-cmsgpack,
-    lua-bitop), linked as system packages as ruling 20's Lua is; `struct`,
-    which Debian does not package, written here.
+    nodes join. There is no shard-map register and no root role. The slot
+    count travels in the cluster's identity beside the genesis members; a
+    node configured with another is refused at join. Dannan's advert of the
+    slots a node serves is ceil(count / 8) bytes, at most 1 KiB, so the
+    shard count is capped at 8192 (ruling 15's default stays 256).
 
 ## Waiting on the maintainer
 
