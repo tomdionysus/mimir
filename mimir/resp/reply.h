@@ -57,6 +57,9 @@ class Reply {
   // RESP3 "=": `format` is three characters ("txt"). RESP2: a bulk string.
   void verbatim(std::string_view format, std::string_view text);
 
+  // Bytes already encoded as a reply (one queued command's, inside EXEC's).
+  void raw(std::string_view bytes) { _bytes.append(bytes); }
+
   const std::string& bytes() const noexcept { return _bytes; }
   std::string take() noexcept { return std::move(_bytes); }
   void clear() noexcept { _bytes.clear(); }

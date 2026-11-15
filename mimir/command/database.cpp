@@ -51,14 +51,33 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
   resp::Reply reply(session.protocol);
   if (args.empty()) return executed;
   const Spec* spec = find_spec(args[0]);
+  // A command refused before it runs fails a transaction being queued.
   if (!spec) {
+    session.multi_failed = session.multi_failed || session.in_multi;
     reply.error(unknown_command(args));
     out.append(reply.bytes());
     return executed;
   }
   const int count = static_cast<int>(args.size());
   if ((spec->arity > 0 && count != spec->arity) || (spec->arity < 0 && count < -spec->arity)) {
+    session.multi_failed = session.multi_failed || session.in_multi;
     reply.error("ERR wrong number of arguments for '" + std::string(spec->name) + "' command");
+    out.append(reply.bytes());
+    return executed;
+  }
+  // Inside a transaction MULTI and WATCH are refused, and the refusal aborts
+  // the EXEC, as Valkey 8 has it (the differential gate's finding).
+  if (session.in_multi && (spec->name == "multi" || spec->name == "watch")) {
+    session.multi_failed = true;
+    reply.error("ERR Command not allowed inside a transaction");
+    out.append(reply.bytes());
+    return executed;
+  }
+  // Between MULTI and EXEC a command is queued, but for those that steer the
+  // transaction itself.
+  if (session.in_multi && spec->name != "exec" && spec->name != "discard" && spec->name != "quit" && spec->name != "reset") {
+    session.queued.push_back(args);
+    reply.simple("QUEUED");
     out.append(reply.bytes());
     return executed;
   }
@@ -95,11 +114,81 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
       out.append(timeout_reply(session.protocol, call.block_null_bulk));
     } else {
       out.append(reply.bytes());
+      touch(*spec, args);
     }
     if (!_waiters.empty()) serve_ready(woken);
   }
   for (auto& [wake_one, bytes] : woken) wake_one(std::move(bytes));
   return executed;
+}
+
+void Database::run_locked(Session& session, const std::vector<std::string>& args, resp::Reply& out) {
+  // Queued commands were found and checked when queued.
+  const Spec* spec = find_spec(args[0]);
+  resp::Reply reply(session.protocol);
+  Call call{session, *this, _keys, reply, args};
+  try {
+    spec->handler(call);
+  } catch (const CommandError& e) {
+    call.blocked = false;
+    reply = resp::Reply(session.protocol);
+    reply.error(e.what());
+  }
+  // Inside a transaction a blocking command does not wait.
+  if (call.blocked) {
+    out.raw(timeout_reply(session.protocol, call.block_null_bulk));
+    return;
+  }
+  out.raw(reply.bytes());
+  touch(*spec, args);
+}
+
+void Database::touch(const Spec& spec, const std::vector<std::string>& args) {
+  if (_watchers.empty() || spec.flags.find("write") == std::string_view::npos) return;
+  if (spec.name == "flushall" || spec.name == "flushdb") {
+    for (auto& [key, sessions] : _watchers)
+      for (Session* s : sessions) s->watch_touched = true;
+    return;
+  }
+  for (auto key : keys_of(spec, args)) {
+    auto found = _watchers.find(std::string(key));
+    if (found == _watchers.end()) continue;
+    for (Session* s : found->second) s->watch_touched = true;
+  }
+}
+
+void Database::watch_locked(Session& session, const std::string& key) {
+  for (const auto& [watched, existed] : session.watched)
+    if (watched == key) return;
+  session.watched.emplace_back(key, _keys.contains(key));
+  _watchers[key].push_back(&session);
+}
+
+void Database::unwatch_locked(Session& session) {
+  for (const auto& [key, existed] : session.watched) {
+    auto found = _watchers.find(key);
+    if (found == _watchers.end()) continue;
+    auto& sessions = found->second;
+    sessions.erase(std::remove(sessions.begin(), sessions.end(), &session), sessions.end());
+    if (sessions.empty()) _watchers.erase(found);
+  }
+  session.watched.clear();
+  session.watch_touched = false;
+}
+
+bool Database::watch_broken_locked(Session& session) {
+  if (session.watch_touched) return true;
+  // A key that held a value when watched and is gone with no write naming it
+  // has expired meanwhile: that too breaks the watch, as Valkey has it since
+  // 6.0.9.
+  for (const auto& [key, existed] : session.watched)
+    if (existed && !_keys.contains(key)) return true;
+  return false;
+}
+
+void Database::forget(Session& session) {
+  dannan::contract::Lock lock(_mutex);
+  unwatch_locked(session);
 }
 
 void Database::forget_waiter(uint64_t id) {
@@ -146,6 +235,7 @@ void Database::serve_ready(Woken& woken) {
         // Not served from this key (another type now): the next key's turn.
         if (call.blocked) break;
         woken.emplace_back(std::move(waiter.wake), reply.take());
+        touch(*spec, waiter.args);
         forget_waiter(id);
         progress = true;
       }

@@ -69,6 +69,14 @@ void pfcount(Call&);
 void pfmerge(Call&);
 }  // namespace hyperloglog
 
+namespace transactions {
+void multi(Call&);
+void exec(Call&);
+void discard(Call&);
+void watch(Call&);
+void unwatch(Call&);
+}  // namespace transactions
+
 namespace pubsub {
 void subscribe(Call&);
 void psubscribe(Call&);

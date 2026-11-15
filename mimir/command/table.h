@@ -64,6 +64,16 @@ struct Session {
   // either is above zero a RESP2 connection is in subscribed mode.
   size_t subscriptions = 0;
   size_t shard_subscriptions = 0;
+
+  // A transaction: between MULTI and EXEC commands are queued; an error while
+  // queueing aborts the EXEC. The keys WATCHed, each with whether it held a
+  // value then; `watch_touched` is set, under the database's lock, by any
+  // write to one of them.
+  bool in_multi = false;
+  bool multi_failed = false;
+  std::vector<std::vector<std::string>> queued;
+  std::vector<std::pair<std::string, bool>> watched;
+  bool watch_touched = false;
 };
 
 // One command's call: its arguments (its name first), the connection's
@@ -95,6 +105,8 @@ struct Call {
 using Handler = void (*)(Call&);
 // The class of a command whose class depends on its arguments (SET NX).
 using Classifier = Class (*)(const std::vector<std::string>&);
+// The keys of a command whose keys the positions cannot give (numkeys).
+using KeyFinder = std::vector<std::string_view> (*)(const std::vector<std::string>&);
 
 struct Spec {
   // Lower case, as Valkey names it in errors and COMMAND.
@@ -111,6 +123,7 @@ struct Spec {
   Class cls;
   Handler handler;
   Classifier classify = nullptr;
+  KeyFinder find_keys = nullptr;
 };
 
 // The command named `name`, in any case, or null.

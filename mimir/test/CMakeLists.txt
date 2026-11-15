@@ -15,6 +15,7 @@ add_executable(mimir_tests
   command_pubsub_test.cpp
   command_sets_test.cpp
   command_strings_test.cpp
+  command_transactions_test.cpp
   command_zsets_test.cpp
   differential_test.cpp
   keyspace_keyspace_test.cpp
