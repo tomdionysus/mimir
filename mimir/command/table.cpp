@@ -68,6 +68,24 @@ const std::array specs{
     Spec{"rpoplpush", 3, "write denyoom", 1, 2, 1, Class::agreement, lists::rpoplpush},
     // LMPOP's keys follow numkeys; the table's positions cannot say where they end.
     Spec{"lmpop", -4, "write", 0, 0, 0, Class::agreement, lists::lmpop},
+    // Hashes. Field writes merge; what depends on a field's value is configurable
+    // or commits by agreement.
+    Spec{"hset", -4, "write denyoom fast", 1, 1, 1, Class::merge, hashes::hset},
+    Spec{"hmset", -4, "write denyoom fast", 1, 1, 1, Class::merge, hashes::hmset},
+    Spec{"hsetnx", 4, "write denyoom fast", 1, 1, 1, Class::agreement, hashes::hsetnx},
+    Spec{"hget", 3, "readonly fast", 1, 1, 1, Class::read, hashes::hget},
+    Spec{"hmget", -3, "readonly fast", 1, 1, 1, Class::read, hashes::hmget},
+    Spec{"hdel", -3, "write fast", 1, 1, 1, Class::merge, hashes::hdel},
+    Spec{"hlen", 2, "readonly fast", 1, 1, 1, Class::read, hashes::hlen},
+    Spec{"hstrlen", 3, "readonly fast", 1, 1, 1, Class::read, hashes::hstrlen},
+    Spec{"hexists", 3, "readonly fast", 1, 1, 1, Class::read, hashes::hexists},
+    Spec{"hkeys", 2, "readonly", 1, 1, 1, Class::read, hashes::hkeys},
+    Spec{"hvals", 2, "readonly", 1, 1, 1, Class::read, hashes::hvals},
+    Spec{"hgetall", 2, "readonly", 1, 1, 1, Class::read, hashes::hgetall},
+    Spec{"hincrby", 4, "write denyoom fast", 1, 1, 1, Class::configurable, hashes::hincrby},
+    Spec{"hincrbyfloat", 4, "write denyoom fast", 1, 1, 1, Class::configurable, hashes::hincrbyfloat},
+    Spec{"hrandfield", -2, "readonly", 1, 1, 1, Class::read, hashes::hrandfield},
+    Spec{"hscan", -3, "readonly", 1, 1, 1, Class::read, hashes::hscan},
     // Keys.
     Spec{"del", -2, "write", 1, -1, 1, Class::merge, generic::del},
     Spec{"unlink", -2, "write fast", 1, -1, 1, Class::merge, generic::del},
