@@ -18,6 +18,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch supersedes a run still going.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux:
     name: ${{ matrix.step }} (${{ matrix.arch }})
