@@ -108,6 +108,30 @@ class Connection : public std::enable_shared_from_this<Connection> {
     };
   }
 
+  // Runs one command, its reply appended to `out`; false when it parked or
+  // the connection is to close, so nothing after it may run yet.
+  bool run(std::vector<std::string> args, std::string& out) {
+    // A command that pushes (a subscription's confirmation, a message to this
+    // connection itself) goes after the replies before it, so those are sent
+    // first.
+    if (!out.empty() && pushes(args.front())) {
+      _stream->send(std::move(out));
+      out.clear();
+    }
+    auto executed = _server->_database.execute(_session, args, out, wake());
+    if (executed.wait) {
+      // A command CLIENT PAUSE holds is run again when its wait ends.
+      if (executed.postponed) _postponed = std::move(args);
+      park(*executed.wait, executed.wait_seconds);
+      return false;
+    }
+    if (_session.closing) {
+      _closing = true;
+      return false;
+    }
+    return true;
+  }
+
   // Runs every whole command buffered, in order, until one parks or the
   // connection is to close, and sends their replies together.
   void process() {
@@ -121,22 +145,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
         auto args = _parser.next();
         if (!args) break;
         ++_server->_commands;
-        // A command that pushes (a subscription's confirmation, a message to
-        // this connection itself) goes after the replies before it, so those
-        // are sent first.
-        if (!out.empty() && pushes(args->front())) {
-          _stream->send(std::move(out));
-          out.clear();
-        }
-        auto executed = _server->_database.execute(_session, *args, out, wake());
-        if (executed.wait) {
-          park(*executed.wait, executed.wait_seconds);
-          break;
-        }
-        if (_session.closing) {
-          _closing = true;
-          break;
-        }
+        if (!run(std::move(*args), out)) break;
       }
     } catch (const resp::ProtocolError& e) {
       ++_server->_protocol_errors;
@@ -171,7 +180,25 @@ class Connection : public std::enable_shared_from_this<Connection> {
 
   void resume(std::string reply) {
     _wait.reset();
-    _stream->send(std::move(reply));
+    if (_postponed) {
+      // The pause is over: the held command runs now (and may be held again,
+      // or park as a blocking command).
+      auto args = std::move(*_postponed);
+      _postponed.reset();
+      std::string out;
+      const bool more = run(std::move(args), out);
+      if (!out.empty()) _stream->send(std::move(out));
+      if (_closing) {
+        _stream->close();
+        return;
+      }
+      if (!more) {
+        read();
+        return;
+      }
+    } else {
+      _stream->send(std::move(reply));
+    }
     process();
     read();
   }
@@ -183,6 +210,8 @@ class Connection : public std::enable_shared_from_this<Connection> {
   std::vector<char> _buffer;
   boost::asio::steady_timer _timer;
   std::optional<uint64_t> _wait;
+  // The command CLIENT PAUSE holds, to run when its wait ends.
+  std::optional<std::vector<std::string>> _postponed;
   bool _reading = false;
   bool _closing = false;
 };

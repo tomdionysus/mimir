@@ -12,6 +12,8 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -169,6 +171,64 @@ TEST(CommandIntrospection, MonitorSeesEveryCommandButSecretsAndAdministration) {
   EXPECT_EQ(lines[0][0], '+');
   EXPECT_NE(lines[1].find("\"AUTH\" \"(redacted)\""), std::string::npos) << lines[1];
   EXPECT_NE(lines[2].find(" [0 lua] \"get\" \"k\""), std::string::npos) << lines[2];
+}
+
+// CLIENT PAUSE, as Valkey 8.1.1 behaves (probed by timing): WRITE holds what
+// writes or may replicate, ALL holds everything, CLIENT UNPAUSE included; a
+// later pause keeps the later end and the stricter mode.
+TEST(CommandIntrospection, ClientPauseHoldsCommandsUntilItEnds) {
+  Bed bed;
+  command::Session other = bed.make_session();
+  std::vector<std::string> woken;
+  const auto run = [&](Args args, std::string& out) {
+    return bed.database.execute(other, args, out, [&](std::string reply) { woken.push_back(std::move(reply)); });
+  };
+  EXPECT_EQ(bed.run({"CLIENT", "PAUSE", "1000", "WRITE"}), ok());
+  std::string out;
+  auto read = run({"GET", "k"}, out);
+  EXPECT_FALSE(read.wait.has_value());
+  EXPECT_EQ(out, nil());
+  out.clear();
+  auto write = run({"SET", "k", "v"}, out);
+  ASSERT_TRUE(write.wait.has_value());
+  EXPECT_TRUE(write.postponed);
+  EXPECT_EQ(out, "");
+  EXPECT_FALSE(run({"EVAL_RO", "return 1", "0"}, out).wait.has_value());
+  EXPECT_TRUE(run({"PUBLISH", "c", "m"}, out).postponed);
+  // A held command is not a blocked one.
+  EXPECT_EQ(bed.run({"CLIENT", "UNBLOCK", std::to_string(other.id)}), integer(0));
+  EXPECT_EQ(bed.run({"CLIENT", "UNPAUSE"}), ok());
+  EXPECT_EQ(woken, (std::vector<std::string>{"", ""}));
+  EXPECT_EQ(bed.database.waiting(), 0u);
+  // Run again, it runs.
+  out.clear();
+  EXPECT_FALSE(run({"SET", "k", "v"}, out).wait.has_value());
+  EXPECT_EQ(out, ok());
+
+  // ALL holds even PING, and a later shorter pause does not shorten it.
+  EXPECT_EQ(bed.run({"CLIENT", "PAUSE", "1000", "WRITE"}), ok());
+  EXPECT_EQ(bed.run({"CLIENT", "PAUSE", "10", "ALL"}), ok());
+  bed.wall.advance(std::chrono::milliseconds(500));
+  auto held = run({"PING"}, out);
+  ASSERT_TRUE(held.postponed);
+  EXPECT_NEAR(held.wait_seconds, 0.5, 0.01);
+  // Its time out, the held command's wait ends with nothing: run it again.
+  bed.wall.advance(std::chrono::milliseconds(600));
+  EXPECT_EQ(bed.database.cancel_wait(*held.wait), std::optional<std::string>(""));
+  out.clear();
+  EXPECT_FALSE(run({"PING"}, out).wait.has_value());
+  EXPECT_EQ(out, "+PONG\r\n");
+}
+
+TEST(CommandIntrospection, ClientPauseRefusesWhatValkeyRefuses) {
+  Bed bed;
+  EXPECT_EQ(bed.run({"CLIENT", "PAUSE", "x"}), error("ERR timeout is not an integer or out of range"));
+  EXPECT_EQ(bed.run({"CLIENT", "PAUSE", "-1"}), error("ERR timeout is negative"));
+  EXPECT_EQ(bed.run({"CLIENT", "PAUSE", "10", "BOGUS"}), error("ERR CLIENT PAUSE mode must be WRITE or ALL"));
+  // Without a way to wait (a script, a test), a held command runs at once.
+  EXPECT_EQ(bed.run({"CLIENT", "PAUSE", "1000"}), ok());
+  EXPECT_EQ(bed.run({"PING"}), "+PONG\r\n");
+  EXPECT_EQ(bed.run({"CLIENT", "UNPAUSE"}), ok());
 }
 
 TEST(CommandIntrospection, ScriptShowAndDebug) {

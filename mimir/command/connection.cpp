@@ -313,6 +313,24 @@ void client(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
         throw CommandError("ERR CLIENT UNBLOCK reason should be TIMEOUT or ERROR");
     }
     call.reply.integer(call.database.unblock_locked(id, error) ? 1 : 0);
+  } else if (sub == "pause") {
+    if (call.args.size() != 3 && call.args.size() != 4) wrong_arity("client|pause");
+    auto timeout = parse_integer(call.args[2]);
+    if (!timeout) throw CommandError("ERR timeout is not an integer or out of range");
+    if (*timeout < 0) throw CommandError("ERR timeout is negative");
+    bool all = true;
+    if (call.args.size() == 4) {
+      if (iequals(call.args[3], "WRITE"))
+        all = false;
+      else if (!iequals(call.args[3], "ALL"))
+        throw CommandError("ERR CLIENT PAUSE mode must be WRITE or ALL");
+    }
+    call.database.pause_locked(call.keys.now_ms() + static_cast<uint64_t>(*timeout), all);
+    call.reply.simple("OK");
+  } else if (sub == "unpause") {
+    if (call.args.size() != 2) wrong_arity("client|unpause");
+    call.database.unpause_locked();
+    call.reply.simple("OK");
   } else if (sub == "capa") {
     if (call.args.size() < 3) wrong_arity("client|capa");
     call.reply.simple("OK");
