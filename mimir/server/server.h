@@ -10,8 +10,10 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 
+#include "dannan/contract/thread_safety.h"
 #include "dannan/listen/stream.h"
 #include "dannan/status/log.h"
 #include "mimir/command/database.h"
@@ -49,12 +51,22 @@ class Server : public std::enable_shared_from_this<Server> {
 
   ServerCounters counters() const noexcept;
 
+  // Closes every open connection; each finishes on its own strand, so the
+  // executor must run on until counters().open is zero. For shutdown: a
+  // connection lives as long as its stream is unfinished, so one still open
+  // when the executor stops would never be freed. Thread-safe; waits on
+  // nothing.
+  void close_all();
+
  private:
   friend class Connection;
 
   command::Database& _database;
   dannan::status::ScopedLogger _logger;
   const ServerSettings _settings;
+  dannan::contract::Mutex _streams_mutex;
+  // The open connections' streams, by client id.
+  std::map<int64_t, std::weak_ptr<dannan::listen::Stream>> _streams DANNAN_GUARDED_BY(_streams_mutex);
   std::atomic<uint64_t> _accepted{0};
   std::atomic<uint64_t> _open{0};
   std::atomic<uint64_t> _commands{0};

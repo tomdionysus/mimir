@@ -2,6 +2,20 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: hosted CI's findings: a connection leak and a clang error
+
+- Hosted CI had failed its clang and asan jobs since the server commands step
+  (missed: superseded runs were cancelled and the completed ones not read).
+  clang: Database::random()'s thread-safety (fixed in 27669da). asan:
+  LeakSanitizer found that a connection and its stream hold each other until
+  the stream finishes, so one still open when the executor stops is never
+  freed. The server now tracks its open streams and `close_all()` closes them;
+  the test bed and mimir-node's shutdown close all and let them finish (two
+  seconds at most in the node) before stopping. A test holds that close_all
+  finishes every connection.
+- Gate on node-d: release 248 passed; differential 28 of 28. Hosted CI
+  to confirm the asan and clang jobs.
+
 ## 2026-11-15: a parser defect the fuzz target found; fuzzing on the build servers
 
 - The RESP request parser's fuzz target, run on node-a for the first
