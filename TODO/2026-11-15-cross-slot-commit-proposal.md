@@ -1,7 +1,28 @@
 # Atomic commit across slots: Mimir's proposal to Dannan (0.9 plan, item 7)
 
 Mimir, 2026-11-15. For Dannan to design in beside `transfer()`, and for Kvasir
-to review against its own needs. Status: Proposed. Not yet put to the maintainer.
+to review against its own needs. Status: Proposed; reviewed by Kvasir; noted
+in Dannan's plan under item 7, which Dannan takes after its fast path, the
+harness's next phase, the file-system interface and the hybrid clock (the maintainer's
+order). Ruling 29 (the maintainer) settled the merge-class question: (a).
+
+## Kvasir's review, taken (2026-11-15)
+
+1. **Intents at the hosted system's granularity.** A Kvasir range is one
+   register of many rows, so an intent on the whole register would serialise
+   every transaction on a range. Dannan owns the record, the decide and the
+   finishing; the hosted system lays, finds and resolves intents inside its own
+   value (rows for Kvasir, keys for Mimir, where a key is its own register).
+2. **The conflict rule is the hosted system's.** Older-wins is Mimir's.
+   Kvasir resolves waits earlier, in its lock table and deadlock detection,
+   and chooses at prepare which of two intents gives way.
+3. **The record carries a commit stamp** from the hybrid clock, chosen at
+   decide after every read it must follow, as Percolator's does. A reader
+   taking a pending transaction's kept value is then safe under snapshot reads
+   too.
+4. **Known writes.** A SQL transaction is interactive, and by COMMIT every
+   write is known. `transact()` takes either a function over the read values
+   (Mimir) or known values (Kvasir: a function that ignores its inputs).
 
 ## Why Mimir needs it
 
@@ -118,7 +139,7 @@ aborted one rolls back to the kept values.
 - The owner's reduction (the merge contract, ask B) sees resolved values only.
   An intent is resolved before reduction.
 
-## Merge-class writes (open, Mimir's to settle with the maintainer)
+## Merge-class writes (ruled: (a), ruling 29)
 
 MSET and DEL across slots are merge-class writes: any replica applies them
 without agreement. Ruling 22 asks for them to be atomic too. Two choices:
