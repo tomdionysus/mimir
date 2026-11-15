@@ -30,10 +30,11 @@ durability, and the order.
   names share one slot. Dannan's change(), read(), forget() and catch_up()
   take the slot from the caller: Mimir's is CRC16 of the hash tag or key
   mapped onto the shard count, so tagged keys share a shard.
-- Owed to Dannan: Mimir's proposal for atomic commit across replica sets
-  (Dannan 0.9 plan item 7, "Mimir and Kvasir will propose"), which ruling 22's
-  cross-slot MGET/MSET/DEL/STOREs/MULTI need. Dannan designs it beside
-  transfer(); write it with Kvasir's needs in view.
+- Atomic commit across slots (Dannan 0.9 plan item 7), which ruling 22's
+  cross-slot commands need: Mimir's proposal is
+  `TODO/2026-11-15-cross-slot-commit-proposal.md` (a record register in one
+  slot, intents in the others, older wins), sent to Dannan and Kvasir for
+  review. Its merge-class question (MSET and DEL across slots) is the maintainer's.
 - Pinned to Dannan 0.8.3. Dannan's 0.9 is on its develop.
 - Known costs to revisit: HSCAN, SSCAN and ZSCAN answer the whole collection
   in one page; a cursor over large ones is owed (law 2).
@@ -72,6 +73,11 @@ then the code.
   until a run completes when a fix awaits confirmation.
 
 ## Waiting on the maintainer
+
+- Hosted CI starts no job (since 2026-11-15 22:25Z): GitHub answers "recent
+  account payments have failed or your spending limit needs to be
+  increased". Every run since `d0766f5` is red for that alone; the build server gates
+  stand meanwhile. Read the first run after billing is fixed.
 
 - The shard count's cap of 8192 (Dannan's advert is at most 1 KiB):
   recommended to accept as the upper bound of "configurable" (ruling 15).
