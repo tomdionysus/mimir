@@ -2,6 +2,13 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: LCS
+
+- LCS with LEN, IDX, MINMATCHLEN and WITHMATCHLEN, the table walked back
+  from the end as Valkey walks it, so IDX's ranges and their order match;
+  the transient table bounded by proto-max-bulk-len as Valkey bounds it.
+- Gate on corvus-uranus: release 257 passed; differential 31 of 31.
+
 ## 2026-11-15: the GEO commands
 
 - GEOADD (ZADD over geohashes), GEODIST, GEOHASH, GEOPOS, GEORADIUS and

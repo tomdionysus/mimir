@@ -72,6 +72,7 @@ const std::array specs{
     Spec{"strlen", 2, "readonly fast", 1, 1, 1, Class::read, strings::strlen},
     Spec{"getrange", 4, "readonly", 1, 1, 1, Class::read, strings::getrange},
     Spec{"substr", 4, "readonly", 1, 1, 1, Class::read, strings::getrange},
+    Spec{"lcs", -3, "readonly", 1, 2, 1, Class::read, strings::lcs},
     Spec{"setrange", 4, "write denyoom", 1, 1, 1, Class::configurable, strings::setrange},
     // Bitmaps: strings read and written by bit. Setting bits merges (a bit is
     // a register); BITOP's store and BITFIELD's increments depend on the value

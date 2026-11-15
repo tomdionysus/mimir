@@ -1269,6 +1269,35 @@ std::string bulk_of(const std::string& reply) {
   return reply.substr(end + 2, n);
 }
 
+TEST_F(Differential, Lcs) {
+  script({
+      {"MSET", "key1", "ohmytext", "key2", "mynewtext"},
+      {"LCS", "key1", "key2"},
+      {"LCS", "key1", "key2", "LEN"},
+      {"LCS", "key1", "key2", "IDX"},
+      {"LCS", "key1", "key2", "IDX", "MINMATCHLEN", "4"},
+      {"LCS", "key1", "key2", "IDX", "MINMATCHLEN", "4", "WITHMATCHLEN"},
+      {"LCS", "key1", "key2", "IDX", "WITHMATCHLEN", "MINMATCHLEN", "-3"},
+      {"LCS", "key1", "key2", "IDX", "LEN"},
+      {"LCS", "key1", "key2", "WAT"},
+      {"LCS", "key1", "key2", "MINMATCHLEN"},
+      {"LCS", "key1", "key2", "MINMATCHLEN", "x"},
+      {"LCS", "key1", "nosuch"},
+      {"LCS", "nosuch", "nosuch", "IDX"},
+      {"MSET", "a", "ACCGGTCGAGTGCGCGGAAGCCGGCCGAA", "b", "GTCGTTCGGAATGCCGTTGCTCTGTAAA"},
+      {"LCS", "a", "b"},
+      {"LCS", "a", "b", "IDX", "WITHMATCHLEN"},
+      {"LCS", "b", "a", "IDX", "MINMATCHLEN", "2"},
+      {"MSET", "same", "abcabc", "same2", "abcabc"},
+      {"LCS", "same", "same2", "IDX", "WITHMATCHLEN"},
+      {"RPUSH", "list", "x"},
+      {"LCS", "key1", "list"},
+  });
+  both({"HELLO", "3"});
+  script({{"LCS", "key1", "key2", "IDX", "WITHMATCHLEN"}});
+  both({"HELLO", "2"});
+}
+
 TEST_F(Differential, Geo) {
   std::vector<std::string> cities{"GEOADD", "world"};
   // A spread of places, poles to date line, for the unsorted orders.

@@ -51,6 +51,7 @@ void append(Call&);
 void strlen(Call&);
 void getrange(Call&);
 void setrange(Call&);
+void lcs(Call&);
 }  // namespace strings
 
 namespace bitmaps {
