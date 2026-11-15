@@ -59,6 +59,15 @@ struct Session {
   uint64_t created_ms = 0;
   // Set by QUIT: the connection closes once this command's reply is sent.
   bool closing = false;
+  // Who it is (ACL): its user's name, and whether it has authenticated (or
+  // needed not: the default user had no password when it first spoke). Read
+  // and written under the database's lock; `welcomed` once they are set.
+  std::string user = "default";
+  bool authenticated = false;
+  bool welcomed = false;
+  // It came over TLS: AUTH on a plaintext connection is refused unless the
+  // settings allow it (ruling 28).
+  bool tls = false;
   // A script's or a function's own session: what it runs must be
   // deterministic (SORT orders a set it would otherwise leave unordered).
   bool scripted = false;

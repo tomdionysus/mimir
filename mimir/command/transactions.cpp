@@ -58,7 +58,21 @@ void exec(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
     return;
   }
   call.reply.array(queued.size());
-  for (const auto& args : queued) call.database.run_locked(call.session, args, call.reply);
+  for (const auto& args : queued) {
+    // Permissions are checked again as each runs: they may have changed since
+    // it was queued, as Valkey checks them, in Valkey's words.
+    Denial denial = Denial::none;
+    if (call.database.acl_refusal_locked(call.session, args, "multi", &denial)) {
+      const char* reason = denial == Denial::command ? "no permission to execute the command or subcommand"
+                           : denial == Denial::key   ? "no permission to touch the specified keys"
+                                                     : "no permission to access one of the channels used as arguments";
+      call.reply.error(std::string("NOPERM ACLs rules changed between the moment the transaction was accumulated and the EXEC call. This command is no longer "
+                                   "allowed for the following reason: ") +
+                       reason);
+      continue;
+    }
+    call.database.run_locked(call.session, args, call.reply);
+  }
 }
 
 void watch(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {

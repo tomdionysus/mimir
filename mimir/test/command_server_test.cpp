@@ -44,7 +44,9 @@ TEST(CommandServer, ClientListInfoAndKill) {
   const std::string info = bed.run({"CLIENT", "INFO"});
   EXPECT_NE(info.find("id=" + std::to_string(bed.session.id) + " "), std::string::npos) << info;
   EXPECT_NE(info.find(" name=me "), std::string::npos) << info;
-  EXPECT_NE(info.find(" cmd=client "), std::string::npos) << info;
+  // The command's full name, a container's subcommand with it, as Valkey 8.1.1
+  // shows it ("cmd=client|list" from CLIENT LIST, probed).
+  EXPECT_NE(info.find(" cmd=client|info "), std::string::npos) << info;
   command::Session other;
   other.id = bed.database.next_client_id();
   bool killed = false;

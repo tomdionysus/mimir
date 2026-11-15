@@ -1,51 +1,39 @@
 # Mimir - Active Work
 
-Last updated: 2026-11-15 (end of session). `COMPLETED.md` is the record, with
+Last updated: 2026-11-15 (ACL landed). `COMPLETED.md` is the record, with
 gate counts. The design is `TODO/2026-11-15-mimir-design.md`: Tom's rulings
 ("Ruled", 1 to 28), the two classes of command, agreement in Dannan,
 durability, and the order.
 
 ## Resume here
 
-- State: `develop` at `d0766f5`, pushed; hosted CI green on all seven jobs
-  (last checked at `d4f18e9`). Last gate: release 257 passed, differential 31
-  of 31.
-- The single-node stage is complete but for authentication: every Valkey
-  type and command family, RESP2 and RESP3, pub/sub, transactions, server
-  commands, configurable databases, scripting (EVAL, FUNCTION, Valkey's Lua
-  libraries and read-only sandbox), keyspace notifications, DUMP and RESTORE,
-  SORT, GEO, LCS.
-- Next: authentication, Valkey's ACL, under rulings 12, 27 and 28. Nothing of
-  it is in code yet. Prepared:
-  - The command-to-category table, taken from Valkey 8.1.1's own `ACL CAT`
-    answers for Mimir's commands and ACL's subcommands (310 entries, Valkey's
-    category order): `build/acl-categories.inc` (scratch, not committed; the
-    source data and the generating script's inputs are on corvus-uranus in
-    `/root/mimir-work/acl/`: `cats.txt`, `members.txt`, `mimir.txt`). A new
-    command needs its categories added the same way.
-  - Valkey's client-visible ACL behaviour was probed (GETUSER, LIST, SETUSER
-    rule errors, DRYRUN, AUTH, NOPERM errors, LOG, CAT, GENPASS, SAVE/LOAD
-    refusal). Re-probe on uranus while writing; the differential is the gate.
-  - The shape agreed with the rulings: users in memory, seeded from YAML
-    (lines in ACL-file form) at start, SETUSER/DELUSER changes held by the
-    database (in the cluster, by agreement, ruling 27); passwords as SHA-256
-    hex; Session gains its user, whether it is authenticated, and whether it
-    is on TLS; `auth.plaintext` (default false) gates AUTH and HELLO AUTH on
-    plaintext connections (ruling 28; the differential runs mimir-node with
-    it on). ACL checks in Database::execute after arity, before queueing in
-    MULTI, and in a script's redis.call: command (by "cmd|sub" for
-    containers), then keys (R for readonly, W for write commands), then
-    channels. NOAUTH when the default user is off or has a password and the
-    session has not authenticated.
-  - Description strings follow Valkey: "+@all "/"-@all " then the kept rule
-    string, a later rule replacing an earlier one for the same command (and
-    its subcommands); keys "~p", "%R~p", "%W~p"; channels with
-    "resetchannels" in ACL LIST unless allchannels.
-- After authentication: stage 3 waits on Dannan 0.9.0 (agreement primitive,
-  simulation harness, hybrid clock). Its shape is settled: rulings 6, 8, 19,
-  22, 23, 26 (no root but at genesis; Mimir's shards are Dannan's fixed
-  slots, at most 8192) and 27; agreement commands tag their writes so a
-  retried commit answers as the first would.
+- State: `develop` at the ACL commit, pushed. Last gate: release 277 passed,
+  differential 32 of 32.
+- The single-node stage is complete: every Valkey type and command family,
+  RESP2 and RESP3, pub/sub, transactions, server commands, configurable
+  databases, scripting (EVAL, FUNCTION, Valkey's Lua libraries and read-only
+  sandbox), keyspace notifications, DUMP and RESTORE, SORT, GEO, LCS, and ACL
+  with AUTH (rulings 12, 27, 28).
+- ACL's table (`mimir/command/acl_table.inc`) is generated from Valkey
+  8.1.1's COMMAND INFO; the generator and its input are on corvus-uranus in
+  `/root/mimir-work/acl/` (`gen.py keyspecs.json`). A new command needs its
+  row added the same way. Small gaps owed: acllog-max-len is fixed at 128;
+  DRYRUN checks a subcommand against its container's arity.
+- Next: stage 3 waits on Dannan 0.9.0 (agreement primitive, simulation
+  harness, hybrid clock). Its shape is settled: rulings 6, 8, 19, 22, 23, 26
+  (no root but at genesis; Mimir's shards are Dannan's fixed slots, at most
+  8192) and 27; agreement commands tag their writes so a retried commit
+  answers as the first would.
+- Dannan's reconfiguration fix (2026-11-15, Tom approved; Dannan's
+  `TODO/2026-11-15-agreement-design.md`, "Reconfiguration: the gap found in
+  building it, and the fix"): agreement records are per slot, and a change's
+  names share one slot. Dannan's change(), read(), forget() and catch_up()
+  take the slot from the caller: Mimir's is CRC16 of the hash tag or key
+  mapped onto the shard count, so tagged keys share a shard.
+- Owed to Dannan: Mimir's proposal for atomic commit across replica sets
+  (Dannan 0.9 plan item 7, "Mimir and Kvasir will propose"), which ruling 22's
+  cross-slot MGET/MSET/DEL/STOREs/MULTI need. Dannan designs it beside
+  transfer(); write it with Kvasir's needs in view.
 - Pinned to Dannan 0.8.3. Dannan's 0.9 is on its develop.
 - Known costs to revisit: HSCAN, SSCAN and ZSCAN answer the whole collection
   in one page; a cursor over large ones is owed (law 2).
@@ -57,7 +45,7 @@ corvus-uranus or corvus-jupiter (Valkey 8.1.1 on both, service disabled):
 
 ```
 LC_ALL=C valkey-server --port 7379 --bind 127.0.0.1 --save "" --appendonly no --daemonize yes
-./mimir-node --listen 127.0.0.1 --port 7380 --databases 16 --seconds 200 &
+./mimir-node --listen 127.0.0.1 --port 7380 --databases 16 --auth-plaintext --seconds 200 &
 MIMIR_DIFF_MIMIR_PORT=7380 MIMIR_DIFF_VALKEY_PORT=7379 ./mimir_tests --gtest_filter='Differential.*'
 valkey-cli -p 7379 shutdown nosave; pkill mimir-node
 ```
@@ -103,7 +91,7 @@ then the code.
 
 1. The skeleton. Done.
 2. One node: every Valkey 8 command, RESP2 and RESP3, with the differential
-   gate. Done but for authentication (ACL), next.
+   gate. Done.
 3. The cluster by agreement only. Waits on Dannan 0.9.0.
 4. The merge class and the heal rule. Waits on Dannan 0.9.0's hybrid clock.
 5. Persistence, `persisted` and `replicated`, checkpoints. Waits on Dagda's

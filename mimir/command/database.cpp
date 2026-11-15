@@ -9,8 +9,10 @@
 
 #include <algorithm>
 #include <optional>
+#include <stdexcept>
 
 #include "mimir/command/args.h"
+#include "mimir/command/handlers.h"
 
 namespace mimir::command {
 
@@ -123,6 +125,36 @@ Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings set
              {"slowlog-max-len", "128"}};
   dannan::contract::Lock lock(_mutex);
   bind_listeners();
+  for (const std::string& line : _settings.users) {
+    if (auto error = _acl.load_line(line)) throw std::invalid_argument("users: " + *error);
+  }
+}
+
+void Database::welcome_locked(Session& session) {
+  session.welcomed = true;
+  session.user = "default";
+  const Acl::User* user = _acl.find("default");
+  session.authenticated = user && user->nopass && user->enabled;
+}
+
+std::optional<std::string> Database::acl_refusal_locked(Session& session, const std::vector<std::string>& args, std::string_view context, Denial* denial) {
+  const Acl::User* user = _acl.find(session.user);
+  // A user deleted under a connection: it is being closed, and may do nothing.
+  if (!user) {
+    if (denial) *denial = Denial::command;
+    return Acl::message(AclVerdict{Denial::command, 0}, session.user, args, false);
+  }
+  const AclVerdict verdict = Acl::check(*user, args);
+  if (verdict.denial == Denial::none) return std::nullopt;
+  if (denial) *denial = verdict.denial;
+  std::string reason = verdict.denial == Denial::command ? "command" : verdict.denial == Denial::key ? "key" : "channel";
+  std::string object = verdict.denial == Denial::command ? Acl::full_name(args) : args[verdict.position];
+  _acl.log(std::move(reason), std::string(context), std::move(object), session.user, connection::client_line(session, _wall.unix_ms()), _wall.unix_ms());
+  return Acl::message(verdict, session.user, args, false);
+}
+
+void Database::log_auth_failure_locked(Session& session, std::string_view username) {
+  _acl.log("auth", "toplevel", "AUTH", std::string(username), connection::client_line(session, _wall.unix_ms()), _wall.unix_ms());
 }
 
 void Call::notify(char cls, std::string_view event, std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS { database.notify_locked(db, cls, event, key); }
@@ -200,37 +232,53 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
     out.append(reply.bytes());
     return executed;
   }
-  // Inside a transaction MULTI and WATCH are refused, and the refusal aborts
-  // the EXEC, as Valkey 8 has it (the differential gate's finding).
-  if (session.in_multi && (spec->name == "multi" || spec->name == "watch")) {
-    session.multi_failed = true;
-    reply.error("ERR Command not allowed inside a transaction");
-    out.append(reply.bytes());
-    return executed;
-  }
-  // Between MULTI and EXEC a command is queued, but for those that steer the
-  // transaction itself.
-  if (session.in_multi && spec->name != "exec" && spec->name != "discard" && spec->name != "quit" && spec->name != "reset") {
-    session.queued.push_back(args);
-    reply.simple("QUEUED");
-    out.append(reply.bytes());
-    return executed;
-  }
-  // A RESP2 connection with subscriptions takes only the pub/sub commands,
-  // PING, QUIT and RESET, as Valkey's subscribed mode does; RESP3 takes all.
-  if (session.protocol == resp::Protocol::resp2 && (session.subscriptions > 0 || session.shard_subscriptions > 0) && !spec_allowed_subscribed(spec->name)) {
-    reply.error("ERR Can't execute '" + std::string(spec->name) +
-                "': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context");
-    out.append(reply.bytes());
-    return executed;
-  }
   Woken woken;
   {
     dannan::contract::Lock lock(_mutex);
-    _touched.clear();
+    if (!session.welcomed) welcome_locked(session);
     _sessions.emplace(session.id, &session);
     session.last_ms = _wall.unix_ms();
-    session.last_command = std::string(spec->name);
+    session.last_command = Acl::full_name(args);
+    // Valkey's order: authentication, then a transaction's own refusals, then
+    // ACL; each refusal before queueing fails the transaction.
+    const bool no_auth = spec->flags.find("no_auth") != std::string_view::npos;
+    if (!no_auth && !session.authenticated && _acl.auth_required()) {
+      session.multi_failed = session.multi_failed || session.in_multi;
+      reply.error("NOAUTH Authentication required.");
+      out.append(reply.bytes());
+      return executed;
+    }
+    // Inside a transaction MULTI and WATCH are refused, and the refusal aborts
+    // the EXEC, as Valkey 8 has it (the differential gate's finding).
+    if (session.in_multi && (spec->name == "multi" || spec->name == "watch")) {
+      session.multi_failed = true;
+      reply.error("ERR Command not allowed inside a transaction");
+      out.append(reply.bytes());
+      return executed;
+    }
+    if (auto refused = acl_refusal_locked(session, args, session.in_multi ? "multi" : "toplevel")) {
+      session.multi_failed = session.multi_failed || session.in_multi;
+      reply.error("NOPERM " + *refused);
+      out.append(reply.bytes());
+      return executed;
+    }
+    // Between MULTI and EXEC a command is queued, but for those that steer the
+    // transaction itself.
+    if (session.in_multi && spec->name != "exec" && spec->name != "discard" && spec->name != "quit" && spec->name != "reset") {
+      session.queued.push_back(args);
+      reply.simple("QUEUED");
+      out.append(reply.bytes());
+      return executed;
+    }
+    // A RESP2 connection with subscriptions takes only the pub/sub commands,
+    // PING, QUIT and RESET, as Valkey's subscribed mode does; RESP3 takes all.
+    if (session.protocol == resp::Protocol::resp2 && (session.subscriptions > 0 || session.shard_subscriptions > 0) && !spec_allowed_subscribed(spec->name)) {
+      reply.error("ERR Can't execute '" + std::string(spec->name) +
+                  "': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context");
+      out.append(reply.bytes());
+      return executed;
+    }
+    _touched.clear();
     ++session.commands;
     // The database the command ran in, before it may change it (SELECT).
     const size_t db = session.db;

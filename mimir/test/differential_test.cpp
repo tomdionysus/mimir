@@ -132,10 +132,29 @@ class Differential : public ::testing::Test {
     auto mimir_port = port_from("MIMIR_DIFF_MIMIR_PORT");
     auto valkey_port = port_from("MIMIR_DIFF_VALKEY_PORT");
     if (!mimir_port || !valkey_port) GTEST_SKIP() << "MIMIR_DIFF_MIMIR_PORT and MIMIR_DIFF_VALKEY_PORT are not set";
+    _mimir_port = *mimir_port;
+    _valkey_port = *valkey_port;
     _mimir.emplace(*mimir_port);
     _valkey.emplace(*valkey_port);
     same({"FLUSHALL"});
   }
+
+  // A second pair of connections, one to each, compared the same way.
+  struct Pair {
+    Client mimir;
+    Client valkey;
+    void same(const std::vector<std::string>& args) {
+      const std::string expected = valkey.call(args);
+      const std::string got = mimir.call(args);
+      std::string shown;
+      for (const auto& arg : args) shown += arg + " ";
+      EXPECT_EQ(got, expected) << shown;
+    }
+    void script(const std::vector<std::vector<std::string>>& commands) {
+      for (const auto& args : commands) same(args);
+    }
+  };
+  Pair pair() { return Pair{Client(_mimir_port), Client(_valkey_port)}; }
 
   // Sends `args` to both and expects the same reply.
   void same(const std::vector<std::string>& args) {
@@ -156,6 +175,8 @@ class Differential : public ::testing::Test {
 
   std::optional<Client> _mimir;
   std::optional<Client> _valkey;
+  uint16_t _mimir_port = 0;
+  uint16_t _valkey_port = 0;
 };
 
 TEST_F(Differential, Strings) {
@@ -956,6 +977,184 @@ TEST_F(Differential, Connection) {
   both({"HELLO", "3"});
   script({{"GET", "nosuch"}, {"MGET", "nosuch", "nosuch"}, {"SET", "k", "1"}, {"INCRBYFLOAT", "k", "0.5"}, {"SET", "k", "v", "XX", "GET"}});
   both({"HELLO", "2"});
+}
+
+// ACL and AUTH. mimir-node runs with --auth-plaintext for this gate (ruling
+// 28 refuses AUTH without TLS otherwise). Users outlive FLUSHALL, so the case
+// removes its own before and after, and gives the default user back its
+// nopass last.
+TEST_F(Differential, Acl) {
+  const std::vector<std::string> users{"ACL", "DELUSER", "u", "v", "w", "r", "wo", "p1", "p3", "p4", "p6", "p7", "p8", "p9", "s"};
+  both(users);
+  script({
+      {"ACL", "LIST"},
+      {"ACL", "WHOAMI"},
+      {"ACL", "SETUSER", "u"},
+      {"ACL", "LIST"},
+      {"ACL", "GETUSER", "u"},
+      {"ACL", "GETUSER", "nosuch"},
+      {"ACL",
+       "SETUSER",
+       "u",
+       "on",
+       ">p1",
+       ">p1",
+       "#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+       "~a*",
+       "%R~b",
+       "%W~c",
+       "%RW~d",
+       "~b",
+       "&ch*",
+       "+get",
+       "+@read",
+       "-@read",
+       "+client|list",
+       "+client",
+       "-client|kill",
+       "+select|0",
+       "+@all",
+       "-get",
+       "+get"},
+      {"ACL", "GETUSER", "u"},
+      {"ACL", "SETUSER", "v", "~*", "&*"},
+      {"ACL", "SETUSER", "v", "~x"},
+      {"ACL", "SETUSER", "v", "&x"},
+      {"ACL", "SETUSER", "v", "%~x"},
+      {"ACL", "SETUSER", "v", "%X~x"},
+      {"ACL", "SETUSER", "v", "+nosuch"},
+      {"ACL", "SETUSER", "v", "+client|nosuch"},
+      {"ACL", "SETUSER", "v", "-select|0"},
+      {"ACL", "SETUSER", "v", "+select|"},
+      {"ACL", "SETUSER", "v", "+client|list|x"},
+      {"ACL", "SETUSER", "v", "+@nosuch"},
+      {"ACL", "SETUSER", "v", "<nope"},
+      {"ACL", "SETUSER", "v", "!nope"},
+      {"ACL", "SETUSER", "v", "#abc"},
+      {"ACL", "SETUSER", "v", "bogus"},
+      {"ACL", "SETUSER", "a b"},
+      {"ACL", "SETUSER", "v", "(~x +get", "foo"},
+      {"ACL", "SETUSER", "v", "resetkeys", "resetchannels", "(~x", "+get)", "(&c", "-@all", "+set)", "+@read", "+@write", "-@write", "+GET", "allkeys",
+       "allchannels"},
+      {"ACL", "GETUSER", "v"},
+      {"ACL", "SETUSER", "p1", "%R"},
+      {"ACL", "SETUSER", "p3", "%R~k", "%W~k", "~j", "%R~j"},
+      {"ACL", "SETUSER", "p4", ">a", "nopass", ">b"},
+      {"ACL", "SETUSER", "p6", "+select|0", "+select|1", "-select", "+client|list", "-client"},
+      {"ACL", "SETUSER", "p7", "+@read", "+get", "-get", "-@read"},
+      {"ACL", "SETUSER", "p8", "on", "skip-sanitize-payload", "&a", "&a", "&b", "resetchannels", "&c"},
+      {"ACL", "SETUSER", "p9", "+client", "-client|kill", "+client|kill"},
+      {"ACL", "SETUSER", "s", "on", "nopass", "+select|0"},
+      {"ACL", "LIST"},
+      {"ACL", "SETUSER", "v", "clearselectors", "reset"},
+      {"ACL", "GETUSER", "v"},
+      {"ACL", "SETUSER", "w", "on", ">pw", "~k*", "&c1", "-@all", "+get", "+set", "+publish", "+subscribe", "+psubscribe", "+eval", "+multi", "+exec",
+       "+acl|whoami"},
+      {"ACL", "SETUSER", "r", "on", "nopass", "%R~*", "+@all"},
+      {"ACL", "SETUSER", "wo", "on", "nopass", "%W~*", "+@all"},
+      {"ACL", "DRYRUN", "w", "get", "k1"},
+      {"ACL", "DRYRUN", "w", "get", "x1"},
+      {"ACL", "DRYRUN", "w", "del", "k1"},
+      {"ACL", "DRYRUN", "w", "publish", "c2", "m"},
+      {"ACL", "DRYRUN", "w", "publish", "c1", "m"},
+      {"ACL", "DRYRUN", "w", "psubscribe", "c*"},
+      {"ACL", "DRYRUN", "nosuch", "get", "k"},
+      {"ACL", "DRYRUN", "w", "nosuch", "k"},
+      {"ACL", "DRYRUN", "w", "get"},
+      {"ACL", "DRYRUN", "w", "client", "nosuch"},
+      {"ACL", "DRYRUN", "w", "client", "list"},
+      {"ACL", "DRYRUN", "s", "select", "0"},
+      {"ACL", "DRYRUN", "s", "select", "1"},
+      {"ACL", "DRYRUN", "wo", "set", "k", "v"},
+      {"ACL", "DRYRUN", "wo", "set", "k", "v", "GET"},
+      {"ACL", "DRYRUN", "wo", "incr", "k"},
+      {"ACL", "DRYRUN", "wo", "lpush", "k", "v"},
+      {"ACL", "DRYRUN", "wo", "copy", "a", "b"},
+      {"ACL", "DRYRUN", "r", "copy", "a", "b"},
+      {"ACL", "DRYRUN", "wo", "del", "k"},
+      {"ACL", "DRYRUN", "r", "exists", "k"},
+      {"ACL", "DRYRUN", "wo", "exists", "k"},
+      {"ACL", "DRYRUN", "r", "sort", "k", "STORE", "d"},
+      {"ACL", "DRYRUN", "r", "bitfield", "k", "GET", "u8", "0"},
+      {"ACL", "DRYRUN", "r", "bitfield", "k", "SET", "u8", "0", "1"},
+      {"ACL", "DRYRUN", "r", "xread", "STREAMS", "a", "b", "0", "0"},
+      {"ACL", "DRYRUN", "wo", "xread", "STREAMS", "a", "b", "0", "0"},
+      {"ACL", "DRYRUN", "wo", "zunionstore", "d", "2", "a", "b"},
+      {"ACL", "DRYRUN", "r", "zunionstore", "d", "2", "a", "b"},
+      {"ACL", "DRYRUN", "r", "eval", "return 1", "1", "a"},
+      {"ACL", "DRYRUN", "wo", "georadius", "g", "0", "0", "1", "km", "STORE", "d"},
+      {"ACL", "DRYRUN", "r", "georadius", "g", "0", "0", "1", "km", "STORE", "d"},
+      {"ACL", "DRYRUN", "r", "object", "encoding", "k"},
+      {"ACL", "CAT"},
+      {"ACL", "CAT", "nosuch"},
+      {"ACL", "USERS"},
+      {"ACL", "DELUSER", "default"},
+      {"ACL", "GENPASS", "0"},
+      {"ACL", "GENPASS", "4097"},
+      {"ACL", "HELP"},
+      {"ACL", "nosuch"},
+      {"ACL", "LOG", "x"},
+      {"ACL", "LOAD"},
+      {"ACL", "SAVE"},
+      {"AUTH", "a", "b", "c"},
+      {"AUTH", "x"},
+      {"AUTH", "nosuch", "x"},
+      {"AUTH", "default", "x"},
+  });
+  {
+    Pair w = pair();
+    w.script({
+        {"AUTH", "w", "bad"},
+        {"AUTH", "w", "pw"},
+        {"ACL", "WHOAMI"},
+        {"GET", "x1"},
+        {"DEL", "k1"},
+        {"PUBLISH", "c2", "m"},
+        {"SUBSCRIBE", "c1", "c2"},
+        {"SET", "k1", "v"},
+        {"GET", "k1"},
+        {"MULTI"},
+        {"GET", "x1"},
+        {"GET", "k1"},
+        {"EXEC"},
+        {"EVAL", "return redis.call('get','x1')", "0"},
+        {"EVAL", "return redis.call('del','k1')", "0"},
+        {"EVAL", "return redis.pcall('del','k1')", "0"},
+        {"EVAL", "return 1", "1", "x1"},
+        {"EVAL", "return redis.call('get',KEYS[1])", "1", "k1"},
+        {"ACL", "SETUSER", "w", "-get"},
+    });
+    // Permissions checked again at EXEC: changed by another connection.
+    w.script({{"MULTI"}, {"SET", "k1", "w"}, {"GET", "k1"}});
+    same({"ACL", "SETUSER", "w", "-set"});
+    w.script({{"EXEC"}});
+    same({"ACL", "DELUSER", "w"});
+  }
+  // A password on the default user: a new connection must authenticate.
+  same({"ACL", "SETUSER", "default", ">dpw"});
+  {
+    Pair fresh = pair();
+    fresh.script({
+        {"ECHO"},
+        {"NOSUCH"},
+        {"GET", "x"},
+        {"PING"},
+        {"HELLO", "3"},
+        {"HELLO", "3", "SETNAME", "x"},
+        {"MULTI"},
+        {"AUTH", "x"},
+        {"AUTH", "dpw"},
+        {"EXEC"},
+        {"GET", "x"},
+        {"RESET"},
+        {"GET", "x"},
+        {"AUTH", "default", "dpw"},
+        {"ACL", "SETUSER", "default", "nopass"},
+    });
+  }
+  same({"ACL", "LIST"});
+  both(users);
+  same({"ACL", "LOG", "RESET"});
 }
 
 TEST_F(Differential, Scripting) {

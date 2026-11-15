@@ -13,11 +13,29 @@ on Dannan, the stack's network layer, and persists in Dagda, the stack's store.
 
 ## Status
 
-Version 0.1.0, in development. The single-node stage is under way: the RESP2
-and RESP3 protocol, the keyspace with expiry, and the string, key and
-connection commands, served by `mimir-node`. The other types, the cluster
-(agreement through Dannan, merging writes) and persistence in Dagda follow, in
-the order `TODO/ACTIVE.md` gives.
+Version 0.1.0, in development. The single-node stage is complete, served by
+`mimir-node`: RESP2 and RESP3, every Valkey type and command family,
+transactions, pub/sub, scripting and functions, keyspace notifications, and
+Valkey's ACL with AUTH. The cluster (agreement through Dannan, merging writes)
+and persistence in Dagda follow, in the order `TODO/ACTIVE.md` gives.
+
+## Users and AUTH
+
+Valkey's ACL: users, their passwords and their permissions over commands,
+keys and channels, changed with `ACL SETUSER`. The node starts with the users
+in its settings, each a line of a Valkey ACL file, best kept in `secrets.yaml`
+beside the configuration:
+
+```
+acl:
+  users:
+    - user default off
+    - user app on >secret ~app:* &app:* +@all -@dangerous
+```
+
+A password never crosses the network in clear: `AUTH` and `HELLO ... AUTH` are
+refused on a plaintext connection unless `auth: {plaintext: true}` (or
+`--auth-plaintext`) is set. Use the TLS port (`--tls-port`).
 
 Compatibility is Valkey 8's documented behaviour, tested, with a differential
 gate against a Valkey 8 server.

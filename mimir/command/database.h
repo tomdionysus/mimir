@@ -22,6 +22,7 @@
 
 #include "dannan/contract/thread_safety.h"
 #include "dannan/contract/time_source.h"
+#include "mimir/command/acl.h"
 #include "mimir/command/pubsub.h"
 #include "mimir/command/scripting.h"
 #include "mimir/command/table.h"
@@ -45,6 +46,13 @@ struct DatabaseSettings {
   // How many databases SELECT may choose among (ruling 21): one by default,
   // fixed for the cluster's life.
   size_t databases = 1;
+  // Whether AUTH and HELLO's AUTH are taken on a plaintext connection (ruling
+  // 28): off by default, so a password never crosses the network in clear.
+  bool auth_plaintext = false;
+  // The users the node starts with, as lines of a Valkey ACL file ("user
+  // alice on >secret ~app:* +@read"), applied over the default user (ruling
+  // 27). A line that does not parse refuses the construction.
+  std::vector<std::string> users;
 };
 
 // A parked command's wake: given its reply once a write has served it. Called
@@ -84,6 +92,14 @@ class Database {
   // Commands parked now.
   size_t waiting();
 
+  // A connection has come: it is the default user, authenticated when that
+  // user needs no password now (Valkey decides it at connection, not at the
+  // first command). Thread-safe.
+  void welcome(Session& session) {
+    dannan::contract::Lock lock(_mutex);
+    welcome_locked(session);
+  }
+
   // A connection has gone: its watches end. Thread-safe.
   void forget(Session& session);
 
@@ -110,6 +126,19 @@ class Database {
   dannan::contract::Mutex& lock_for_transactions() DANNAN_RETURN_CAPABILITY(_mutex) { return _mutex; }
   // The scripts' interpreter and cache, one for every database as Valkey's.
   Scripting& scripting_locked() DANNAN_REQUIRES(_mutex) { return _scripting; }
+  // The users, their permissions and the log of refusals.
+  Acl& acl_locked() DANNAN_REQUIRES(_mutex) { return _acl; }
+  // Whether `session` may run `args` under ACL, in `context` ("toplevel",
+  // "multi" or "lua"): none when it may; else the refusal's words (without a
+  // code), logged.
+  // `denial`, when given, is told why.
+  std::optional<std::string> acl_refusal_locked(Session& session, const std::vector<std::string>& args, std::string_view context, Denial* denial = nullptr)
+      DANNAN_REQUIRES(_mutex);
+  // A session as it is before AUTH: the default user, authenticated when that
+  // user needs no password.
+  void welcome_locked(Session& session) DANNAN_REQUIRES(_mutex);
+  // A refused AUTH, for ACL LOG.
+  void log_auth_failure_locked(Session& session, std::string_view username) DANNAN_REQUIRES(_mutex);
 
   // Keyspace notifications (Valkey's "Keyspace notifications"): an event of
   // class `cls` ('g', '$', 'l', 's', 'h', 'z', 'x', 'e', 't', 'd', 'n' or
@@ -194,6 +223,7 @@ class Database {
   // Per key, the sessions watching it.
   std::unordered_map<std::string, std::vector<Session*>> _watchers DANNAN_GUARDED_BY(_mutex);
   Scripting _scripting DANNAN_GUARDED_BY(_mutex);
+  Acl _acl DANNAN_GUARDED_BY(_mutex);
   // The classes notify-keyspace-events takes, as bits; the events waiting to
   // be published.
   uint32_t _notify_flags DANNAN_GUARDED_BY(_mutex) = 0;
