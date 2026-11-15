@@ -19,7 +19,8 @@
 # (MIMIR_CI_JOBS to set it: 2 on the shared Pis). Dannan is fetched at the
 # pinned tag from the sibling checkout when there is one, else from its
 # repository (MIMIR_DANNAN_REPOSITORY to name another). Needs g++ cmake
-# ninja-build libboost-dev libssl-dev libyaml-cpp-dev libgtest-dev, and for its
+# ninja-build pkg-config libboost-dev libssl-dev liblua5.1-0-dev libyaml-cpp-dev
+# libgtest-dev, and for its
 # step clang, clang-format or lcov.
 
 set -eu

@@ -2,6 +2,25 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: scripting (EVAL, EVALSHA, their read-only forms, SCRIPT)
+
+- Debian's Lua 5.1 by pkg-config (ruling 20), one interpreter for the node
+  under the database's lock: a script runs whole. `server.call` and
+  `redis.call` run through the transaction path (`run_locked`) with the
+  script's own session, so SELECT in a script is the script's; replies
+  convert by Valkey's table both ways; globals read-only; no files; errors
+  carry the script's sha and line in Valkey 8's words. No Lua error crosses a
+  live C++ object (errors are pushed, then raised after the scope closes).
+- Not yet: `cjson`, `cmsgpack`, `bit`, `struct` (asked of Tom);
+  `redis.setresp(3)` is accepted but replies stay RESP2; FUNCTION and FCALL
+  next.
+- The differential gate's finding, matched: "Wrong number of args calling
+  command from script".
+- Gate on corvus-uranus: release 213 passed; differential 16 of 16.
+- Recorded: ruling 24 (the levels' names, `ack_level`, the group standard
+  relayed by Kvasir), and Dannan's finding that a retried agreement command
+  must recognise its own write.
+
 ## 2026-11-15: step 2b, second part (blocking pops, bitmaps, HyperLogLog, pub/sub, transactions, the stream log)
 
 - Blocking pops (`e0ce2b1`): a command finding nothing is parked on its keys;

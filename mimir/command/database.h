@@ -23,6 +23,7 @@
 #include "dannan/contract/thread_safety.h"
 #include "dannan/contract/time_source.h"
 #include "mimir/command/pubsub.h"
+#include "mimir/command/scripting.h"
 #include "mimir/command/table.h"
 #include "mimir/keyspace/keyspace.h"
 #include "mimir/resp/reply.h"
@@ -107,6 +108,8 @@ class Database {
   void swap_locked(size_t a, size_t b) DANNAN_REQUIRES(_mutex);
   // The lock the transaction commands are called under, for their annotations.
   dannan::contract::Mutex& lock_for_transactions() DANNAN_RETURN_CAPABILITY(_mutex) { return _mutex; }
+  // The scripts' interpreter and cache, one for every database as Valkey's.
+  Scripting& scripting_locked() DANNAN_REQUIRES(_mutex) { return _scripting; }
 
   // Active expiry: at most `budget` keys with an expiry examined. Speculative
   // work; thread-safe.
@@ -165,6 +168,7 @@ class Database {
   std::map<std::string, std::string> _config DANNAN_GUARDED_BY(_mutex);
   // Per key, the sessions watching it.
   std::unordered_map<std::string, std::vector<Session*>> _watchers DANNAN_GUARDED_BY(_mutex);
+  Scripting _scripting DANNAN_GUARDED_BY(_mutex);
 };
 
 }  // namespace mimir::command

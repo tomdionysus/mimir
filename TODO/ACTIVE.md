@@ -11,13 +11,16 @@ classes of command, agreement in Dannan, durability, and the order.
   consumer groups), pub/sub, transactions, the server commands clients call,
   and configurable databases (ruling 21). Gates on corvus-uranus; counts in
   `COMPLETED.md`.
-- Next, in order: scripting on Debian's liblua5.1 (ruling 20; EVAL, EVALSHA,
-  SCRIPT, then FUNCTION and FCALL; `liblua5.1-0-dev` is installed on
-  corvus-uranus and goes into CI's package list); then keyspace
+- Scripting's EVAL, EVALSHA, their read-only forms and SCRIPT are in.
+- Next, in order: FUNCTION and FCALL; then keyspace
   notifications, DUMP and RESTORE, SORT, the GEO commands, LCS; then
   authentication with the built-in user list (ACL).
+- Dannan 0.8.3 is tagged (outbound StreamConnector, RS256): move the pin from
+  0.8.2 as its own commit.
 - Stage 3 waits on Dannan 0.9.0's agreement primitive and hybrid clock
-  (rulings 6, 8, 19); ruling 22's cross-slot atomic commit is one piece with
+  (rulings 6, 8, 19); every agreement command tags its write so a retry that
+  reads its own effect answers as the first try would (Dannan's simulator
+  finding, in the design); ruling 22's cross-slot atomic commit is one piece with
   Kvasir's transaction record, to be proposed jointly when one of us reaches it.
 - Known costs to revisit: HSCAN, SSCAN and ZSCAN answer the whole collection in
   one page (Valkey does that for small ones only); a cursor over large ones is
@@ -43,27 +46,16 @@ classes of command, agreement in Dannan, durability, and the order.
 
 ## Waiting on Tom
 
-Nothing blocks the single-node stage (rulings 20 to 23 on 2026-11-15 settled
-scripting, databases, cross-slot commands and the levels for agreement).
+Nothing blocks the single-node stage (rulings 20 to 24 on 2026-11-15 settled
+scripting, databases, cross-slot commands, the levels for agreement and their
+names: `ack_level` with `ephemeral`, `persisted`, `decided`, `replicated`, the
+group standard relayed by Kvasir).
 Asked of him when it is reached:
-- The switch's spelling, one for Mimir and Kvasir. Tom ruled for
-  Kvasir (2026-11-15, Kvasir's design, "Acknowledgement levels"): level 1 is
-  local disk with the cluster's decision after, the default level is YAML with
-  no built-in value (a node without one refuses to start), and on a minority
-  side 0 and 1 are held and decided at heal while 2 is refused. Mimir's design
-  proposed that an agreement command treats 1 as 2; Kvasir's ruling went the
-  other way. Mimir asks Tom whether its levels follow Kvasir's rulings, and
-  for one spelling of the switch for both projects (Kvasir proposes a session
-  variable, a per-statement hint and a YAML key).
-- Scripting (`EVAL`, `FUNCTION`): Valkey's is Lua 5.1, which would be a
-  dependency (Lua's own C sources, MIT). Recommendation to come with the step.
-- Databases: Mimir has one (SELECT 0 only; COPY ... DB n refused), as
-  Valkey's cluster mode; standalone Valkey has sixteen. Found by the
-  differential gate.
-- Cross-slot multi-key commands (`MGET`, `DEL` and `MSET` over keys in
-  different slots): Valkey's cluster mode refuses them (`CROSSSLOT`); its
-  standalone mode allows them. Mimir is one server to its clients, so the
-  question is whether to accept them, atomically or per key.
+- Whether Valkey's bundled Lua libraries (`cjson`, `cmsgpack`, `bit`,
+  `struct`) come into scripting, and from where (Debian packages or written
+  here). Asked when the scripting step's gate passes.
+- `decided` for a merging write (the design's "Durability", Proposed): a
+  majority holds it in memory before the answer.
 
 ## Proposed, not yet put to Tom
 

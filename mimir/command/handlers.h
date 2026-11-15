@@ -95,6 +95,14 @@ void watch(Call&);
 void unwatch(Call&);
 }  // namespace transactions
 
+namespace scripts {
+void eval(Call&);
+void evalsha(Call&);
+void eval_ro(Call&);
+void evalsha_ro(Call&);
+void script(Call&);
+}  // namespace scripts
+
 namespace pubsub {
 void subscribe(Call&);
 void psubscribe(Call&);
