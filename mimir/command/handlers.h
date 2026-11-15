@@ -232,6 +232,9 @@ void flushall(Call&);
 void randomkey(Call&);
 void touch(Call&);
 void copy(Call&);
+void move(Call&);
+void swapdb(Call&);
+void flushdb(Call&);
 }  // namespace generic
 
 namespace server {

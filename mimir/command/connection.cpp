@@ -39,7 +39,7 @@ std::string client_line(const Session& s, uint64_t now) {
   if (flags.empty()) flags = "N";
   std::ostringstream line;
   line << "id=" << s.id << " addr=" << s.address << " laddr= fd=-1 name=" << s.name << " age=" << (now - std::min(now, s.created_ms)) / 1000
-       << " idle=" << (now - std::min(now, s.last_ms)) / 1000 << " flags=" << flags << " capa= db=0 sub=" << s.subscriptions
+       << " idle=" << (now - std::min(now, s.last_ms)) / 1000 << " flags=" << flags << " capa= db=" << s.db << " sub=" << s.subscriptions
        << " psub=0 ssub=" << s.shard_subscriptions << " multi=" << (s.in_multi ? static_cast<int64_t>(s.queued.size()) : -1) << " watch=" << s.watched.size()
        << " qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0"
        << " rbs=0 rbp=0 obl=0 oll=0 omem=0 tot-mem=0 events=r cmd=" << s.last_command
@@ -99,7 +99,8 @@ void quit(Call& call) {
 
 void select(Call& call) {
   const int64_t index = integer_argument(call.args[1]);
-  if (index != 0) throw CommandError("ERR DB index is out of range");
+  if (index < 0 || static_cast<size_t>(index) >= call.database.databases()) throw CommandError("ERR DB index is out of range");
+  call.session.db = static_cast<size_t>(index);
   call.reply.simple("OK");
 }
 
@@ -350,7 +351,10 @@ void info(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   }
   if (wanted("keyspace")) {
     section("Keyspace");
-    if (call.keys.size() > 0) text << "db0:keys=" << call.keys.size() << ",expires=" << call.keys.expiring() << ",avg_ttl=0\r\n";
+    for (size_t i = 0; i < call.database.databases(); ++i) {
+      auto& keys = call.database.db_locked(i);
+      if (keys.size() > 0) text << "db" << i << ":keys=" << keys.size() << ",expires=" << keys.expiring() << ",avg_ttl=0\r\n";
+    }
   }
   call.reply.verbatim("txt", text.str());
 }
@@ -367,6 +371,7 @@ void reset(Call& call) {
   call.session.subscriptions = 0;
   call.session.shard_subscriptions = 0;
   call.session.protocol = resp::Protocol::resp2;
+  call.session.db = 0;
   call.session.name.clear();
   call.reply = resp::Reply(resp::Protocol::resp2);
   call.reply.simple("RESET");

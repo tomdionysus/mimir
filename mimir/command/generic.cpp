@@ -200,11 +200,11 @@ void scan(Call& call) {
 
 void dbsize(Call& call) { call.reply.integer(static_cast<int64_t>(call.keys.size())); }
 
-void flushall(Call& call) {
+void flushall(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   if (call.args.size() > 2 || (call.args.size() == 2 && !iequals(call.args[1], "ASYNC") && !iequals(call.args[1], "SYNC"))) {
     throw CommandError(syntax_error);
   }
-  call.keys.clear();
+  for (size_t i = 0; i < call.database.databases(); ++i) call.database.db_locked(i).clear();
   call.reply.simple("OK");
 }
 
@@ -218,28 +218,67 @@ void randomkey(Call& call) {
 
 void touch(Call& call) { exists(call); }
 
-void copy(Call& call) {
+void copy(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   const std::string& from = call.args[1];
   const std::string& to = call.args[2];
   bool replace = false;
+  size_t target = call.session.db;
   for (size_t i = 3; i < call.args.size(); ++i) {
     if (iequals(call.args[i], "REPLACE")) {
       replace = true;
     } else if (iequals(call.args[i], "DB") && i + 1 < call.args.size()) {
-      if (integer_argument(call.args[++i]) != 0) throw CommandError("ERR DB index is out of range");
+      const int64_t db = integer_argument(call.args[++i]);
+      if (db < 0 || static_cast<size_t>(db) >= call.database.databases()) throw CommandError("ERR DB index is out of range");
+      target = static_cast<size_t>(db);
     } else {
       throw CommandError(syntax_error);
     }
   }
-  if (from == to) throw CommandError("ERR source and destination objects are the same");
+  if (from == to && target == call.session.db) throw CommandError("ERR source and destination objects are the same");
+  keyspace::Keyspace& into = call.database.db_locked(target);
   keyspace::Entry* source = call.keys.find(from);
-  if (!source || (!replace && call.keys.find(to))) {
+  if (!source || (!replace && into.find(to))) {
     call.reply.integer(0);
     return;
   }
   keyspace::Entry copied = *source;
-  call.keys.put(to, std::move(copied));
+  into.put(to, std::move(copied));
   call.reply.integer(1);
+}
+
+void move(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+  const int64_t db = integer_argument(call.args[2]);
+  if (db < 0 || static_cast<size_t>(db) >= call.database.databases()) throw CommandError("ERR DB index is out of range");
+  if (static_cast<size_t>(db) == call.session.db) throw CommandError("ERR source and destination objects are the same");
+  keyspace::Keyspace& into = call.database.db_locked(static_cast<size_t>(db));
+  keyspace::Entry* source = call.keys.find(call.args[1]);
+  if (!source || into.find(call.args[1])) {
+    call.reply.integer(0);
+    return;
+  }
+  // The key keeps its value and its expiry.
+  into.put(call.args[1], std::move(*source));
+  call.keys.erase(call.args[1]);
+  call.reply.integer(1);
+}
+
+void swapdb(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+  auto a = parse_integer(call.args[1]);
+  if (!a) throw CommandError("ERR invalid first DB index");
+  auto b = parse_integer(call.args[2]);
+  if (!b) throw CommandError("ERR invalid second DB index");
+  const auto in_range = [&](int64_t i) { return i >= 0 && static_cast<size_t>(i) < call.database.databases(); };
+  if (!in_range(*a) || !in_range(*b)) throw CommandError("ERR DB index is out of range");
+  call.database.swap_locked(static_cast<size_t>(*a), static_cast<size_t>(*b));
+  call.reply.simple("OK");
+}
+
+void flushdb(Call& call) {
+  if (call.args.size() > 2 || (call.args.size() == 2 && !iequals(call.args[1], "ASYNC") && !iequals(call.args[1], "SYNC"))) {
+    throw CommandError(syntax_error);
+  }
+  call.keys.clear();
+  call.reply.simple("OK");
 }
 
 }  // namespace mimir::command::generic

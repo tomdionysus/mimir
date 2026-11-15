@@ -12,6 +12,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <random>
 #include <string>
@@ -40,6 +41,9 @@ struct DatabaseSettings {
   std::string compatible_version = "8.1.1";
   // INFO's redis_version: what Valkey 8 reports there for clients that read it.
   std::string redis_version = "7.2.4";
+  // How many databases SELECT may choose among (ruling 21): one by default,
+  // fixed for the cluster's life.
+  size_t databases = 1;
 };
 
 // A parked command's wake: given its reply once a write has served it. Called
@@ -95,6 +99,12 @@ class Database {
   std::map<int64_t, Session*>& sessions_locked() DANNAN_REQUIRES(_mutex) { return _sessions; }
   std::map<std::string, std::string>& config_locked() DANNAN_REQUIRES(_mutex) { return _config; }
   size_t waiting_locked() DANNAN_REQUIRES(_mutex) { return _waiters.size(); }
+  // The databases, for SELECT, MOVE, SWAPDB, COPY ... DB, FLUSHALL and INFO.
+  // Fixed at construction, so read without the lock.
+  size_t databases() const noexcept DANNAN_NO_THREAD_SAFETY_ANALYSIS { return _dbs.size(); }
+  keyspace::Keyspace& db_locked(size_t index) DANNAN_REQUIRES(_mutex) { return *_dbs.at(index); }
+  // SWAPDB: the two exchange their keys; watches on either break.
+  void swap_locked(size_t a, size_t b) DANNAN_REQUIRES(_mutex);
   // The lock the transaction commands are called under, for their annotations.
   dannan::contract::Mutex& lock_for_transactions() DANNAN_RETURN_CAPABILITY(_mutex) { return _mutex; }
 
@@ -128,7 +138,11 @@ class Database {
   void serve_ready(Woken& woken) DANNAN_REQUIRES(_mutex);
   void forget_waiter(uint64_t id) DANNAN_REQUIRES(_mutex);
   // Marks the watchers of the keys a write named; every watcher for a flush.
-  void touch(const Spec& spec, const std::vector<std::string>& args) DANNAN_REQUIRES(_mutex);
+  void touch(const Spec& spec, const std::vector<std::string>& args, size_t db) DANNAN_REQUIRES(_mutex);
+  // A key named within its database, for waits and watches: the database's
+  // number, a NUL, then the key.
+  static std::string scoped(size_t db, std::string_view key);
+  static std::pair<size_t, std::string_view> unscoped(std::string_view scoped_key);
   static std::string timeout_reply(resp::Protocol protocol, bool null_bulk);
 
   const dannan::contract::WallClock& _wall;
@@ -137,7 +151,7 @@ class Database {
   PubSub _pubsub;
   std::atomic<int64_t> _next_client{1};
   dannan::contract::Mutex _mutex;
-  keyspace::Keyspace _keys DANNAN_GUARDED_BY(_mutex);
+  std::vector<std::unique_ptr<keyspace::Keyspace>> _dbs DANNAN_GUARDED_BY(_mutex);
   std::mt19937_64 _random DANNAN_GUARDED_BY(_mutex);
   std::map<uint64_t, Waiter> _waiters DANNAN_GUARDED_BY(_mutex);
   // Per key, the waits parked on it in the order they parked.

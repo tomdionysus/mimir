@@ -19,7 +19,7 @@
 // it, or a MIMIR_* variable, the flags winning: `--port 6379` is
 // `listen: {port: 6379}` and MIMIR_PORT.
 //
-//   mimir-node [--listen ADDR] [--port N] [--tls-port N --tls-certificate PEM --tls-key PEM]
+//   mimir-node [--listen ADDR] [--port N] [--databases N] [--tls-port N --tls-certificate PEM --tls-key PEM]
 //              [--tls-client-ca PEM] [--seconds N] [--log-level LEVEL] [--log-format text|json]
 //   mimir-node --version
 
@@ -57,6 +57,7 @@ dannan::config::Reader reader() {
       Setting{"tls.certificate", Setting::Kind::value, "--tls-certificate", "MIMIR_TLS_CERTIFICATE", "a PEM chain's path"},
       Setting{"tls.key", Setting::Kind::value, "--tls-key", "MIMIR_TLS_KEY", "a PEM key's path"},
       Setting{"tls.client_ca", Setting::Kind::value, "--tls-client-ca", "MIMIR_TLS_CLIENT_CA", "a PEM bundle's path"},
+      Setting{"databases", Setting::Kind::value, "--databases", "MIMIR_DATABASES", "a count of databases, 1 to 1024"},
       Setting{"seconds", Setting::Kind::value, "--seconds", "", "seconds to run, 0 for ever"},
       Setting{"log.level", Setting::Kind::value, "--log-level", "MIMIR_LOG_LEVEL", "ALL, DEBUG, INFO, WARN or ERROR"},
       Setting{"log.format", Setting::Kind::value, "--log-format", "MIMIR_LOG_FORMAT", "text or json"},
@@ -88,7 +89,9 @@ int main(int argc, char** argv) {
     const auto seconds = settings.number("seconds", 0, 1u << 30).value_or(0);
 
     asio::io_context io;
-    mimir::command::Database database(dannan::contract::system_wall_clock());
+    mimir::command::DatabaseSettings database_settings;
+    database_settings.databases = static_cast<size_t>(settings.number("databases", 1, 1024).value_or(1));
+    mimir::command::Database database(dannan::contract::system_wall_clock(), database_settings);
     auto server = std::make_shared<mimir::server::Server>(database, logger.child("server"));
     const auto accepted = [server](std::shared_ptr<dannan::listen::Stream> stream) { server->serve(std::move(stream)); };
 
