@@ -222,6 +222,15 @@ const std::array specs{
     Spec{"xtrim", -4, "write", 1, 1, 1, Class::agreement, streams::xtrim},
     Spec{"xsetid", -3, "write denyoom fast", 1, 1, 1, Class::agreement, streams::xsetid},
     Spec{"xread", -4, "readonly blocking", 0, 0, 0, Class::read, streams::xread, nullptr, after_streams},
+    // Consumer groups: delivery and acknowledgement change shared state that
+    // depends on what came before, so they commit by agreement.
+    Spec{"xgroup", -2, "write", 2, 2, 1, Class::agreement, streams::xgroup},
+    Spec{"xreadgroup", -7, "write blocking", 0, 0, 0, Class::agreement, streams::xreadgroup, nullptr, after_streams},
+    Spec{"xack", -4, "write fast", 1, 1, 1, Class::agreement, streams::xack},
+    Spec{"xpending", -3, "readonly", 1, 1, 1, Class::read, streams::xpending},
+    Spec{"xclaim", -6, "write fast", 1, 1, 1, Class::agreement, streams::xclaim},
+    Spec{"xautoclaim", -6, "write fast", 1, 1, 1, Class::agreement, streams::xautoclaim},
+    Spec{"xinfo", -2, "readonly", 2, 2, 1, Class::read, streams::xinfo},
     // Transactions: queued, then run whole under one hold of the lock.
     Spec{"multi", 1, "noscript loading stale fast allow_busy", 0, 0, 0, Class::connection, transactions::multi},
     Spec{"exec", 1, "noscript loading stale skip_slowlog", 0, 0, 0, Class::connection, transactions::exec},

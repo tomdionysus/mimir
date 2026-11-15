@@ -14,6 +14,7 @@ add_executable(mimir_tests
   command_lists_test.cpp
   command_pubsub_test.cpp
   command_sets_test.cpp
+  command_stream_groups_test.cpp
   command_streams_test.cpp
   command_strings_test.cpp
   command_transactions_test.cpp
