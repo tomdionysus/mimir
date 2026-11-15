@@ -20,6 +20,7 @@ add_library(mimir SHARED
   command/pubsub.cpp
   command/pubsub_commands.cpp
   command/sets.cpp
+  command/streams.cpp
   command/strings.cpp
   command/table.cpp
   command/transactions.cpp
@@ -30,6 +31,7 @@ add_library(mimir SHARED
   keyspace/keyspace.cpp
   keyspace/set.cpp
   keyspace/slot.cpp
+  keyspace/stream.cpp
   keyspace/zset.cpp
   resp/parser.cpp
   resp/reply.cpp

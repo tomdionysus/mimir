@@ -670,6 +670,74 @@ TEST_F(Differential, HyperLogLog) {
   same({"GET", "big"});
 }
 
+TEST_F(Differential, Streams) {
+  script({
+      {"XADD", "s", "5-1", "a", "1"},
+      {"XADD", "s", "5-*", "a", "2"},
+      {"XADD", "s", "7-*", "a", "3"},
+      {"XADD", "s", "6-0", "a", "4"},
+      {"XADD", "t", "0-0", "a", "1"},
+      {"XADD", "t", "x-1", "a", "1"},
+      {"XADD", "t", "*", "a"},
+      {"XADD", "t", "NOMKSTREAM", "*", "a", "1"},
+      {"XADD", "u", "0-*", "a", "1"},
+      {"XADD", "s", "8", "b", "1"},
+      {"XLEN", "s"},
+      {"XRANGE", "s", "-", "+"},
+      {"XRANGE", "s", "5", "5"},
+      {"XRANGE", "s", "(5-1", "+", "COUNT", "2"},
+      {"XRANGE", "s", "-", "+", "COUNT", "0"},
+      {"XREVRANGE", "s", "+", "-", "COUNT", "2"},
+      {"XREVRANGE", "s", "(8-0", "(5-1"},
+      {"XRANGE", "s", "7", "5"},
+      {"XRANGE", "nosuch", "-", "+"},
+      {"XRANGE", "s", "(-", "+"},
+      {"XRANGE", "s", "-", "(+"},
+      {"XRANGE", "s", "x", "+"},
+      {"XRANGE", "s", "-", "+", "BOGUS", "1"},
+      {"XDEL", "s", "5-1", "99-0"},
+      {"XDEL", "s", "x"},
+      {"XLEN", "s"},
+      {"XTRIM", "s", "MAXLEN", "2"},
+      {"XRANGE", "s", "-", "+"},
+      {"XTRIM", "s", "MINID", "8"},
+      {"XTRIM", "s", "MAXLEN", "~", "0"},
+      {"XTRIM", "s", "MAXLEN", "=", "1", "LIMIT", "5"},
+      {"XTRIM", "s", "MAXLEN", "-1"},
+      {"XTRIM", "s", "BOGUS", "1"},
+      {"XADD", "s", "MAXLEN", "1", "20-0", "n", "20"},
+      {"XRANGE", "s", "-", "+"},
+      {"XADD", "r", "1-0", "x", "1"},
+      {"XADD", "r", "2-0", "x", "2"},
+      {"XADD", "q", "5-0", "y", "5"},
+      {"XREAD", "COUNT", "1", "STREAMS", "r", "q", "0", "0"},
+      {"XREAD", "STREAMS", "r", "2-0"},
+      {"XREAD", "STREAMS", "r", "$"},
+      {"XREAD", "STREAMS", "r", "q", "0"},
+      {"XREAD", "STREAMS", "r", ">"},
+      {"XREAD", "BLOCK", "-1", "STREAMS", "r", "0"},
+      {"XREAD", "BLOCK", "x", "STREAMS", "r", "0"},
+      {"XSETID", "r", "10-0"},
+      {"XADD", "r", "9-0", "a", "1"},
+      {"XSETID", "r", "1-0"},
+      {"XSETID", "nosuch", "1-0"},
+      {"SET", "str", "v"},
+      {"XADD", "str", "*", "a", "1"},
+      {"XRANGE", "str", "-", "+"},
+      {"XREAD", "STREAMS", "str", "0"},
+      {"TYPE", "r"},
+  });
+  both({"HELLO", "3"});
+  script({{"XREAD", "STREAMS", "r", "q", "0", "0"}, {"XREAD", "STREAMS", "r", "$"}});
+  both({"HELLO", "2"});
+  // Many entries, for approximate trimming's whole nodes.
+  for (int i = 1; i <= 250; ++i) same({"XADD", "big", std::to_string(i) + "-0", "n", "x"});
+  same({"XTRIM", "big", "MAXLEN", "~", "120"});
+  same({"XLEN", "big"});
+  same({"XTRIM", "big", "MINID", "~", "240"});
+  same({"XLEN", "big"});
+}
+
 TEST_F(Differential, Transactions) {
   script({
       {"EXEC"},

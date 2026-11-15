@@ -21,6 +21,7 @@
 #include "dannan/contract/time_source.h"
 #include "mimir/keyspace/hash.h"
 #include "mimir/keyspace/set.h"
+#include "mimir/keyspace/stream.h"
 #include "mimir/keyspace/zset.h"
 
 // One node's keys and their values: what a shard holds in memory. Keys are
@@ -36,16 +37,16 @@
 // serialises access.
 namespace mimir::keyspace {
 
-enum class Type : uint8_t { string, list, hash, set, zset };
+enum class Type : uint8_t { string, list, hash, set, zset, stream };
 
-// "string", "list", "hash", "set", "zset": TYPE's words.
+// "string", "list", "hash", "set", "zset", "stream": TYPE's words.
 std::string_view type_name(Type) noexcept;
 
 using List = std::deque<std::string>;
 
 struct Entry {
   // In Type's order: the variant's index is the type.
-  std::variant<std::string, List, Hash, Set, SortedSet> value;
+  std::variant<std::string, List, Hash, Set, SortedSet, Stream> value;
   // Unix milliseconds; none: the key never expires.
   std::optional<uint64_t> expires_at;
 

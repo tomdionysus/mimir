@@ -92,6 +92,7 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
   Woken woken;
   {
     dannan::contract::Lock lock(_mutex);
+    _touched.clear();
     Call call{session, *this, _keys, reply, args};
     try {
       spec->handler(call);
@@ -104,7 +105,7 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
     if (call.blocked) {
       if (wake) {
         const uint64_t id = _next_wait++;
-        _waiters.emplace(id, Waiter{&session, args, call.block_keys, call.block_null_bulk, std::move(wake)});
+        _waiters.emplace(id, Waiter{&session, call.block_args ? *call.block_args : args, call.block_keys, call.block_null_bulk, std::move(wake)});
         for (const auto& key : call.block_keys) _waiting_on[key].push_back(id);
         executed.wait = id;
         executed.wait_seconds = call.block_seconds;
@@ -144,13 +145,14 @@ void Database::run_locked(Session& session, const std::vector<std::string>& args
 }
 
 void Database::touch(const Spec& spec, const std::vector<std::string>& args) {
-  if (_watchers.empty() || spec.flags.find("write") == std::string_view::npos) return;
+  if (spec.flags.find("write") == std::string_view::npos) return;
   if (spec.name == "flushall" || spec.name == "flushdb") {
     for (auto& [key, sessions] : _watchers)
       for (Session* s : sessions) s->watch_touched = true;
     return;
   }
   for (auto key : keys_of(spec, args)) {
+    if (!_waiting_on.empty()) _touched.emplace_back(key);
     auto found = _watchers.find(std::string(key));
     if (found == _watchers.end()) continue;
     for (Session* s : found->second) s->watch_touched = true;
@@ -205,14 +207,15 @@ void Database::forget_waiter(uint64_t id) {
 }
 
 void Database::serve_ready(Woken& woken) {
-  // A pass may make other keys ready (BLMOVE's destination), so passes repeat
-  // until one serves nothing; each pass serves at least one wait or stops, so
-  // the passes are bounded by the waits parked.
-  for (bool progress = true; progress;) {
-    progress = false;
-    std::vector<std::string> ready;
-    for (const auto& [key, ids] : _waiting_on)
-      if (_keys.contains(key)) ready.push_back(key);
+  // Only the keys a write named can have become ready, as Valkey signals only
+  // those. Serving a wait may name more (BLMOVE's destination), so rounds
+  // repeat until one names nothing; each serves at least one wait to name
+  // anything, so the rounds are bounded by the waits parked.
+  while (!_touched.empty()) {
+    std::vector<std::string> ready = std::move(_touched);
+    _touched.clear();
+    std::sort(ready.begin(), ready.end());
+    ready.erase(std::unique(ready.begin(), ready.end()), ready.end());
     for (const std::string& key : ready) {
       for (;;) {
         auto queue = _waiting_on.find(key);
@@ -235,9 +238,9 @@ void Database::serve_ready(Woken& woken) {
         // Not served from this key (another type now): the next key's turn.
         if (call.blocked) break;
         woken.emplace_back(std::move(waiter.wake), reply.take());
-        touch(*spec, waiter.args);
+        const std::vector<std::string> served_args = waiter.args;
         forget_waiter(id);
-        progress = true;
+        touch(*spec, served_args);
       }
     }
   }

@@ -135,6 +135,8 @@ class Database {
   // Per key, the waits parked on it in the order they parked.
   std::unordered_map<std::string, std::deque<uint64_t>> _waiting_on DANNAN_GUARDED_BY(_mutex);
   uint64_t _next_wait DANNAN_GUARDED_BY(_mutex) = 1;
+  // The keys this command's writes named: what serve_ready looks at.
+  std::vector<std::string> _touched DANNAN_GUARDED_BY(_mutex);
   // Per key, the sessions watching it.
   std::unordered_map<std::string, std::vector<Session*>> _watchers DANNAN_GUARDED_BY(_mutex);
 };
