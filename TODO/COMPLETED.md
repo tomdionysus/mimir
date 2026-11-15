@@ -1,0 +1,41 @@
+# Mimir - Completed
+
+The record, newest first. Each entry says what landed, with its gate counts.
+
+## 2026-11-15: the skeleton and step 2a (one node: RESP, keyspace, strings, keys, connection)
+
+- The project, by the 2026 style document's checklist: rules (`CLAUDE.md`,
+  `CONTRIBUTING.md`), the design with Tom's rulings 1 to 18
+  (`TODO/2026-11-15-mimir-design.md`, reviewed by the Dannan, Dagda, Lir and
+  Lugh sessions), the plan, CMake on Dannan 0.8.2, `tools/ci.sh` and the hosted
+  CI set, the laws (`docs/principles-and-laws.md`, verbatim).
+- `resp`: the request parser (arrays of bulk strings and inline commands with
+  Valkey's quoting; every length bounded before anything is allocated;
+  Valkey's protocol errors word for word; the restricted limits for an
+  unauthenticated connection) with a fuzz target, and the reply writer in RESP2
+  and RESP3.
+- `keyspace`: hash slots (CRC16 XMODEM, hash tags), glob matching (linear per
+  star), keys ordered by slot then hash so a SCAN cursor is a position, expiry
+  as absolute Unix ms (lazy, and a bounded active step).
+- `command`: the table with each command's Valkey arity, flags and key
+  positions and its class under the rulings (agreement, merge, configurable);
+  strings (GET, SET with every option, SETNX, SETEX, PSETEX, GETSET, GETDEL,
+  GETEX, MGET, MSET, MSETNX, INCR family, INCRBYFLOAT, APPEND, STRLEN,
+  GETRANGE, SUBSTR, SETRANGE); keys (DEL, UNLINK, EXISTS, TYPE, the EXPIRE
+  family with NX/XX/GT/LT, TTL family, PERSIST, RENAME, RENAMENX, COPY, KEYS,
+  SCAN, DBSIZE, RANDOMKEY, TOUCH, FLUSHALL, FLUSHDB); connection (PING, ECHO,
+  QUIT, SELECT 0, HELLO 2/3, AUTH's refusal with no password set, CLIENT ID,
+  SETNAME, GETNAME, SETINFO, COMMAND, COUNT, INFO, LIST, INFO, TIME, RESET).
+- `server` and `mimir-node`: RESP over `dannan::listen` (plain and TLS),
+  pipelined replies in one write, a protocol error answered then closed, QUIT,
+  YAML settings through Dannan's reader, active expiry ten times a second.
+- The differential gate (`Differential.*`): the same commands to mimir-node and
+  a Valkey 8.1.1 server, replies compared byte for byte. Its first run found
+  two differences: COMMAND INFO's answer for an unknown name (a null bulk
+  string; fixed), and COPY ... DB 1 (Mimir has one database, as Valkey's
+  cluster mode does; standalone Valkey has sixteen; left out and put to Tom).
+
+Gates, corvus-uranus (Pi 5, Debian 13, GCC 14.2, Release, warnings as errors,
+`-j2`, `nice 19`): `tools/ci.sh release` **89 passed, 3 skipped** (the
+differential cases, skipped without their ports), 0 warnings; the differential
+gate against Valkey 8.1.1 on loopback **3 of 3 passed**.

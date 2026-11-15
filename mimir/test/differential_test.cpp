@@ -1,0 +1,301 @@
+//
+// Mimir - The Distributed Database
+//
+// Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+// Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+//
+
+// The differential gate: the same commands sent to a running mimir-node and to
+// a Valkey 8 server, and their replies compared byte for byte. "Compatible"
+// is Valkey 8's behaviour, and this is where the documentation's reading is
+// checked against the server itself. Run by hand on a build server, with both
+// listening on loopback:
+//
+//   MIMIR_DIFF_MIMIR_PORT=7380 MIMIR_DIFF_VALKEY_PORT=7379 ./mimir_tests --gtest_filter='Differential.*'
+//
+// Skipped when either port is not given. Only deterministic replies are
+// compared: no clocks, ids, random keys or orders the server chooses.
+
+#include <gtest/gtest.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/read.hpp>
+#include <boost/asio/write.hpp>
+#include <cstdlib>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace mimir {
+namespace {
+
+namespace asio = boost::asio;
+
+std::optional<uint16_t> port_from(const char* variable) {
+  const char* text = std::getenv(variable);
+  if (!text || !*text) return std::nullopt;
+  return static_cast<uint16_t>(std::stoi(text));
+}
+
+// A client that reads one whole reply at a time, whatever its shape.
+class Client {
+ public:
+  explicit Client(uint16_t port) {
+    _socket.connect(asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port));
+    timeval limit{5, 0};
+    setsockopt(_socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof(limit));
+  }
+
+  std::string call(const std::vector<std::string>& args) {
+    std::string request = "*" + std::to_string(args.size()) + "\r\n";
+    for (const auto& arg : args) request += "$" + std::to_string(arg.size()) + "\r\n" + arg + "\r\n";
+    asio::write(_socket, asio::buffer(request));
+    return read_reply();
+  }
+
+ private:
+  std::string line() {
+    for (;;) {
+      const size_t end = _buffer.find("\r\n");
+      if (end != std::string::npos) {
+        std::string out = _buffer.substr(0, end + 2);
+        _buffer.erase(0, end + 2);
+        return out;
+      }
+      fill();
+    }
+  }
+  std::string bytes(size_t count) {
+    while (_buffer.size() < count) fill();
+    std::string out = _buffer.substr(0, count);
+    _buffer.erase(0, count);
+    return out;
+  }
+  void fill() {
+    char chunk[4096];
+    boost::system::error_code error;
+    const size_t got = _socket.read_some(asio::buffer(chunk), error);
+    if (error) throw std::runtime_error("read: " + error.message());
+    _buffer.append(chunk, got);
+  }
+  std::string read_reply() {
+    std::string head = line();
+    const char type = head[0];
+    const auto count = [&] { return std::stoll(head.substr(1, head.size() - 3)); };
+    switch (type) {
+      case '$':
+      case '=':
+      case '!': {
+        const long long n = count();
+        if (n < 0) return head;
+        return head + bytes(static_cast<size_t>(n) + 2);
+      }
+      case '*':
+      case '~':
+      case '>': {
+        const long long n = count();
+        std::string out = head;
+        for (long long i = 0; i < n; ++i) out += read_reply();
+        return out;
+      }
+      case '%': {
+        const long long n = count();
+        std::string out = head;
+        for (long long i = 0; i < 2 * n; ++i) out += read_reply();
+        return out;
+      }
+      default:
+        return head;
+    }
+  }
+
+  asio::io_context _io;
+  asio::ip::tcp::socket _socket{_io};
+  std::string _buffer;
+};
+
+class Differential : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    auto mimir_port = port_from("MIMIR_DIFF_MIMIR_PORT");
+    auto valkey_port = port_from("MIMIR_DIFF_VALKEY_PORT");
+    if (!mimir_port || !valkey_port) GTEST_SKIP() << "MIMIR_DIFF_MIMIR_PORT and MIMIR_DIFF_VALKEY_PORT are not set";
+    _mimir.emplace(*mimir_port);
+    _valkey.emplace(*valkey_port);
+    same({"FLUSHALL"});
+  }
+
+  // Sends `args` to both and expects the same reply.
+  void same(const std::vector<std::string>& args) {
+    const std::string valkey = _valkey->call(args);
+    const std::string mimir = _mimir->call(args);
+    std::string shown;
+    for (const auto& arg : args) shown += arg + " ";
+    EXPECT_EQ(mimir, valkey) << shown;
+  }
+  // Sends `args` to both and compares nothing.
+  void both(const std::vector<std::string>& args) {
+    _valkey->call(args);
+    _mimir->call(args);
+  }
+  void script(const std::vector<std::vector<std::string>>& commands) {
+    for (const auto& args : commands) same(args);
+  }
+
+  std::optional<Client> _mimir;
+  std::optional<Client> _valkey;
+};
+
+TEST_F(Differential, Strings) {
+  script({
+      {"GET", "k"},
+      {"SET", "k", "v"},
+      {"GET", "k"},
+      {"SET", "k", "w", "NX"},
+      {"SET", "k", "w", "XX", "GET"},
+      {"SET", "k", "x", "NX", "GET"},
+      {"SET", "k", "v", "NX", "XX"},
+      {"SET", "k", "v", "EX", "0"},
+      {"SET", "k", "v", "EX", "ten"},
+      {"SET", "k", "v", "EX", "9223372036854775807"},
+      {"SET", "k", "v", "PXAT", "1"},
+      {"EXISTS", "k"},
+      {"SET", "k", "v", "KEEPTTL", "EX", "5"},
+      {"SET", "k", "v", "BOGUS"},
+      {"SETNX", "a", "1"},
+      {"SETNX", "a", "2"},
+      {"SETEX", "a", "0", "x"},
+      {"PSETEX", "a", "-1", "x"},
+      {"GETSET", "a", "3"},
+      {"GETDEL", "a"},
+      {"GETDEL", "a"},
+      {"MSET", "a", "1", "b", "2"},
+      {"MSET", "a", "1", "b"},
+      {"MGET", "a", "b", "c"},
+      {"MSETNX", "a", "1", "c", "2"},
+      {"MSETNX", "c", "1", "d", "2"},
+      {"INCR", "n"},
+      {"INCRBY", "n", "41"},
+      {"DECRBY", "n", "-9223372036854775808"},
+      {"INCRBY", "n", "1.5"},
+      {"SET", "big", "9223372036854775807"},
+      {"INCR", "big"},
+      {"SET", "s", "01"},
+      {"INCR", "s"},
+      {"SET", "f", "10.50"},
+      {"INCRBYFLOAT", "f", "0.1"},
+      {"INCRBYFLOAT", "f", "-5"},
+      {"SET", "f", "5.0e3"},
+      {"INCRBYFLOAT", "f", "2.0e2"},
+      {"INCRBYFLOAT", "f", "x"},
+      {"INCRBYFLOAT", "f", "inf"},
+      {"APPEND", "ap", "Hello"},
+      {"APPEND", "ap", " World"},
+      {"STRLEN", "ap"},
+      {"GETRANGE", "ap", "0", "3"},
+      {"GETRANGE", "ap", "-3", "-1"},
+      {"GETRANGE", "ap", "-1", "-5"},
+      {"GETRANGE", "ap", "5", "3"},
+      {"GETRANGE", "ap", "10", "100"},
+      {"SUBSTR", "ap", "0", "3"},
+      {"SETRANGE", "ap", "6", "Redis"},
+      {"SETRANGE", "sr", "3", "x"},
+      {"GET", "sr"},
+      {"SETRANGE", "empty", "0", ""},
+      {"SETRANGE", "ap", "-1", "x"},
+      {"SETRANGE", "ap", "536870912", "x"},
+      {"GETEX", "ap", "PERSIST", "EX", "1"},
+      {"GETEX", "ap", "EX", "0"},
+      {"GETEX", "nosuch", "EX", "10"},
+      {"GETEX", "ap", "EX", "100"},
+      {"TTL", "ap"},
+      {"GETEX", "ap", "PERSIST"},
+      {"TTL", "ap"},
+  });
+}
+
+TEST_F(Differential, Keys) {
+  script({
+      {"SET", "k", "v"},
+      {"EXISTS", "k", "k", "nosuch"},
+      {"TYPE", "k"},
+      {"TYPE", "nosuch"},
+      {"EXPIRE", "k", "100"},
+      {"TTL", "k"},
+      {"EXPIRE", "k", "100", "NX"},
+      {"EXPIRE", "k", "50", "GT"},
+      {"EXPIRE", "k", "200", "GT"},
+      {"EXPIRE", "k", "300", "LT"},
+      {"TTL", "k"},
+      {"EXPIRE", "k", "1", "NX", "XX"},
+      {"EXPIRE", "k", "1", "GT", "LT"},
+      {"EXPIRE", "k", "1", "FOO"},
+      {"EXPIRE", "k", "9223372036854775807"},
+      {"PERSIST", "k"},
+      {"PERSIST", "k"},
+      {"TTL", "k"},
+      {"TTL", "nosuch"},
+      {"EXPIRETIME", "k"},
+      {"EXPIRETIME", "nosuch"},
+      {"PEXPIREAT", "k", "0"},
+      {"EXISTS", "k"},
+      {"SET", "a", "1"},
+      {"RENAME", "a", "b"},
+      {"RENAME", "a", "b"},
+      {"RENAME", "b", "b"},
+      {"SET", "c", "3"},
+      {"RENAMENX", "b", "c"},
+      {"RENAMENX", "b", "d"},
+      {"COPY", "d", "e"},
+      {"COPY", "d", "e"},
+      {"COPY", "d", "e", "REPLACE"},
+      {"COPY", "d", "d"},
+      // Not compared: COPY ... DB 1. Mimir has one database, as Valkey's
+      // cluster mode does; standalone Valkey has sixteen (for Tom).
+      {"DEL", "c", "d", "e", "nosuch"},
+      {"DBSIZE"},
+      {"SCAN", "x"},
+      {"SCAN", "0", "COUNT", "0"},
+      {"SCAN", "0", "TYPE", "foo"},
+      {"SCAN", "0", "BOGUS"},
+      {"KEYS", "nomatch*"},
+      {"FLUSHDB", "BOGUS"},
+      {"FLUSHALL"},
+      {"RANDOMKEY"},
+  });
+}
+
+TEST_F(Differential, Connection) {
+  script({
+      {"PING"},
+      {"PING", "hello"},
+      {"PING", "a", "b"},
+      {"ECHO", "x"},
+      {"SELECT", "0"},
+      {"SELECT", "x"},
+      {"HELLO", "4"},
+      {"HELLO", "x"},
+      {"CLIENT", "GETNAME"},
+      {"CLIENT", "SETNAME", "has space"},
+      {"CLIENT", "SETNAME", "named"},
+      {"CLIENT", "GETNAME"},
+      {"CLIENT", "SETINFO", "LIB-NAME", "x"},
+      {"CLIENT", "SETINFO", "COLOUR", "x"},
+      {"CLIENT", "foo"},
+      {"foo", "a", "b"},
+      {"GET"},
+      {"COMMAND", "INFO", "nosuch"},
+  });
+  // HELLO's own reply names the server and the connection, so it is not
+  // compared; what follows it, in RESP3, is.
+  both({"HELLO", "3"});
+  script({{"GET", "nosuch"}, {"MGET", "nosuch", "nosuch"}, {"SET", "k", "1"}, {"INCRBYFLOAT", "k", "0.5"}, {"SET", "k", "v", "XX", "GET"}});
+  both({"HELLO", "2"});
+}
+
+}  // namespace
+}  // namespace mimir
