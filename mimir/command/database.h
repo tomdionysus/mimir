@@ -133,7 +133,8 @@ class Database {
   uint64_t started_ms() const noexcept { return _started_ms; }
   uint64_t now_ms() const noexcept { return _wall.unix_ms(); }
   // A random number for RANDOMKEY and SPOP's like. Called under the lock.
-  uint64_t random() { return _random(); }
+  // Handlers, which hold the lock without saying so, call it.
+  uint64_t random() DANNAN_NO_THREAD_SAFETY_ANALYSIS { return _random(); }
 
  private:
   struct Waiter {
