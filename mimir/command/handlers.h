@@ -53,6 +53,16 @@ void getrange(Call&);
 void setrange(Call&);
 }  // namespace strings
 
+namespace bitmaps {
+void setbit(Call&);
+void getbit(Call&);
+void bitcount(Call&);
+void bitpos(Call&);
+void bitop(Call&);
+void bitfield(Call&);
+void bitfield_ro(Call&);
+}  // namespace bitmaps
+
 namespace lists {
 void lpush(Call&);
 void rpush(Call&);
