@@ -101,6 +101,15 @@ marked:
     node configured with another is refused at join. Dannan's advert of the
     slots a node serves is ceil(count / 8) bytes, at most 1 KiB, so the
     shard count is capped at 8192 (ruling 15's default stays 256).
+27. **ACL users are cluster state, by agreement** (2026-11-15): the YAML user
+    list seeds them at genesis; ACL SETUSER and DELUSER then commit by
+    agreement like any agreement command, so every node answers alike.
+    Passwords are kept as SHA-256, as Valkey's ACL LIST shows them. On one
+    node, in memory, seeded from YAML.
+28. **Plaintext AUTH refused unless enabled** (2026-11-15, ruling 12 made
+    exact): on a plaintext connection AUTH and HELLO's AUTH answer an error
+    saying AUTH needs TLS, and the connection stays the `default` user with
+    whatever it may do; the YAML setting `auth.plaintext: true` lifts it.
 
 ## Waiting on the maintainer
 
