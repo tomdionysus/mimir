@@ -30,8 +30,6 @@ namespace {
 
 using keyspace::SortedSet;
 
-constexpr double infinity = std::numeric_limits<double>::infinity();
-
 SortedSet* zset_value(keyspace::Keyspace& keys, std::string_view key) {
   keyspace::Entry* entry = keys.find(key);
   if (!entry) return nullptr;

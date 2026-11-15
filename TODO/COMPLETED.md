@@ -2,6 +2,22 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: a parser defect the fuzz target found; fuzzing on the build servers
+
+- The RESP request parser's fuzz target, run on node-a for the first
+  time, found that an inline command was not held to `max_arguments` (a line
+  of control bytes split into more words than the limit), though arrays
+  were. Shown by a failing test first, then fixed: an inline command over the
+  count is refused with the array's words. Bounded in production by the
+  64 KB inline line, but a broken contract. The crash input passes now, and
+  12 million fresh inputs ran clean; the RDB reader's target ran 9 million.
+- AddressSanitizer cannot start on the build servers' 39-bit address space, so the fuzz
+  targets' sanitizers are a setting (`MIMIR_FUZZ_SANITIZERS`, default with
+  ASan; "fuzzer,undefined" on the build servers). clang and libFuzzer are installed on
+  node-a (note posted). Two clang-only warnings fixed: Database::
+  random()'s thread-safety and an unused constant.
+- Gate on node-a: release 247 passed; differential 28 of 28.
+
 ## 2026-11-15: DUMP and RESTORE (and FUNCTION DUMP and RESTORE)
 
 - `mimir/keyspace/rdb`: Valkey's RDB encoding of one value, version 11, with
