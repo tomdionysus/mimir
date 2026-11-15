@@ -14,6 +14,10 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "mimir/keyspace/scan_order.h"
 
 // A sorted set: members ordered by score, then by their bytes for equal
 // scores, as Valkey orders them. Each member's score is found in constant
@@ -57,7 +61,15 @@ class SortedSet {
   // How many items have a score below `score` (or at most, with `inclusive`).
   size_t count_below_score(double score, bool inclusive) const;
 
+  // ZSCAN's page of a large sorted set: up to `count` items (member and
+  // score) from `cursor`, and the cursor to go on from (ScanOrder).
+  std::pair<std::vector<Item>, uint64_t> page(uint64_t cursor, size_t count);
+
  private:
+  struct Entry {
+    double score;
+    uint64_t number;
+  };
   struct Node;
   static size_t size_of(const Node* node) noexcept;
   static void fix(Node* node) noexcept;
@@ -69,8 +81,10 @@ class SortedSet {
   void remove(double score, std::string_view member);
 
   std::unique_ptr<Node> _root;
-  std::unordered_map<std::string, double> _scores;
+  std::unordered_map<std::string, Entry> _scores;
   uint64_t _seed = 0x9e3779b97f4a7c15ull;
+  // Handles are the members, as `_scores` holds them: its nodes never move.
+  ScanOrder<const std::string*> _order;
 };
 
 }  // namespace mimir::keyspace

@@ -13,6 +13,9 @@
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <vector>
+
+#include "mimir/keyspace/scan_order.h"
 
 // A hash's fields and values, kept in the order the fields were first set: the
 // order HGETALL, HKEYS and HVALS return, as Valkey returns a small hash's. A
@@ -44,10 +47,19 @@ class Hash {
   const_iterator begin() const noexcept { return _items.begin(); }
   const_iterator end() const noexcept { return _items.end(); }
 
+  // HSCAN's page of a large hash: up to `count` items from `cursor`, and the
+  // cursor to go on from (ScanOrder).
+  std::pair<std::vector<const_iterator>, uint64_t> page(uint64_t cursor, size_t count);
+
  private:
+  struct Entry {
+    std::list<Item>::iterator item;
+    uint64_t number;
+  };
   std::list<Item> _items;
   // Keys view the field names held in `_items`, whose nodes never move.
-  std::unordered_map<std::string_view, std::list<Item>::iterator> _index;
+  std::unordered_map<std::string_view, Entry> _index;
+  ScanOrder<const_iterator> _order;
 };
 
 }  // namespace mimir::keyspace

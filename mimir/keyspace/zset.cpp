@@ -73,13 +73,14 @@ std::unique_ptr<SortedSet::Node> SortedSet::copy(const Node* node) {
   return made;
 }
 
-SortedSet::SortedSet(const SortedSet& other) : _root(copy(other._root.get())), _scores(other._scores), _seed(other._seed) {}
+SortedSet::SortedSet(const SortedSet& other) : _root(copy(other._root.get())), _scores(other._scores), _seed(other._seed), _order(other._order) {}
 
 SortedSet& SortedSet::operator=(const SortedSet& other) {
   if (this == &other) return *this;
   _root = copy(other._root.get());
   _scores = other._scores;
   _seed = other._seed;
+  _order = other._order;
   return *this;
 }
 
@@ -128,13 +129,15 @@ void SortedSet::remove(double score, std::string_view member) {
 bool SortedSet::set(std::string_view member, double score) {
   auto found = _scores.find(std::string(member));
   if (found != _scores.end()) {
-    if (found->second == score) return false;
-    remove(found->second, member);
-    found->second = score;
+    if (found->second.score == score) return false;
+    remove(found->second.score, member);
+    found->second.score = score;
     insert(score, member);
     return false;
   }
-  _scores.emplace(std::string(member), score);
+  const uint64_t number = _order.next();
+  auto [made, inserted] = _scores.emplace(std::string(member), Entry{score, number});
+  _order.added(number, &made->first);
   insert(score, member);
   return true;
 }
@@ -142,15 +145,26 @@ bool SortedSet::set(std::string_view member, double score) {
 std::optional<double> SortedSet::score(std::string_view member) const {
   auto found = _scores.find(std::string(member));
   if (found == _scores.end()) return std::nullopt;
-  return found->second;
+  return found->second.score;
 }
 
 bool SortedSet::erase(std::string_view member) {
   auto found = _scores.find(std::string(member));
   if (found == _scores.end()) return false;
-  remove(found->second, member);
+  remove(found->second.score, member);
+  _order.removed(found->second.number);
   _scores.erase(found);
   return true;
+}
+
+std::pair<std::vector<SortedSet::Item>, uint64_t> SortedSet::page(uint64_t cursor, size_t count) {
+  auto [members, next] = _order.page(cursor, count, [this](auto visit) {
+    for (const auto& [name, entry] : _scores) visit(entry.number, &name);
+  });
+  std::vector<Item> items;
+  items.reserve(members.size());
+  for (const std::string* member : members) items.push_back(Item{_scores.at(*member).score, *member});
+  return {std::move(items), next};
 }
 
 std::optional<size_t> SortedSet::rank(std::string_view member) const {

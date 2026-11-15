@@ -277,31 +277,41 @@ void sintercard(Call& call) {
 }
 
 void sscan(Call& call) {
+  uint64_t cursor = 0;
   {
     const std::string& text = call.args[2];
-    uint64_t cursor = 0;
     auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), cursor);
     if (text.empty() || error != std::errc() || end != text.data() + text.size()) throw CommandError("ERR invalid cursor");
   }
   std::optional<std::string> pattern;
+  int64_t count = 10;
   for (size_t i = 3; i < call.args.size(); ++i) {
     const bool has_next = i + 1 < call.args.size();
     if (iequals(call.args[i], "MATCH") && has_next) {
       pattern = call.args[++i];
     } else if (iequals(call.args[i], "COUNT") && has_next) {
-      if (integer_argument(call.args[++i]) < 1) throw CommandError(syntax_error);
+      count = integer_argument(call.args[++i]);
+      if (count < 1) throw CommandError(syntax_error);
     } else {
       throw CommandError(syntax_error);
     }
   }
   Set* set = set_value(call.keys, call.args[1]);
   std::vector<std::string_view> kept;
-  if (set)
+  uint64_t next = 0;
+  if (set && set->shape() == keyspace::Set::Shape::large) {
+    // A large set a page at a time (ruling 30), COUNT a hint as Valkey's is.
+    auto [members, after] = set->page(cursor, static_cast<size_t>(count));
+    next = after;
+    for (auto member : members)
+      if (!pattern || keyspace::glob_match(*pattern, member)) kept.push_back(member);
+  } else if (set) {
+    // The whole set in one page, as Valkey answers for an intset or listpack.
     for (auto member : set->ordered())
       if (!pattern || keyspace::glob_match(*pattern, member)) kept.push_back(member);
-  // The whole set in one page, as Valkey answers for a small one.
+  }
   call.reply.array(2);
-  call.reply.bulk("0");
+  call.reply.bulk(std::to_string(next));
   call.reply.array(kept.size());
   for (auto member : kept) call.reply.bulk(member);
 }

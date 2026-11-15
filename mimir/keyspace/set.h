@@ -13,7 +13,10 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
+
+#include "mimir/keyspace/scan_order.h"
 
 // A set's members. Valkey answers a small set's members in an order clients
 // come to see: a set of at most 512 integers sorted numerically (its intset),
@@ -50,12 +53,20 @@ class Set {
   Shape shape() const noexcept { return _shape; }
   // The members in the order Valkey would answer them (above).
   std::vector<std::string_view> ordered() const;
+  // SSCAN's page of a large set: up to `count` members from `cursor`, and the
+  // cursor to go on from (ScanOrder).
+  std::pair<std::vector<std::string_view>, uint64_t> page(uint64_t cursor, size_t count);
 
  private:
+  struct Entry {
+    std::list<std::string>::iterator member;
+    uint64_t number;
+  };
   std::list<std::string> _members;
   // Keys view the members held in `_members`, whose nodes never move.
-  std::unordered_map<std::string_view, std::list<std::string>::iterator> _index;
+  std::unordered_map<std::string_view, Entry> _index;
   Shape _shape = Shape::integers;
+  ScanOrder<std::string_view> _order;
 };
 
 }  // namespace mimir::keyspace

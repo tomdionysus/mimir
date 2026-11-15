@@ -7,8 +7,8 @@ durability, and the order.
 
 ## Resume here
 
-- State: `develop` at the ACL commit, pushed. Last gate: release 277 passed,
-  differential 32 of 32.
+- State: `develop` pushed (the remote is public since 2026-11-15). Last gate:
+  release 285 passed, differential 32 of 32 (SCAN paging, ruling 30).
 - The single-node stage is complete: every Valkey type and command family,
   RESP2 and RESP3, pub/sub, transactions, server commands, configurable
   databases, scripting (EVAL, FUNCTION, Valkey's Lua libraries and read-only
@@ -45,8 +45,6 @@ durability, and the order.
   keep(slot, held, done), optional records()): read `agree/agreement.h` there
   before building Mimir's store.
 - Pinned to Dannan 0.8.3. Dannan's 0.9 is on its develop.
-- In hand: ruling 30, HSCAN, SSCAN and ZSCAN paging a collection of more
-  than 128 entries through a per-element insertion sequence.
 
 ## The differential gate
 
