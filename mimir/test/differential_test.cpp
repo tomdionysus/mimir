@@ -29,6 +29,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace mimir {
@@ -1266,6 +1267,110 @@ std::string bulk_of(const std::string& reply) {
   const size_t end = reply.find("\r\n");
   const size_t n = std::stoul(reply.substr(1, end - 1));
   return reply.substr(end + 2, n);
+}
+
+TEST_F(Differential, Geo) {
+  std::vector<std::string> cities{"GEOADD", "world"};
+  // A spread of places, poles to date line, for the unsorted orders.
+  const std::vector<std::tuple<const char*, const char*, const char*>> places = {
+      {"13.361389", "38.115556", "Palermo"},
+      {"15.087269", "37.502669", "Catania"},
+      {"12.758489", "38.788135", "edge1"},
+      {"17.241510", "38.788135", "edge2"},
+      {"-0.1276", "51.5072", "London"},
+      {"2.3522", "48.8566", "Paris"},
+      {"174.7633", "-36.8485", "Auckland"},
+      {"-179.9", "-16.5", "Fiji"},
+      {"179.9", "-16.6", "FijiEast"},
+      {"0", "0", "Null"},
+      {"-73.9857", "40.7484", "NewYork"},
+      {"139.6917", "35.6895", "Tokyo"},
+      {"18.0686", "59.3293", "Stockholm"},
+      {"25.0", "84.9", "North"},
+      {"-60", "-84.9", "South"},
+      {"13.4050", "52.5200", "Berlin"},
+      {"12.4964", "41.9028", "Rome"},
+      {"14.2681", "40.8518", "Naples"},
+  };
+  for (const auto& [lon, lat, name] : places) {
+    cities.push_back(lon);
+    cities.push_back(lat);
+    cities.push_back(name);
+  }
+  script({
+      cities,
+      {"GEOADD", "world", "NX", "1", "1", "Null"},
+      {"GEOADD", "world", "XX", "CH", "0.0001", "0", "Null"},
+      {"GEOADD", "world", "1", "100", "bad"},
+      {"GEOADD", "world", "200", "1", "bad"},
+      {"GEOADD", "world", "x", "1", "bad"},
+      {"GEOADD", "world", "NX", "XX", "1", "1", "a"},
+      {"GEOADD", "world", "1", "1"},
+      {"GEOPOS", "world", "Palermo", "Catania", "Fiji", "FijiEast", "North", "South", "Null", "nosuch"},
+      {"GEOHASH", "world", "Palermo", "Catania", "Fiji", "North", "South", "Null", "Tokyo", "nosuch"},
+      {"GEOHASH", "nosuch", "a"},
+      {"GEOPOS", "nosuch", "a"},
+      {"GEODIST", "world", "Palermo", "Catania"},
+      {"GEODIST", "world", "Palermo", "Catania", "KM"},
+      {"GEODIST", "world", "London", "Auckland", "mi"},
+      {"GEODIST", "world", "Fiji", "FijiEast", "ft"},
+      {"GEODIST", "world", "North", "South"},
+      {"GEODIST", "world", "Palermo", "nosuch"},
+      {"GEODIST", "world", "Palermo", "Catania", "parsecs"},
+      {"GEODIST", "world", "Palermo", "Catania", "km", "extra"},
+      {"GEORADIUS", "world", "15", "37", "200", "km"},
+      {"GEORADIUS", "world", "15", "37", "200", "km", "WITHDIST", "WITHCOORD", "WITHHASH"},
+      {"GEORADIUS", "world", "15", "37", "2000", "km", "WITHDIST"},
+      {"GEORADIUS", "world", "15", "37", "2000", "km", "ASC"},
+      {"GEORADIUS", "world", "15", "37", "2000", "km", "DESC", "COUNT", "3"},
+      {"GEORADIUS", "world", "15", "37", "2000", "km", "COUNT", "3"},
+      {"GEORADIUS", "world", "15", "37", "2000", "km", "COUNT", "2", "ANY"},
+      {"GEORADIUS", "world", "15", "37", "20000", "km"},
+      {"GEORADIUS", "world", "0", "0", "6000", "km"},
+      {"GEORADIUS", "world", "179", "-16", "500", "km", "WITHDIST"},
+      {"GEORADIUS", "world", "15", "37", "0", "km"},
+      {"GEORADIUS", "world", "15", "37", "-1", "km"},
+      {"GEORADIUS", "world", "15", "37", "x", "km"},
+      {"GEORADIUS", "world", "15", "37", "1", "parsecs"},
+      {"GEORADIUS", "world", "15", "37", "1", "km", "COUNT", "0"},
+      {"GEORADIUS", "world", "15", "37", "1", "km", "ANY"},
+      {"GEORADIUS", "world", "15", "37", "200", "km", "STORE", "out", "WITHDIST"},
+      {"GEORADIUS", "world", "15", "37", "200", "km", "STORE", "out"},
+      {"ZRANGE", "out", "0", "-1", "WITHSCORES"},
+      {"GEORADIUS", "world", "15", "37", "200", "km", "STOREDIST", "out"},
+      {"ZRANGE", "out", "0", "-1", "WITHSCORES"},
+      {"GEORADIUS", "world", "15", "37", "0", "km", "STORE", "out"},
+      {"EXISTS", "out"},
+      {"GEORADIUS_RO", "world", "15", "37", "200", "km", "STORE", "out"},
+      {"GEORADIUS_RO", "world", "15", "37", "200", "km", "WITHDIST", "ASC"},
+      {"GEORADIUSBYMEMBER", "world", "Palermo", "200", "km", "WITHDIST"},
+      {"GEORADIUSBYMEMBER", "world", "nosuch", "200", "km"},
+      {"GEORADIUSBYMEMBER", "nokey", "nosuch", "200", "km"},
+      {"GEORADIUSBYMEMBER_RO", "world", "Paris", "1000", "km", "ASC"},
+      {"GEOSEARCH", "world", "FROMLONLAT", "15", "37", "BYBOX", "400", "400", "km", "ASC", "WITHCOORD", "WITHDIST"},
+      {"GEOSEARCH", "world", "FROMLONLAT", "15", "37", "BYBOX", "4000", "1000", "km"},
+      {"GEOSEARCH", "world", "FROMMEMBER", "Tokyo", "BYRADIUS", "15000", "km"},
+      {"GEOSEARCH", "world", "FROMMEMBER", "North", "BYRADIUS", "3000", "km", "WITHDIST"},
+      {"GEOSEARCH", "world", "FROMLONLAT", "15", "37", "BYRADIUS", "200", "km", "BYBOX", "1", "1", "km"},
+      {"GEOSEARCH", "world", "FROMLONLAT", "15", "37", "FROMMEMBER", "Palermo", "BYRADIUS", "1", "km"},
+      {"GEOSEARCH", "world", "BYRADIUS", "1", "km"},
+      {"GEOSEARCH", "world", "FROMLONLAT", "15", "37"},
+      {"GEOSEARCH", "world", "FROMMEMBER", "nosuch", "BYRADIUS", "1", "km"},
+      {"GEOSEARCH", "world", "FROMLONLAT", "15", "37", "BYBOX", "-1", "1", "km"},
+      {"GEOSEARCH", "world", "FROMLONLAT", "15", "37", "BYBOX", "x", "1", "km"},
+      {"GEOSEARCH", "world", "FROMLONLAT", "15", "37", "BYBOX", "1", "x", "km"},
+      {"GEOSEARCH", "world", "FROMLONLAT", "15", "37", "BYRADIUS", "200", "km", "STORE", "x"},
+      {"GEOSEARCH", "nokey", "FROMMEMBER", "x", "BYRADIUS", "200", "km"},
+      {"GEOSEARCHSTORE", "out", "world", "FROMMEMBER", "Palermo", "BYRADIUS", "200", "km", "COUNT", "2", "ASC", "STOREDIST"},
+      {"ZRANGE", "out", "0", "-1", "WITHSCORES"},
+      {"GEOSEARCHSTORE", "out", "world", "FROMMEMBER", "Palermo", "BYRADIUS", "200", "km", "WITHDIST"},
+      {"GEOSEARCHSTORE", "out", "nokey", "FROMLONLAT", "1", "1", "BYRADIUS", "200", "km"},
+      {"EXISTS", "out"},
+      {"SET", "str", "x"},
+      {"GEOADD", "str", "1", "1", "a"},
+      {"GEORADIUS", "str", "1", "1", "1", "km"},
+      {"GEOPOS", "str", "a"},
+  });
 }
 
 TEST_F(Differential, Sort) {

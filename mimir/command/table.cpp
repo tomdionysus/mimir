@@ -213,6 +213,18 @@ const std::array specs{
     Spec{"flushall", -1, "write", 0, 0, 0, Class::admin, generic::flushall},
     Spec{"flushdb", -1, "write", 0, 0, 0, Class::admin, generic::flushdb},
     Spec{"move", 3, "write fast", 1, 1, 1, Class::agreement, generic::move},
+    // GEO: positions in a sorted set. GEOADD is ZADD and classed as ZADD is;
+    // a search that stores replaces a key, by agreement.
+    Spec{"geoadd", -5, "write denyoom", 1, 1, 1, Class::merge, geo::geoadd, zsets::classify_zadd},
+    Spec{"geodist", -4, "readonly", 1, 1, 1, Class::read, geo::geodist},
+    Spec{"geohash", -2, "readonly", 1, 1, 1, Class::read, geo::geohash},
+    Spec{"geopos", -2, "readonly", 1, 1, 1, Class::read, geo::geopos},
+    Spec{"georadius", -6, "write denyoom movablekeys", 0, 0, 0, Class::read, geo::georadius, geo::classify_georadius, geo::georadius_keys},
+    Spec{"georadius_ro", -6, "readonly", 1, 1, 1, Class::read, geo::georadius_ro},
+    Spec{"georadiusbymember", -5, "write denyoom movablekeys", 0, 0, 0, Class::read, geo::georadiusbymember, geo::classify_georadius, geo::georadius_keys},
+    Spec{"georadiusbymember_ro", -5, "readonly", 1, 1, 1, Class::read, geo::georadiusbymember_ro},
+    Spec{"geosearch", -7, "readonly", 1, 1, 1, Class::read, geo::geosearch},
+    Spec{"geosearchstore", -8, "write denyoom", 1, 2, 1, Class::agreement, geo::geosearchstore},
     // SORT reads its key and the keys its patterns name; with STORE it
     // replaces a list, by agreement.
     Spec{"sort", -2, "write denyoom movablekeys", 0, 0, 0, Class::agreement, sorting::sort, nullptr, sorting::sort_keys},

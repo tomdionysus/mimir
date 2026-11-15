@@ -12,6 +12,7 @@ add_executable(mimir_tests
   command_dump_test.cpp
   command_functions_test.cpp
   command_generic_test.cpp
+  command_geo_test.cpp
   command_hashes_test.cpp
   command_hyperloglog_test.cpp
   command_lists_test.cpp
