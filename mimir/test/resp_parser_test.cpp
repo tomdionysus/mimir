@@ -120,6 +120,28 @@ TEST(RespParser, AnArrayCountMustBeANumberInBounds) {
   }
 }
 
+// An inline command is held to the same count as an array (found by the
+// request parser's fuzz target, 2026-11-15: a line of control bytes split into
+// more words than the limit).
+TEST(RespParser, AnInlineCommandIsBoundedAsAnArrayIs) {
+  ParserLimits limits;
+  limits.max_arguments = 4;
+  limits.restricted_arguments = 2;
+  {
+    RequestParser parser(limits);
+    parser.feed("a\rb\tc\vd\n");
+    EXPECT_EQ(parser.next(), (std::vector<std::string>{"a", "b", "c", "d"}));
+    parser.feed("a b c d e\n");
+    EXPECT_EQ(error_of(parser), "Protocol error: invalid multibulk length");
+  }
+  {
+    RequestParser parser(limits);
+    parser.restrict(true);
+    parser.feed("a b c\n");
+    EXPECT_EQ(error_of(parser), "Protocol error: unauthenticated multibulk length");
+  }
+}
+
 TEST(RespParser, AnArrayHoldsOnlyBulkStrings) {
   RequestParser parser;
   parser.feed("*1\r\n:1\r\n");
