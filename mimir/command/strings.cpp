@@ -107,6 +107,7 @@ void incr_by(Call& call, int64_t by) {
   } else {
     call.keys.put(key, keyspace::Entry{format_integer(next), std::nullopt});
   }
+  call.notify('$', "incrby", key);
   call.reply.integer(next);
 }
 
@@ -156,8 +157,12 @@ void set(Call& call) {
     if (expires_at && *expires_at <= call.keys.now_ms()) {
       // Already past: the value is set and gone at once, as Valkey does.
       call.keys.erase(key);
+      call.notify('$', "set", key);
+      call.notify('g', "del", key);
     } else {
       call.keys.put(key, keyspace::Entry{call.args[2], expires_at});
+      call.notify('$', "set", key);
+      if (options.expires_at) call.notify('g', "expire", key);
     }
   }
   if (options.get) {
@@ -178,6 +183,7 @@ void setnx(Call& call) {
     return;
   }
   call.keys.put(call.args[1], keyspace::Entry{call.args[2], std::nullopt});
+  call.notify('$', "set", call.args[1]);
   call.reply.integer(1);
 }
 
@@ -186,6 +192,8 @@ void set_with_expiry(Call& call, bool seconds, std::string_view command) {
   const int64_t value = integer_argument(call.args[2]);
   const uint64_t at = absolute_expiry(value, seconds, true, call.keys.now_ms(), command, false);
   call.keys.put(call.args[1], keyspace::Entry{call.args[3], at});
+  call.notify('$', "set", call.args[1]);
+  call.notify('g', "expire", call.args[1]);
   call.reply.simple("OK");
 }
 }  // namespace
@@ -200,6 +208,7 @@ void getset(Call& call) {
   else
     call.reply.null();
   call.keys.put(call.args[1], keyspace::Entry{call.args[2], std::nullopt});
+  call.notify('$', "set", call.args[1]);
 }
 
 void getdel(Call& call) {
@@ -210,6 +219,7 @@ void getdel(Call& call) {
   }
   call.reply.bulk(*value);
   call.keys.erase(call.args[1]);
+  call.notify('g', "del", call.args[1]);
 }
 
 void getex(Call& call) {
@@ -225,15 +235,18 @@ void getex(Call& call) {
   if (options.expires_at) {
     if (*options.expires_at <= call.keys.now_ms()) {
       call.keys.erase(key);
+      call.notify('g', "del", key);
     } else {
       keyspace::Entry updated = std::move(*entry);
       updated.expires_at = options.expires_at;
       call.keys.put(key, std::move(updated));
+      call.notify('g', "expire", key);
     }
   } else if (options.persist && entry->expires_at) {
     keyspace::Entry updated = std::move(*entry);
     updated.expires_at.reset();
     call.keys.put(key, std::move(updated));
+    call.notify('g', "persist", key);
   }
 }
 
@@ -250,7 +263,10 @@ void mget(Call& call) {
 
 void mset(Call& call) {
   if (call.args.size() % 2 == 0) throw CommandError("ERR wrong number of arguments for 'mset' command");
-  for (size_t i = 1; i < call.args.size(); i += 2) call.keys.put(call.args[i], keyspace::Entry{call.args[i + 1], std::nullopt});
+  for (size_t i = 1; i < call.args.size(); i += 2) {
+    call.keys.put(call.args[i], keyspace::Entry{call.args[i + 1], std::nullopt});
+    call.notify('$', "set", call.args[i]);
+  }
   call.reply.simple("OK");
 }
 
@@ -262,7 +278,10 @@ void msetnx(Call& call) {
       return;
     }
   }
-  for (size_t i = 1; i < call.args.size(); i += 2) call.keys.put(call.args[i], keyspace::Entry{call.args[i + 1], std::nullopt});
+  for (size_t i = 1; i < call.args.size(); i += 2) {
+    call.keys.put(call.args[i], keyspace::Entry{call.args[i + 1], std::nullopt});
+    call.notify('$', "set", call.args[i]);
+  }
   call.reply.integer(1);
 }
 
@@ -296,6 +315,7 @@ void incrbyfloat(Call& call) {
     std::get<std::string>(entry->value) = std::move(text);
   else
     call.keys.put(key, keyspace::Entry{std::move(text), std::nullopt});
+  call.notify('$', "incrbyfloat", key);
 }
 
 void append(Call& call) {
@@ -303,11 +323,13 @@ void append(Call& call) {
   std::string* value = string_value(call.keys, key);
   if (!value) {
     call.keys.put(key, keyspace::Entry{call.args[2], std::nullopt});
+    call.notify('$', "append", key);
     call.reply.integer(static_cast<int64_t>(call.args[2].size()));
     return;
   }
   if (value->size() + call.args[2].size() > max_string) throw CommandError("ERR string exceeds maximum allowed size (proto-max-bulk-len)");
   value->append(call.args[2]);
+  call.notify('$', "append", key);
   call.reply.integer(static_cast<int64_t>(value->size()));
 }
 
@@ -347,6 +369,7 @@ void setrange(Call& call) {
     made.append(piece);
     call.reply.integer(static_cast<int64_t>(made.size()));
     call.keys.put(key, keyspace::Entry{std::move(made), std::nullopt});
+    call.notify('$', "setrange", key);
     return;
   }
   if (piece.empty()) {
@@ -357,6 +380,7 @@ void setrange(Call& call) {
   const size_t at = static_cast<size_t>(offset);
   if (value->size() < at + piece.size()) value->resize(at + piece.size(), '\0');
   value->replace(at, piece.size(), piece);
+  call.notify('$', "setrange", key);
   call.reply.integer(static_cast<int64_t>(value->size()));
 }
 

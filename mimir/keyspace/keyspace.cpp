@@ -45,11 +45,21 @@ void Keyspace::forget(Map::iterator it) {
   _keys.erase(it);
 }
 
+void Keyspace::forget_expired(Map::iterator it) {
+  if (!_listener.expired) {
+    forget(it);
+    return;
+  }
+  const std::string key = it->first.second;
+  forget(it);
+  _listener.expired(key);
+}
+
 Entry* Keyspace::find(std::string_view key) {
   auto it = _keys.find(std::pair<uint64_t, std::string_view>(position_of(key), key));
   if (it == _keys.end()) return nullptr;
   if (expired(it->second)) {
-    forget(it);
+    forget_expired(it);
     return nullptr;
   }
   return &it->second;
@@ -63,8 +73,17 @@ bool Keyspace::contains(std::string_view key) const {
 Entry& Keyspace::put(std::string_view key, Entry entry) {
   const uint64_t position = position_of(key);
   auto it = _keys.find(std::pair<uint64_t, std::string_view>(position, key));
+  // An expired entry written over has expired first; the key is then new.
+  if (it != _keys.end() && expired(it->second)) {
+    forget_expired(it);
+    it = _keys.end();
+  }
   if (entry.expires_at) ++_expiring;
-  if (it == _keys.end()) return _keys.emplace(Key(position, std::string(key)), std::move(entry)).first->second;
+  if (it == _keys.end()) {
+    Entry& stored = _keys.emplace(Key(position, std::string(key)), std::move(entry)).first->second;
+    if (_listener.created) _listener.created(key);
+    return stored;
+  }
   if (it->second.expires_at) --_expiring;
   it->second = std::move(entry);
   return it->second;
@@ -73,9 +92,12 @@ Entry& Keyspace::put(std::string_view key, Entry entry) {
 bool Keyspace::erase(std::string_view key) {
   auto it = _keys.find(std::pair<uint64_t, std::string_view>(position_of(key), key));
   if (it == _keys.end()) return false;
-  const bool live = !expired(it->second);
+  if (expired(it->second)) {
+    forget_expired(it);
+    return false;
+  }
   forget(it);
-  return live;
+  return true;
 }
 
 void Keyspace::rename(std::string_view from, std::string_view to) {
@@ -106,7 +128,7 @@ ScanPage Keyspace::scan(uint64_t cursor, size_t count, std::optional<Type> type)
     last = it->first.first;
     auto here = it++;
     if (expired(here->second)) {
-      forget(here);
+      forget_expired(here);
       continue;
     }
     if (type && here->second.type() != *type) continue;
@@ -129,7 +151,7 @@ std::vector<std::string> Keyspace::keys() {
   for (auto it = _keys.begin(); it != _keys.end();) {
     auto here = it++;
     if (expired(here->second)) {
-      forget(here);
+      forget_expired(here);
       continue;
     }
     out.push_back(here->first.second);
@@ -145,7 +167,7 @@ std::optional<std::string> Keyspace::random_key(uint64_t seed) {
       if (it == _keys.end()) it = _keys.begin();
       if (!expired(it->second)) return it->first.second;
       auto here = it++;
-      forget(here);
+      forget_expired(here);
       if (_keys.empty()) return std::nullopt;
     }
   }
@@ -164,7 +186,7 @@ size_t Keyspace::expire_step(size_t budget) {
     if (!here->second.expires_at) continue;
     ++examined;
     if (expired(here->second)) {
-      forget(here);
+      forget_expired(here);
       ++removed;
     }
   }

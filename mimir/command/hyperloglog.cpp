@@ -59,6 +59,7 @@ void pfadd(Call& call) {
     *value = hll::encode(regs, hll::is_dense(*value));
     changed = true;
   }
+  if (changed) call.notify('$', "pfadd", call.args[1]);
   call.reply.integer(changed ? 1 : 0);
 }
 
@@ -102,6 +103,7 @@ void pfmerge(Call& call) {
   keyspace::Entry* existing = call.keys.find(call.args[1]);
   const std::optional<uint64_t> expires_at = existing ? existing->expires_at : std::nullopt;
   call.keys.put(call.args[1], keyspace::Entry{hll::encode(merged, dense), expires_at});
+  call.notify('$', "pfadd", call.args[1]);
   call.reply.simple("OK");
 }
 

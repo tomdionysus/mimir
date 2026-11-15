@@ -33,8 +33,17 @@ List& list_or_create(keyspace::Keyspace& keys, std::string_view key) {
   return std::get<List>(keys.put(key, keyspace::Entry{List{}, std::nullopt}).value);
 }
 
-void drop_if_empty(keyspace::Keyspace& keys, std::string_view key, const List& list) {
-  if (list.empty()) keys.erase(key);
+// An emptied list's key goes, and says so.
+void drop_if_empty(Call& call, std::string_view key, const List& list) {
+  if (!list.empty()) return;
+  call.keys.erase(key);
+  call.notify('g', "del", key);
+}
+
+// A pop's event, then the emptied key's.
+void popped(Call& call, std::string_view key, const List& list, bool left) {
+  call.notify('l', left ? "lpop" : "rpop", key);
+  drop_if_empty(call, key, list);
 }
 
 // A blocking command's source list. Serving a woken wait, only the ready key
@@ -97,6 +106,7 @@ void push(Call& call, bool left, bool only_if_exists) {
     else
       list->push_back(call.args[i]);
   }
+  call.notify('l', left ? "lpush" : "rpush", key);
   call.reply.integer(static_cast<int64_t>(list->size()));
 }
 
@@ -132,8 +142,9 @@ void pop(Call& call, bool left) {
     const size_t n = std::min(static_cast<size_t>(*count), list->size());
     call.reply.array(n);
     for (size_t i = 0; i < n; ++i) call.reply.bulk(take(*list, left));
+    if (n == 0) return;
   }
-  drop_if_empty(call.keys, key, *list);
+  popped(call, key, *list, left);
 }
 
 // LMOVE's work, shared with RPOPLPUSH and their blocking forms; whether
@@ -150,19 +161,15 @@ bool move(Call& call, bool from_left, bool to_left, bool blocking = false) {
   list_value(call.keys, destination);
   std::string element = take(*from, from_left);
   call.reply.bulk(element);
-  if (source == destination) {
-    if (to_left)
-      from->push_front(std::move(element));
-    else
-      from->push_back(std::move(element));
-    return true;
-  }
-  drop_if_empty(call.keys, source, *from);
-  List& to = list_or_create(call.keys, destination);
+  // The push is announced before the pop, and an emptied source after both,
+  // in Valkey's order.
+  List& to = source == destination ? *from : list_or_create(call.keys, destination);
   if (to_left)
     to.push_front(std::move(element));
   else
     to.push_back(std::move(element));
+  call.notify('l', to_left ? "lpush" : "rpush", destination);
+  popped(call, source, *from, from_left);
   return true;
 }
 
@@ -176,7 +183,7 @@ void blocking_pop(Call& call, bool left) {
     call.reply.array(2);
     call.reply.bulk(key);
     call.reply.bulk(take(*list, left));
-    drop_if_empty(call.keys, key, *list);
+    popped(call, key, *list, left);
     return;
   }
   park(call, std::move(keys), seconds, false);
@@ -211,7 +218,7 @@ void multi_pop(Call& call, size_t numkeys_at, std::optional<double> seconds) {
     call.reply.bulk(call.args[k]);
     call.reply.array(n);
     for (size_t i = 0; i < n; ++i) call.reply.bulk(take(*list, left));
-    drop_if_empty(call.keys, call.args[k], *list);
+    popped(call, call.args[k], *list, left);
     return;
   }
   if (seconds)
@@ -268,6 +275,7 @@ void lset(Call& call) {
   auto at = absolute(index, list->size());
   if (!at) throw CommandError("ERR index out of range");
   (*list)[*at] = call.args[3];
+  call.notify('l', "lset", call.args[1]);
   call.reply.simple("OK");
 }
 
@@ -287,6 +295,7 @@ void linsert(Call& call) {
   for (auto it = list->begin(); it != list->end(); ++it) {
     if (*it == call.args[3]) {
       list->insert(after ? std::next(it) : it, call.args[4]);
+      call.notify('l', "linsert", call.args[1]);
       call.reply.integer(static_cast<int64_t>(list->size()));
       return;
     }
@@ -324,7 +333,9 @@ void lrem(Call& call) {
     }
   }
   call.reply.integer(static_cast<int64_t>(removed));
-  drop_if_empty(call.keys, call.args[1], *list);
+  if (removed == 0) return;
+  call.notify('l', "lrem", call.args[1]);
+  drop_if_empty(call, call.args[1], *list);
 }
 
 void ltrim(Call& call) {
@@ -339,7 +350,8 @@ void ltrim(Call& call) {
       list->erase(list->begin() + static_cast<std::ptrdiff_t>(span->second + 1), list->end());
       list->erase(list->begin(), list->begin() + static_cast<std::ptrdiff_t>(span->first));
     }
-    drop_if_empty(call.keys, call.args[1], *list);
+    call.notify('l', "ltrim", call.args[1]);
+    drop_if_empty(call, call.args[1], *list);
   }
   call.reply.simple("OK");
 }

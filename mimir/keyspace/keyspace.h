@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -64,7 +65,17 @@ struct ScanPage {
 
 class Keyspace {
  public:
+  // Told, under the owner's serialisation, when an expired key is removed
+  // (however it was found) and when a key comes to be: keyspace
+  // notifications' "expired" and "new". Either may be empty.
+  struct Listener {
+    std::function<void(std::string_view key)> expired;
+    std::function<void(std::string_view key)> created;
+  };
+
   explicit Keyspace(const dannan::contract::WallClock& wall);
+
+  void set_listener(Listener listener) { _listener = std::move(listener); }
 
   // The live entry for `key`, or null. An expired entry found here is removed.
   Entry* find(std::string_view key);
@@ -113,8 +124,11 @@ class Keyspace {
 
   bool expired(const Entry& entry) const noexcept { return entry.expires_at && *entry.expires_at <= _wall.unix_ms(); }
   void forget(Map::iterator it);
+  // forget() of an entry whose time has passed, telling the listener.
+  void forget_expired(Map::iterator it);
 
   const dannan::contract::WallClock& _wall;
+  Listener _listener;
   Map _keys;
   size_t _expiring = 0;
   // Where active expiry resumes.

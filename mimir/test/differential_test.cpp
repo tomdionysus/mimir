@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <unistd.h>
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -997,6 +998,267 @@ TEST_F(Differential, Scripting) {
       {"SCRIPT", "FLUSH"},
       {"SCRIPT", "EXISTS", "e0e1f9fabfc9d4800c877a703b823ac0578ff8db"},
   });
+}
+
+// Keyspace notifications: every command's events, compared one command at a
+// time. A subscriber on each server listens to every notification and to a
+// marker channel; after each command a marker is published, and what came
+// before it is that command's events.
+class Notifications {
+ public:
+  explicit Notifications(uint16_t port) : _client(port) {
+    _client.call({"PSUBSCRIBE", "__key*@*__:*"});
+    _client.call({"SUBSCRIBE", "marker"});
+  }
+  std::string until_marker() {
+    std::string events;
+    for (;;) {
+      const std::string message = _client.read();
+      if (message.find("$6\r\nmarker\r\n") != std::string::npos && message.rfind("*3\r\n$7\r\nmessage\r\n", 0) == 0) return events;
+      events += message;
+    }
+  }
+
+ private:
+  Client _client;
+};
+
+void notifications_script(const std::string& flags, const std::vector<std::vector<std::string>>& commands) {
+  Client mimir(*port_from("MIMIR_DIFF_MIMIR_PORT"));
+  Client valkey(*port_from("MIMIR_DIFF_VALKEY_PORT"));
+  mimir.call({"FLUSHALL"});
+  valkey.call({"FLUSHALL"});
+  EXPECT_EQ(mimir.call({"CONFIG", "SET", "notify-keyspace-events", flags}), valkey.call({"CONFIG", "SET", "notify-keyspace-events", flags}));
+  EXPECT_EQ(mimir.call({"CONFIG", "GET", "notify-keyspace-events"}), valkey.call({"CONFIG", "GET", "notify-keyspace-events"}));
+  Notifications mimir_events(*port_from("MIMIR_DIFF_MIMIR_PORT"));
+  Notifications valkey_events(*port_from("MIMIR_DIFF_VALKEY_PORT"));
+  // Markers go on their own connections, so a command in MULTI does not queue them.
+  Client mimir_marker(*port_from("MIMIR_DIFF_MIMIR_PORT"));
+  Client valkey_marker(*port_from("MIMIR_DIFF_VALKEY_PORT"));
+  for (const auto& args : commands) {
+    std::string shown;
+    for (const auto& arg : args) shown += arg + " ";
+    if (args[0] == "SLEEP") {
+      usleep(static_cast<useconds_t>(std::stoi(args[1]) * 1000));
+      continue;
+    }
+    EXPECT_EQ(mimir.call(args), valkey.call(args)) << shown;
+    mimir_marker.call({"PUBLISH", "marker", "x"});
+    valkey_marker.call({"PUBLISH", "marker", "x"});
+    EXPECT_EQ(mimir_events.until_marker(), valkey_events.until_marker()) << shown;
+  }
+  mimir.call({"CONFIG", "SET", "notify-keyspace-events", ""});
+  valkey.call({"CONFIG", "SET", "notify-keyspace-events", ""});
+}
+
+TEST_F(Differential, NotificationFlags) {
+  for (const std::string flags : {"KEA", "AKE", "Kg$", "El", "Ksx", "KEhzt", "KEAnm", "Exe", "K", "E", "A", "", "KEd", "KA$lshzxetd"}) {
+    same({"CONFIG", "SET", "notify-keyspace-events", flags});
+    same({"CONFIG", "GET", "notify-keyspace-events"});
+  }
+  same({"CONFIG", "SET", "notify-keyspace-events", "KEq"});
+  same({"CONFIG", "GET", "notify-keyspace-events"});
+  same({"CONFIG", "SET", "notify-keyspace-events", ""});
+}
+
+TEST_F(Differential, NotificationsGenericAndStrings) {
+  notifications_script("KEA", {
+                                  {"SET", "a", "1"},
+                                  {"SET", "a", "2", "EX", "100"},
+                                  {"SET", "a", "3", "KEEPTTL"},
+                                  {"SET", "a", "4", "NX"},
+                                  {"SET", "b", "4", "XX"},
+                                  {"SET", "a", "5", "GET"},
+                                  {"SETNX", "a", "x"},
+                                  {"SETNX", "c", "x"},
+                                  {"SETEX", "d", "100", "v"},
+                                  {"PSETEX", "e", "100000", "v"},
+                                  {"GETSET", "a", "6"},
+                                  {"GETDEL", "e"},
+                                  {"GETDEL", "e"},
+                                  {"GETEX", "a", "EX", "100"},
+                                  {"GETEX", "a", "PERSIST"},
+                                  {"GETEX", "a"},
+                                  {"MSET", "m1", "1", "m2", "2"},
+                                  {"MSETNX", "m3", "1", "m4", "2"},
+                                  {"MSETNX", "m3", "1", "m5", "2"},
+                                  {"INCR", "n"},
+                                  {"DECR", "n"},
+                                  {"INCRBY", "n", "5"},
+                                  {"DECRBY", "n", "2"},
+                                  {"INCRBYFLOAT", "n", "1.5"},
+                                  {"APPEND", "s", "abc"},
+                                  {"APPEND", "s", "def"},
+                                  {"SETRANGE", "s", "2", "XY"},
+                                  {"SETRANGE", "z", "0", ""},
+                                  {"SETBIT", "bits", "7", "1"},
+                                  {"BITFIELD", "bf", "SET", "u8", "0", "200"},
+                                  {"BITFIELD", "bf", "GET", "u8", "0"},
+                                  {"BITOP", "AND", "dest", "bits", "bf"},
+                                  {"BITOP", "AND", "dest", "nosuch1", "nosuch2"},
+                                  {"PFADD", "hll", "a", "b"},
+                                  {"PFADD", "hll", "a"},
+                                  {"PFMERGE", "hll2", "hll"},
+                                  {"PFCOUNT", "hll"},
+                                  {"EXPIRE", "a", "100"},
+                                  {"PEXPIRE", "a", "100000"},
+                                  {"EXPIREAT", "a", "4000000000"},
+                                  {"PEXPIREAT", "a", "4000000000000"},
+                                  {"EXPIRE", "a", "100", "NX"},
+                                  {"PERSIST", "a"},
+                                  {"PERSIST", "a"},
+                                  {"EXPIRE", "m1", "0"},
+                                  {"PEXPIRE", "m2", "-5"},
+                                  {"EXPIREAT", "m4", "1"},
+                                  {"DEL", "a", "nosuch", "c"},
+                                  {"UNLINK", "d", "nosuch"},
+                                  {"SET", "r1", "v"},
+                                  {"RENAME", "r1", "r2"},
+                                  {"RENAMENX", "r2", "r3"},
+                                  {"SET", "r4", "v"},
+                                  {"RENAMENX", "r3", "r4"},
+                                  {"RENAME", "r3", "r3"},
+                                  {"COPY", "r3", "r5"},
+                                  {"COPY", "r3", "r5", "REPLACE"},
+                                  {"COPY", "r3", "r6", "DB", "1"},
+                                  {"MOVE", "r5", "2"},
+                                  {"SET", "t1", "v"},
+                                  {"PEXPIRE", "t1", "1"},
+                                  {"SLEEP", "30"},
+                                  {"GET", "t1"},
+                                  {"SET", "t2", "v", "PX", "1"},
+                                  {"SLEEP", "30"},
+                                  {"EXISTS", "t2"},
+                                  {"SET", "t3", "v", "PX", "1"},
+                                  {"SLEEP", "30"},
+                                  {"SET", "t3", "w"},
+                                  {"TOUCH", "r3"},
+                                  {"TYPE", "r3"},
+                                  {"SWAPDB", "0", "1"},
+                                  {"SWAPDB", "0", "1"},
+                                  {"FLUSHDB"},
+                              });
+}
+
+TEST_F(Differential, NotificationsCollections) {
+  notifications_script("KEA", {
+                                  {"LPUSH", "l", "a", "b"},
+                                  {"RPUSH", "l", "c"},
+                                  {"LPUSHX", "l", "d"},
+                                  {"RPUSHX", "l", "e"},
+                                  {"LPUSHX", "nol", "d"},
+                                  {"LINSERT", "l", "BEFORE", "c", "x"},
+                                  {"LINSERT", "l", "BEFORE", "zz", "x"},
+                                  {"LSET", "l", "0", "y"},
+                                  {"LREM", "l", "1", "x"},
+                                  {"LREM", "l", "1", "zz"},
+                                  {"LTRIM", "l", "0", "2"},
+                                  {"LPOP", "l"},
+                                  {"RPOP", "l", "1"},
+                                  {"RPUSH", "l2", "a", "b"},
+                                  {"LMOVE", "l2", "l3", "LEFT", "RIGHT"},
+                                  {"RPOPLPUSH", "l2", "l3"},
+                                  {"LMPOP", "1", "l3", "LEFT", "COUNT", "5"},
+                                  {"RPUSH", "l4", "a"},
+                                  {"BLPOP", "l4", "1"},
+                                  {"RPUSH", "l5", "a", "b"},
+                                  {"LTRIM", "l5", "5", "10"},
+                                  {"HSET", "h", "f1", "1", "f2", "2"},
+                                  {"HSET", "h", "f1", "1"},
+                                  {"HSETNX", "h", "f3", "3"},
+                                  {"HSETNX", "h", "f3", "3"},
+                                  {"HMSET", "h", "f4", "4"},
+                                  {"HINCRBY", "h", "f1", "2"},
+                                  {"HINCRBYFLOAT", "h", "f1", "0.5"},
+                                  {"HDEL", "h", "f1", "nosuch"},
+                                  {"HDEL", "h", "nosuch"},
+                                  {"HDEL", "h", "f2", "f3", "f4"},
+                                  {"SADD", "s", "a", "b", "c"},
+                                  {"SADD", "s", "a"},
+                                  {"SREM", "s", "a", "zz"},
+                                  {"SREM", "s", "zz"},
+                                  {"SMOVE", "s", "s2", "b"},
+                                  {"SMOVE", "s", "s2", "zz"},
+                                  {"SPOP", "s"},
+                                  {"SADD", "s3", "a", "b"},
+                                  {"SINTERSTORE", "sd", "s2", "s3"},
+                                  {"SUNIONSTORE", "sd", "s2", "s3"},
+                                  {"SDIFFSTORE", "sd", "s2", "s2"},
+                                  {"SDIFFSTORE", "sd", "nosuch"},
+                                  {"ZADD", "z", "1", "a", "2", "b", "3", "c"},
+                                  {"ZADD", "z", "1", "a"},
+                                  {"ZADD", "z", "XX", "5", "zz"},
+                                  {"ZINCRBY", "z", "1", "a"},
+                                  {"ZREM", "z", "a", "zz"},
+                                  {"ZREM", "z", "zz"},
+                                  {"ZADD", "z", "1", "a", "4", "d", "5", "e", "6", "f"},
+                                  {"ZREMRANGEBYSCORE", "z", "1", "1"},
+                                  {"ZREMRANGEBYRANK", "z", "0", "0"},
+                                  {"ZREMRANGEBYLEX", "z", "[a", "[a"},
+                                  {"ZPOPMIN", "z"},
+                                  {"ZPOPMAX", "z", "1"},
+                                  {"ZMPOP", "1", "z", "MIN"},
+                                  {"ZADD", "z2", "1", "a", "2", "b"},
+                                  {"ZUNIONSTORE", "zd", "1", "z2"},
+                                  {"ZINTERSTORE", "zd", "2", "z2", "nosuch"},
+                                  {"ZDIFFSTORE", "zd2", "1", "z2"},
+                                  {"ZRANGESTORE", "zd3", "z2", "0", "-1"},
+                                  {"ZRANGESTORE", "zd3", "z2", "5", "6"},
+                                  {"ZPOPMIN", "z2", "5"},
+                                  {"XADD", "x", "1-0", "f", "v"},
+                                  {"XADD", "x", "MAXLEN", "1", "2-0", "f", "v"},
+                                  {"XADD", "x", "NOMKSTREAM", "3-0", "f", "v"},
+                                  {"XADD", "nox", "NOMKSTREAM", "3-0", "f", "v"},
+                                  {"XDEL", "x", "3-0"},
+                                  {"XDEL", "x", "9-0"},
+                                  {"XTRIM", "x", "MAXLEN", "0"},
+                                  {"XSETID", "x", "10-0"},
+                                  {"XGROUP", "CREATE", "x", "g", "0"},
+                                  {"XGROUP", "CREATE", "x2", "g", "$", "MKSTREAM"},
+                                  {"XGROUP", "CREATECONSUMER", "x", "g", "c1"},
+                                  {"XGROUP", "SETID", "x", "g", "0"},
+                                  {"XADD", "x", "11-0", "f", "v"},
+                                  {"XREADGROUP", "GROUP", "g", "c2", "STREAMS", "x", ">"},
+                                  {"XACK", "x", "g", "11-0"},
+                                  {"XCLAIM", "x", "g", "c3", "0", "11-0"},
+                                  {"XAUTOCLAIM", "x", "g", "c4", "0", "0"},
+                                  {"XGROUP", "DELCONSUMER", "x", "g", "c1"},
+                                  {"XGROUP", "DESTROY", "x", "g"},
+                                  {"DEL", "x", "x2"},
+                              });
+}
+
+TEST_F(Differential, NotificationsNewAndMiss) {
+  notifications_script("KEAnm", {
+                                    {"SET", "a", "1"},
+                                    {"SET", "a", "2"},
+                                    {"GET", "nosuch"},
+                                    {"GET", "a"},
+                                    {"MGET", "a", "nosuch"},
+                                    {"LPUSH", "l", "x"},
+                                    {"LRANGE", "nol", "0", "-1"},
+                                    {"HGET", "noh", "f"},
+                                    {"EXISTS", "nosuch"},
+                                    {"TYPE", "nosuch"},
+                                    {"INCR", "n"},
+                                    {"SADD", "s", "a"},
+                                    {"STRLEN", "nosuch"},
+                                    {"COPY", "a", "b"},
+                                    {"RENAME", "b", "c"},
+                                    {"ZSCORE", "noz", "m"},
+                                    {"XADD", "x", "1-0", "f", "v"},
+                                    {"GETDEL", "nosuch"},
+                                });
+}
+
+TEST_F(Differential, NotificationsInScriptsAndTransactions) {
+  notifications_script("KEA", {
+                                  {"EVAL", "redis.call('SET', 'a', 1); redis.call('INCR', 'a'); return redis.call('DEL', 'a')", "0"},
+                                  {"MULTI"},
+                                  {"SET", "b", "1"},
+                                  {"LPUSH", "c", "x"},
+                                  {"EXEC"},
+                              });
 }
 
 TEST_F(Differential, Functions) {

@@ -96,11 +96,13 @@ void reply_entry(resp::Reply& reply, const StreamId& id, const std::vector<std::
   for (const auto& f : *fields) reply.bulk(f);
 }
 
-StreamConsumer& consumer_of(StreamGroup& group, const std::string& name, uint64_t now) {
+// The consumer named, made if it is not there yet; a new one is announced.
+StreamConsumer& consumer_of(Call& call, const std::string& key, StreamGroup& group, const std::string& name, uint64_t now) {
   auto [it, fresh] = group.consumers.try_emplace(name);
   if (fresh) {
     it->second.seen_ms = now;
     it->second.active_ms = 0;
+    call.notify('t', "xgroup-createconsumer", key);
   }
   return it->second;
 }
@@ -175,6 +177,7 @@ void xgroup(Call& call) {
     group.last_delivered = id;
     group.entries_read = entries_read;
     stream->groups.emplace(name, std::move(group));
+    call.notify('t', "xgroup-create", key);
     call.reply.simple("OK");
   } else if (sub == "setid") {
     need(5, 7, "setid");
@@ -192,17 +195,20 @@ void xgroup(Call& call) {
     Stream* stream = stream_of(call.keys, call.args[2]);
     group.last_delivered = call.args[4] == "$" ? stream->last_id : id_of(call.args[4]);
     group.entries_read = entries_read;
+    call.notify('t', "xgroup-setid", call.args[2]);
     call.reply.simple("OK");
   } else if (sub == "destroy") {
     need(4, 4, "destroy");
     Stream* stream = stream_of(call.keys, call.args[2]);
     if (!stream) throw CommandError(requires_key);
-    call.reply.integer(stream->groups.erase(call.args[3]) ? 1 : 0);
+    const bool destroyed = stream->groups.erase(call.args[3]) > 0;
+    if (destroyed) call.notify('t', "xgroup-destroy", call.args[2]);
+    call.reply.integer(destroyed ? 1 : 0);
   } else if (sub == "createconsumer") {
     need(5, 5, "createconsumer");
     StreamGroup& group = xgroup_group(call);
     const bool fresh = !group.consumers.count(call.args[4]);
-    consumer_of(group, call.args[4], call.keys.now_ms());
+    consumer_of(call, call.args[2], group, call.args[4], call.keys.now_ms());
     call.reply.integer(fresh ? 1 : 0);
   } else if (sub == "delconsumer") {
     need(5, 5, "delconsumer");
@@ -215,6 +221,7 @@ void xgroup(Call& call) {
     const int64_t pending = static_cast<int64_t>(found->second.pending.size());
     for (const auto& id : found->second.pending) group.pending.erase(id);
     group.consumers.erase(found);
+    call.notify('t', "xgroup-delconsumer", call.args[2]);
     call.reply.integer(pending);
   } else {
     throw CommandError("ERR unknown subcommand '" + call.args[1] + "'. Try XGROUP HELP.");
@@ -285,7 +292,7 @@ void xreadgroup(Call& call) {
     auto group_found = stream.groups.find(group_name);
     if (group_found == stream.groups.end()) continue;
     StreamGroup& group = group_found->second;
-    StreamConsumer& consumer = consumer_of(group, consumer_name, now);
+    StreamConsumer& consumer = consumer_of(call, key, group, consumer_name, now);
     consumer.seen_ms = now;
     Read read{key, {}, call.args[ids_at + s] != ">"};
     if (read.history) {
@@ -507,7 +514,7 @@ void xclaim(Call& call) {
   StreamGroup& group = group_of(call, key, name);
   Stream* stream = stream_of(call.keys, key);
   if (lastid && group.last_delivered < *lastid) group.last_delivered = *lastid;
-  StreamConsumer& consumer = consumer_of(group, consumer_name, now);
+  StreamConsumer& consumer = consumer_of(call, key, group, consumer_name, now);
   consumer.seen_ms = now;
   std::vector<std::pair<StreamId, const std::vector<std::string>*>> claimed;
   for (const auto& id : ids) {
@@ -566,7 +573,7 @@ void xautoclaim(Call& call) {
   StreamGroup& group = group_of(call, key, name);
   Stream* stream = stream_of(call.keys, key);
   const uint64_t now = call.keys.now_ms();
-  StreamConsumer& consumer = consumer_of(group, consumer_name, now);
+  StreamConsumer& consumer = consumer_of(call, key, group, consumer_name, now);
   consumer.seen_ms = now;
   std::vector<std::pair<StreamId, const std::vector<std::string>*>> claimed;
   std::vector<StreamId> deleted;

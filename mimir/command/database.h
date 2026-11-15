@@ -111,6 +111,16 @@ class Database {
   // The scripts' interpreter and cache, one for every database as Valkey's.
   Scripting& scripting_locked() DANNAN_REQUIRES(_mutex) { return _scripting; }
 
+  // Keyspace notifications (Valkey's "Keyspace notifications"): an event of
+  // class `cls` ('g', '$', 'l', 's', 'h', 'z', 'x', 'e', 't', 'd', 'n' or
+  // 'm') named `event` happened to `key` in database `db`. Published, if the
+  // classes configured take it, once the command that caused it is done.
+  void notify_locked(size_t db, char cls, std::string_view event, std::string_view key) DANNAN_REQUIRES(_mutex);
+  // CONFIG SET notify-keyspace-events: whether `flags` is valid; if so it
+  // takes effect, and CONFIG GET answers it in Valkey's order.
+  bool set_notify_flags_locked(std::string_view flags) DANNAN_REQUIRES(_mutex);
+  static bool valid_notify_flags(std::string_view flags);
+
   // Active expiry: at most `budget` keys with an expiry examined. Speculative
   // work; thread-safe.
   size_t expire_step(size_t budget);
@@ -147,6 +157,20 @@ class Database {
   static std::string scoped(size_t db, std::string_view key);
   static std::pair<size_t, std::string_view> unscoped(std::string_view scoped_key);
   static std::string timeout_reply(resp::Protocol protocol, bool null_bulk);
+  // Each keyspace tells its own database's number of its expired and new keys;
+  // bound again when SWAPDB exchanges two.
+  void bind_listeners() DANNAN_REQUIRES(_mutex);
+  // A read looks its keys up first, as Valkey's do: an expired one is removed
+  // (and announced), a missing one is a "keymiss". Only while notifications
+  // are on.
+  void look_up_keys(const Spec& spec, const std::vector<std::string>& args, size_t db) DANNAN_REQUIRES(_mutex);
+  void publish_events() DANNAN_REQUIRES(_mutex);
+
+  struct Event {
+    size_t db;
+    std::string event;
+    std::string key;
+  };
 
   const dannan::contract::WallClock& _wall;
   const DatabaseSettings _settings;
@@ -169,6 +193,10 @@ class Database {
   // Per key, the sessions watching it.
   std::unordered_map<std::string, std::vector<Session*>> _watchers DANNAN_GUARDED_BY(_mutex);
   Scripting _scripting DANNAN_GUARDED_BY(_mutex);
+  // The classes notify-keyspace-events takes, as bits; the events waiting to
+  // be published.
+  uint32_t _notify_flags DANNAN_GUARDED_BY(_mutex) = 0;
+  std::vector<Event> _events DANNAN_GUARDED_BY(_mutex);
 };
 
 }  // namespace mimir::command

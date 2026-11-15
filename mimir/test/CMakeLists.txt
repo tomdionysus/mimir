@@ -14,6 +14,7 @@ add_executable(mimir_tests
   command_hashes_test.cpp
   command_hyperloglog_test.cpp
   command_lists_test.cpp
+  command_notifications_test.cpp
   command_pubsub_test.cpp
   command_scripting_test.cpp
   command_server_test.cpp

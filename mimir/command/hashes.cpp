@@ -40,6 +40,7 @@ void set_pairs(Call& call, std::string_view name, bool count_new) {
   Hash& hash = hash_or_create(call.keys, call.args[1]);
   int64_t created = 0;
   for (size_t i = 2; i < call.args.size(); i += 2) created += hash.set(call.args[i], call.args[i + 1]) ? 1 : 0;
+  call.notify('h', "hset", call.args[1]);
   if (count_new)
     call.reply.integer(created);
   else
@@ -58,6 +59,7 @@ void hsetnx(Call& call) {
     return;
   }
   hash.set(call.args[2], call.args[3]);
+  call.notify('h', "hset", call.args[1]);
   call.reply.integer(1);
 }
 
@@ -90,7 +92,13 @@ void hdel(Call& call) {
   }
   int64_t removed = 0;
   for (size_t i = 2; i < call.args.size(); ++i) removed += hash->erase(call.args[i]) ? 1 : 0;
-  if (hash->empty()) call.keys.erase(call.args[1]);
+  if (removed) {
+    call.notify('h', "hdel", call.args[1]);
+    if (hash->empty()) {
+      call.keys.erase(call.args[1]);
+      call.notify('g', "del", call.args[1]);
+    }
+  }
   call.reply.integer(removed);
 }
 
@@ -147,6 +155,7 @@ void hincrby(Call& call) {
     throw CommandError("ERR increment or decrement would overflow");
   }
   hash.set(call.args[2], format_integer(current + by));
+  call.notify('h', "hincrby", call.args[1]);
   call.reply.integer(current + by);
 }
 
@@ -167,6 +176,7 @@ void hincrbyfloat(Call& call) {
   std::string text = format_long_double(next);
   call.reply.bulk(text);
   hash_or_create(call.keys, call.args[1]).set(call.args[2], std::move(text));
+  call.notify('h', "hincrbyfloat", call.args[1]);
 }
 
 void hrandfield(Call& call) {

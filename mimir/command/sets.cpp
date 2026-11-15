@@ -90,10 +90,20 @@ void combine_store(Call& call, Op op) {
   Set result = compute(sets_of(call, 2, call.args.size()), op);
   const std::string& destination = call.args[1];
   call.reply.integer(static_cast<int64_t>(result.size()));
-  if (result.empty())
-    call.keys.erase(destination);
-  else
+  if (result.empty()) {
+    if (call.keys.erase(destination)) call.notify('g', "del", destination);
+  } else {
     call.keys.put(destination, keyspace::Entry{std::move(result), std::nullopt});
+    call.notify('s', op == Op::inter ? "sinterstore" : op == Op::onion ? "sunionstore" : "sdiffstore", destination);
+  }
+}
+
+// After members were taken from `key`: the event, then an emptied key's.
+void removed_from(Call& call, std::string_view event, const std::string& key, const Set& set) {
+  call.notify('s', event, key);
+  if (!set.empty()) return;
+  call.keys.erase(key);
+  call.notify('g', "del", key);
 }
 
 }  // namespace
@@ -102,6 +112,7 @@ void sadd(Call& call) {
   Set& set = set_or_create(call.keys, call.args[1]);
   int64_t added = 0;
   for (size_t i = 2; i < call.args.size(); ++i) added += set.add(call.args[i]) ? 1 : 0;
+  if (added) call.notify('s', "sadd", call.args[1]);
   call.reply.integer(added);
 }
 
@@ -113,7 +124,7 @@ void srem(Call& call) {
   }
   int64_t removed = 0;
   for (size_t i = 2; i < call.args.size(); ++i) removed += set->erase(call.args[i]) ? 1 : 0;
-  if (set->empty()) call.keys.erase(call.args[1]);
+  if (removed) removed_from(call, "srem", call.args[1], *set);
   call.reply.integer(removed);
 }
 
@@ -172,7 +183,7 @@ void spop(Call& call) {
     call.reply.set(taken.size());
     for (const auto& member : taken) call.reply.bulk(member);
   }
-  if (set->empty()) call.keys.erase(call.args[1]);
+  if (!taken.empty()) removed_from(call, "spop", call.args[1], *set);
 }
 
 void srandmember(Call& call) {
@@ -231,8 +242,8 @@ void smove(Call& call) {
     call.reply.integer(0);
     return;
   }
-  if (from->empty()) call.keys.erase(source);
-  set_or_create(call.keys, destination).add(member);
+  removed_from(call, "srem", source, *from);
+  if (set_or_create(call.keys, destination).add(member)) call.notify('s', "sadd", destination);
   call.reply.integer(1);
 }
 
