@@ -86,6 +86,26 @@ const std::array specs{
     Spec{"hincrbyfloat", 4, "write denyoom fast", 1, 1, 1, Class::configurable, hashes::hincrbyfloat},
     Spec{"hrandfield", -2, "readonly", 1, 1, 1, Class::read, hashes::hrandfield},
     Spec{"hscan", -3, "readonly", 1, 1, 1, Class::read, hashes::hscan},
+    // Sets. Adds and removes merge (observed-remove); pops, moves and stores
+    // that overwrite a destination from other keys commit by agreement.
+    Spec{"sadd", -3, "write denyoom fast", 1, 1, 1, Class::merge, sets::sadd},
+    Spec{"srem", -3, "write fast", 1, 1, 1, Class::merge, sets::srem},
+    Spec{"smembers", 2, "readonly", 1, 1, 1, Class::read, sets::smembers},
+    Spec{"sismember", 3, "readonly fast", 1, 1, 1, Class::read, sets::sismember},
+    Spec{"smismember", -3, "readonly fast", 1, 1, 1, Class::read, sets::smismember},
+    Spec{"scard", 2, "readonly fast", 1, 1, 1, Class::read, sets::scard},
+    Spec{"spop", -2, "write fast", 1, 1, 1, Class::agreement, sets::spop},
+    Spec{"srandmember", -2, "readonly", 1, 1, 1, Class::read, sets::srandmember},
+    Spec{"smove", 4, "write fast", 1, 2, 1, Class::agreement, sets::smove},
+    Spec{"sinter", -2, "readonly", 1, -1, 1, Class::read, sets::sinter},
+    Spec{"sunion", -2, "readonly", 1, -1, 1, Class::read, sets::sunion},
+    Spec{"sdiff", -2, "readonly", 1, -1, 1, Class::read, sets::sdiff},
+    Spec{"sinterstore", -3, "write denyoom", 1, -1, 1, Class::agreement, sets::sinterstore},
+    Spec{"sunionstore", -3, "write denyoom", 1, -1, 1, Class::agreement, sets::sunionstore},
+    Spec{"sdiffstore", -3, "write denyoom", 1, -1, 1, Class::agreement, sets::sdiffstore},
+    // SINTERCARD's keys follow numkeys.
+    Spec{"sintercard", -3, "readonly", 0, 0, 0, Class::read, sets::sintercard},
+    Spec{"sscan", -3, "readonly", 1, 1, 1, Class::read, sets::sscan},
     // Keys.
     Spec{"del", -2, "write", 1, -1, 1, Class::merge, generic::del},
     Spec{"unlink", -2, "write fast", 1, -1, 1, Class::merge, generic::del},

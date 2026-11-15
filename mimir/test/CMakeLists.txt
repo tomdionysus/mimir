@@ -9,6 +9,7 @@ add_executable(mimir_tests
   command_generic_test.cpp
   command_hashes_test.cpp
   command_lists_test.cpp
+  command_sets_test.cpp
   command_strings_test.cpp
   differential_test.cpp
   keyspace_keyspace_test.cpp

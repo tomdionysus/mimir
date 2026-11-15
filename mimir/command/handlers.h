@@ -89,6 +89,26 @@ void hrandfield(Call&);
 void hscan(Call&);
 }  // namespace hashes
 
+namespace sets {
+void sadd(Call&);
+void srem(Call&);
+void smembers(Call&);
+void sismember(Call&);
+void smismember(Call&);
+void scard(Call&);
+void spop(Call&);
+void srandmember(Call&);
+void smove(Call&);
+void sinter(Call&);
+void sunion(Call&);
+void sdiff(Call&);
+void sinterstore(Call&);
+void sunionstore(Call&);
+void sdiffstore(Call&);
+void sintercard(Call&);
+void sscan(Call&);
+}  // namespace sets
+
 namespace generic {
 void del(Call&);
 void exists(Call&);
