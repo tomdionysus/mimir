@@ -9,10 +9,13 @@ classes of command, agreement in Dannan, durability, and the order.
 - Steps 1, 2a and 2b's first part are on `develop` and pushed: strings, keys,
   connection commands, lists (not blocking), hashes, sets, sorted sets. Gates
   on node-d; counts in `COMPLETED.md`.
-- Next, in order: blocking list and sorted-set pops (BLPOP, BRPOP, BLMOVE,
-  BRPOPLPUSH, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP: the server parks a connection
-  on keys with a deadline), bitmaps and HyperLogLog, streams, pub/sub,
-  transactions (`MULTI`/`EXEC`/`WATCH`), then scripting (needs the maintainer: Lua is a
+- Since: blocking pops, bitmaps, HyperLogLog, pub/sub, transactions, and the
+  stream log (XADD, XRANGE, XREVRANGE, XLEN, XDEL, XTRIM, XREAD with BLOCK,
+  XSETID).
+- Next, in order: stream consumer groups (XGROUP, XREADGROUP, XACK,
+  XPENDING, XCLAIM, XAUTOCLAIM, XINFO); the server commands clients call
+  (CONFIG GET/SET, CLIENT LIST/KILL/INFO, INFO's sections, OBJECT, DUMP and
+  RESTORE, keyspace notifications); then scripting (needs the maintainer: Lua is a
   dependency).
 - Known costs to revisit: HSCAN, SSCAN and ZSCAN answer the whole collection in
   one page (Valkey does that for small ones only); a cursor over large ones is

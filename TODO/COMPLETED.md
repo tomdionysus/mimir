@@ -2,6 +2,28 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: step 2b, second part (blocking pops, bitmaps, HyperLogLog, pub/sub, transactions, the stream log)
+
+- Blocking pops (`e0ce2b1`): a command finding nothing is parked on its keys;
+  a write wakes only the keys it named (as Valkey signals them), oldest wait
+  first; a parked connection holds its pipeline and keeps reading, so a client
+  that leaves takes nothing.
+- Bitmaps (`63b25fe`), HyperLogLog in the shared HYLL format (`2aa59b0`:
+  every estimate and a dense value's bytes equal Valkey's), pub/sub with
+  RESP2's subscribed mode and RESP3 pushes (`977360e`), transactions with
+  WATCH (`204bca6`), the stream log (XADD, XRANGE, XREVRANGE, XLEN, XDEL,
+  XTRIM exact and by whole nodes, XREAD with BLOCK, XSETID).
+- The differential gate's findings, each matched: an infinite timeout's words;
+  BITCOUNT with a start alone; MULTI and WATCH refused inside a transaction
+  with Valkey 8's words and aborting the EXEC; XRANGE COUNT 0 a null array;
+  "(-" and "(+" invalid ids; an approximate trim may take the newest node.
+- The maintainer's ruling 19 recorded: whatever can use agreement waits for Dannan's.
+
+Gates, node-d as before: `tools/ci.sh release` **183 passed** at the
+stream log, 0 warnings; the differential gate against Valkey 8.1.1 **13 of 13**
+cases (strings, keys, lists, hashes, sets, sorted sets, blocking pops,
+bitmaps, HyperLogLog, streams, transactions, pub/sub, connection).
+
 ## 2026-11-15: step 2b, first part (lists, hashes, sets, sorted sets)
 
 - Lists that do not block (`bcf584a`), hashes in first-set order (`b7ebeb4`),
