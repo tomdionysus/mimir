@@ -1,22 +1,24 @@
 # Mimir - Active Work
 
 Last updated: 2026-11-15. `COMPLETED.md` is the record. The design is
-`TODO/2026-11-15-mimir-design.md`: Tom's rulings ("Ruled", 1 to 18), the two
+`TODO/2026-11-15-mimir-design.md`: Tom's rulings ("Ruled", 1 to 23), the two
 classes of command, agreement in Dannan, durability, and the order.
 
 ## Resume here
 
-- Steps 1, 2a and 2b's first part are on `develop` and pushed: strings, keys,
-  connection commands, lists (not blocking), hashes, sets, sorted sets. Gates
-  on corvus-uranus; counts in `COMPLETED.md`.
-- Since: blocking pops, bitmaps, HyperLogLog, pub/sub, transactions, and the
-  stream log (XADD, XRANGE, XREVRANGE, XLEN, XDEL, XTRIM, XREAD with BLOCK,
-  XSETID).
-- Next, in order: stream consumer groups (XGROUP, XREADGROUP, XACK,
-  XPENDING, XCLAIM, XAUTOCLAIM, XINFO); the server commands clients call
-  (CONFIG GET/SET, CLIENT LIST/KILL/INFO, INFO's sections, OBJECT, DUMP and
-  RESTORE, keyspace notifications); then scripting (needs Tom: Lua is a
-  dependency).
+- On `develop` and pushed: every Valkey type (strings, keys, lists with the
+  blocking pops, hashes, sets, sorted sets, bitmaps, HyperLogLog, streams with
+  consumer groups), pub/sub, transactions, the server commands clients call,
+  and configurable databases (ruling 21). Gates on corvus-uranus; counts in
+  `COMPLETED.md`.
+- Next, in order: scripting on Debian's liblua5.1 (ruling 20; EVAL, EVALSHA,
+  SCRIPT, then FUNCTION and FCALL; `liblua5.1-0-dev` is installed on
+  corvus-uranus and goes into CI's package list); then keyspace
+  notifications, DUMP and RESTORE, SORT, the GEO commands, LCS; then
+  authentication with the built-in user list (ACL).
+- Stage 3 waits on Dannan 0.9.0's agreement primitive and hybrid clock
+  (rulings 6, 8, 19); ruling 22's cross-slot atomic commit is one piece with
+  Kvasir's transaction record, to be proposed jointly when one of us reaches it.
 - Known costs to revisit: HSCAN, SSCAN and ZSCAN answer the whole collection in
   one page (Valkey does that for small ones only); a cursor over large ones is
   owed, since a very large page holds the database lock (law 2).
@@ -25,7 +27,7 @@ classes of command, agreement in Dannan, durability, and the order.
 - The differential gate (`Differential.*`, `mimir/test/differential_test.cpp`)
   grows with each type. Run by hand on corvus-uranus: `valkey-server --port 7379
   --bind 127.0.0.1 --save "" --appendonly no --daemonize yes`, `mimir-node
-  --listen 127.0.0.1 --port 7380 --seconds 60 &`, then `MIMIR_DIFF_MIMIR_PORT=7380
+  --listen 127.0.0.1 --port 7380 --databases 16 --seconds 60 &`, then `MIMIR_DIFF_MIMIR_PORT=7380
   MIMIR_DIFF_VALKEY_PORT=7379 ./mimir_tests --gtest_filter='Differential.*'`, and
   `valkey-cli -p 7379 shutdown nosave` after. (Valkey 8.1.1 is installed there
   with its service disabled.)
