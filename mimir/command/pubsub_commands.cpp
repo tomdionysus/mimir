@@ -55,6 +55,7 @@ void publish(Call& call) { call.reply.integer(static_cast<int64_t>(call.database
 void spublish(Call& call) { call.reply.integer(static_cast<int64_t>(call.database.pubsub().spublish(call.args[1], call.args[2]))); }
 
 void pubsub(Call& call) {
+  if (help::reply_help(call, "pubsub")) return;
   auto& hub = call.database.pubsub();
   const std::string sub = lower(call.args[1]);
   const auto names_reply = [&](Kind kind) {

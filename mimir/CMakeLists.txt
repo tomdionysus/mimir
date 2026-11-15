@@ -18,6 +18,7 @@ add_library(mimir SHARED
   command/generic.cpp
   command/geo.cpp
   command/hashes.cpp
+  command/help.cpp
   command/hyperloglog.cpp
   command/lists.cpp
   command/lua_struct.cpp

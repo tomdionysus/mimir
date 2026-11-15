@@ -212,9 +212,13 @@ void client(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
     call.reply.verbatim("txt", client_line(call.session, call.keys.now_ms()));
   } else if (sub == "list") {
     std::optional<std::string> type;
+    std::optional<std::string> user;
     std::vector<int64_t> ids;
     for (size_t i = 2; i < call.args.size(); ++i) {
-      if (iequals(call.args[i], "TYPE") && i + 1 < call.args.size()) {
+      if (iequals(call.args[i], "USER") && i + 1 < call.args.size()) {
+        user = call.args[++i];
+        if (!call.database.acl_locked().find(*user)) throw CommandError("ERR No such user '" + *user + "'");
+      } else if (iequals(call.args[i], "TYPE") && i + 1 < call.args.size()) {
         type = lower(call.args[++i]);
         if (*type != "normal" && *type != "pubsub" && *type != "master" && *type != "replica")
           throw CommandError("ERR Unknown client type '" + call.args[i] + "'");
@@ -232,6 +236,7 @@ void client(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
     const uint64_t now = call.keys.now_ms();
     for (const auto& [id, session] : call.database.sessions_locked()) {
       if (!ids.empty() && std::find(ids.begin(), ids.end(), id) == ids.end()) continue;
+      if (user && session->user != *user) continue;
       const bool pubsub = session->subscriptions > 0 || session->shard_subscriptions > 0;
       if (type && ((*type == "pubsub") != pubsub || *type == "master" || *type == "replica")) continue;
       text += client_line(*session, now);
@@ -251,10 +256,14 @@ void client(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
     }
     std::optional<int64_t> by_id;
     std::optional<std::string> by_addr;
+    std::optional<std::string> by_user;
     bool skipme = true;
     for (size_t i = 2; i + 1 < call.args.size(); i += 2) {
       const std::string filter = lower(call.args[i]);
-      if (filter == "id") {
+      if (filter == "user") {
+        by_user = call.args[i + 1];
+        if (!call.database.acl_locked().find(*by_user)) throw CommandError("ERR No such user '" + *by_user + "'");
+      } else if (filter == "id") {
         auto id = parse_integer(call.args[i + 1]);
         if (!id || *id <= 0) throw CommandError("ERR client-id should be greater than 0");
         by_id = *id;
@@ -271,6 +280,7 @@ void client(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
     for (const auto& [id, session] : call.database.sessions_locked()) {
       if (by_id && id != *by_id) continue;
       if (by_addr && session->address != *by_addr) continue;
+      if (by_user && session->user != *by_user) continue;
       if (skipme && id == call.session.id) continue;
       if (session->kill) session->kill();
       ++killed;
@@ -279,6 +289,52 @@ void client(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   } else if (sub == "no-evict" || sub == "no-touch") {
     if (call.args.size() != 3 || (!iequals(call.args[2], "on") && !iequals(call.args[2], "off"))) throw CommandError(syntax_error);
     call.reply.simple("OK");
+  } else if (sub == "reply") {
+    if (call.args.size() != 3) wrong_arity("client|reply");
+    if (iequals(call.args[2], "ON")) {
+      call.session.reply_off = false;
+      call.session.reply_skip = false;
+      call.reply.simple("OK");
+    } else if (iequals(call.args[2], "OFF")) {
+      call.session.reply_off = true;
+    } else if (iequals(call.args[2], "SKIP")) {
+      if (!call.session.reply_off) call.session.reply_skip_next = true;
+    } else {
+      throw CommandError(syntax_error);
+    }
+  } else if (sub == "unblock") {
+    if (call.args.size() != 3 && call.args.size() != 4) wrong_arity("client|unblock");
+    const int64_t id = integer_argument(call.args[2]);
+    bool error = false;
+    if (call.args.size() == 4) {
+      if (iequals(call.args[3], "ERROR"))
+        error = true;
+      else if (!iequals(call.args[3], "TIMEOUT"))
+        throw CommandError("ERR CLIENT UNBLOCK reason should be TIMEOUT or ERROR");
+    }
+    call.reply.integer(call.database.unblock_locked(id, error) ? 1 : 0);
+  } else if (sub == "capa") {
+    if (call.args.size() < 3) wrong_arity("client|capa");
+    call.reply.simple("OK");
+  } else if (sub == "getredir") {
+    if (call.args.size() != 2) wrong_arity("client|getredir");
+    // No tracking, so no redirection.
+    call.reply.integer(-1);
+  } else if (sub == "trackinginfo") {
+    if (call.args.size() != 2) wrong_arity("client|trackinginfo");
+    call.reply.map(3);
+    call.reply.bulk("flags");
+    call.reply.set(1);
+    call.reply.bulk("off");
+    call.reply.bulk("redirect");
+    call.reply.integer(-1);
+    call.reply.bulk("prefixes");
+    call.reply.array(0);
+  } else if (sub == "import-source") {
+    if (call.args.size() != 3) wrong_arity("client|import-source");
+    throw CommandError("ERR Server is not in import mode");
+  } else if (help::reply_help(call, "client")) {
+    return;
   } else {
     unknown_subcommand(call.args[1], "client");
   }
@@ -316,6 +372,41 @@ void command(Call& call) {
     auto specs = all_specs();
     call.reply.array(specs.size());
     for (const Spec& spec : specs) call.reply.bulk(spec.name);
+  } else if (sub == "getkeys" || sub == "getkeysandflags") {
+    if (call.args.size() < 3) wrong_arity("command|" + sub);
+    const std::vector<std::string> args(call.args.begin() + 2, call.args.end());
+    const Spec* spec = find_spec(args[0]);
+    if (!spec || !Acl::known(args)) throw CommandError("ERR Invalid command specified");
+    if (!Acl::has_keys(args)) throw CommandError("ERR The command has no key arguments");
+    const int count = static_cast<int>(args.size());
+    if ((spec->arity > 0 && count != spec->arity) || (spec->arity < 0 && count < -spec->arity))
+      throw CommandError("ERR Invalid number of arguments specified for command");
+    const auto keys = Acl::keys_with_flags(args);
+    if (keys.empty() && spec->flags.find("no_mandatory_keys") == std::string_view::npos) throw CommandError("ERR Invalid arguments specified for command");
+    call.reply.array(keys.size());
+    for (const auto& [position, flags] : keys) {
+      if (sub == "getkeys") {
+        call.reply.bulk(args[position]);
+        continue;
+      }
+      call.reply.array(2);
+      call.reply.bulk(args[position]);
+      std::vector<std::string_view> words;
+      std::string_view rest = flags;
+      while (!rest.empty()) {
+        const size_t space = rest.find(' ');
+        words.push_back(rest.substr(0, space));
+        rest = space == std::string_view::npos ? std::string_view() : rest.substr(space + 1);
+      }
+      call.reply.set(words.size());
+      for (auto word : words) call.reply.simple(word);
+    }
+  } else if (sub == "docs") {
+    // Valkey's documentation is its own text, which Mimir does not copy: no
+    // command has documentation here.
+    call.reply.map(0);
+  } else if (help::reply_help(call, "command")) {
+    return;
   } else {
     unknown_subcommand(call.args[1], "command");
   }

@@ -68,6 +68,12 @@ struct Session {
   // It came over TLS: AUTH on a plaintext connection is refused unless the
   // settings allow it (ruling 28).
   bool tls = false;
+  // CLIENT REPLY: OFF suppresses every reply; SKIP the next command's.
+  bool reply_off = false;
+  bool reply_skip = false;
+  bool reply_skip_next = false;
+  // MONITOR: every command the node runs is pushed to it.
+  bool monitoring = false;
   // A script's or a function's own session: what it runs must be
   // deterministic (SORT orders a set it would otherwise leave unordered).
   bool scripted = false;

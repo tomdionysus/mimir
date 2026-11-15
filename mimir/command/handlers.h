@@ -281,7 +281,24 @@ void waitaof(Call&);
 void memory(Call&);
 void slowlog(Call&);
 void lastsave(Call&);
+void cluster(Call&);
+void asking(Call&);
+void readonly(Call&);
+void readwrite(Call&);
+void debug(Call&);
+void module(Call&);
+void pfselftest(Call&);
+void latency(Call&);
+void commandlog(Call&);
+void lolwut(Call&);
+void monitor(Call&);
 }  // namespace server
+
+namespace help {
+// A container's HELP: answered, as Valkey 8.1.1 answers it, when args[1] is
+// HELP; false otherwise.
+bool reply_help(Call& call, std::string_view container);
+}  // namespace help
 
 namespace connection {
 void ping(Call&);

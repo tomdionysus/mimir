@@ -135,6 +135,7 @@ StreamGroup& xgroup_group(Call& call) {
 }  // namespace
 
 void xgroup(Call& call) {
+  if (help::reply_help(call, "xgroup")) return;
   const std::string sub = lower(call.args[1]);
   const auto need = [&](size_t least, size_t most, std::string_view name) {
     if (call.args.size() < least || call.args.size() > most) throw CommandError("ERR wrong number of arguments for 'xgroup|" + std::string(name) + "' command");
@@ -616,6 +617,7 @@ void xautoclaim(Call& call) {
 }
 
 void xinfo(Call& call) {
+  if (help::reply_help(call, "xinfo")) return;
   const std::string sub = lower(call.args[1]);
   const uint64_t now = call.keys.now_ms();
   if (sub == "stream") {

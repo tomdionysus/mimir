@@ -1157,6 +1157,83 @@ TEST_F(Differential, Acl) {
   same({"ACL", "LOG", "RESET"});
 }
 
+// The rest of Valkey's command list as a standalone Valkey answers it.
+TEST_F(Differential, Introspection) {
+  for (const char* container :
+       {"CLIENT", "COMMAND", "CONFIG", "FUNCTION", "MEMORY", "PUBSUB", "SCRIPT", "SLOWLOG", "XGROUP", "XINFO", "LATENCY", "MODULE", "COMMANDLOG", "ACL"}) {
+    same({container, "HELP"});
+    same({container, "HELP", "x"});
+  }
+  script({
+      {"CLUSTER", "INFO"},
+      {"CLUSTER", "HELP"},
+      {"CLUSTER", "SLOTS"},
+      {"CLUSTER", "KEYSLOT", "foo"},
+      {"CLUSTER", "BOGUS"},
+      {"ASKING"},
+      {"READONLY"},
+      {"READWRITE"},
+      {"DEBUG", "OBJECT", "x"},
+      {"DEBUG", "SLEEP", "0"},
+      {"MODULE", "LIST"},
+      {"MODULE", "LOAD", "/nonexistent.so"},
+      {"MODULE", "UNLOAD", "x"},
+      {"MODULE", "BOGUS"},
+      {"LATENCY", "LATEST"},
+      {"LATENCY", "HISTORY", "command"},
+      {"LATENCY", "RESET"},
+      {"LATENCY", "GRAPH", "command"},
+      {"LATENCY", "BOGUS"},
+      {"COMMANDLOG", "LEN", "bogus"},
+      {"COMMANDLOG", "GET", "x", "slow"},
+      {"COMMANDLOG", "RESET", "large-request"},
+      {"COMMANDLOG", "LEN", "large-request"},
+      {"MEMORY", "PURGE"},
+      {"CONFIG", "RESETSTAT"},
+      {"COMMAND", "GETKEYS", "SET", "a", "b"},
+      {"COMMAND", "GETKEYS", "MSET", "a", "1", "b", "2"},
+      {"COMMAND", "GETKEYS", "GET"},
+      {"COMMAND", "GETKEYS", "NOSUCH", "x"},
+      {"COMMAND", "GETKEYS", "PING"},
+      {"COMMAND", "GETKEYS", "EVAL", "return 1", "2", "x", "y"},
+      {"COMMAND", "GETKEYS", "EVAL", "return 1", "0"},
+      {"COMMAND", "GETKEYS", "SORT", "k", "STORE", "d"},
+      {"COMMAND", "GETKEYS", "ZUNIONSTORE", "d", "2", "a", "b"},
+      {"COMMAND", "GETKEYS", "XREAD", "STREAMS", "a", "b", "0", "0"},
+      {"COMMAND", "GETKEYS", "OBJECT", "ENCODING", "k"},
+      {"COMMAND", "GETKEYS", "CLIENT", "nosuch"},
+      {"COMMAND", "GETKEYS", "LMOVE", "a", "b", "LEFT", "RIGHT"},
+      {"COMMAND", "GETKEYS", "GEORADIUS", "g", "0", "0", "1", "km", "STORE", "d"},
+      {"COMMAND", "GETKEYS", "BLMPOP", "0", "2", "a", "b", "LEFT"},
+      {"COMMAND", "GETKEYSANDFLAGS", "SET", "a", "b"},
+      {"COMMAND", "GETKEYSANDFLAGS", "SET", "a", "b", "GET"},
+      {"COMMAND", "GETKEYSANDFLAGS", "COPY", "a", "b"},
+      {"COMMAND", "GETKEYSANDFLAGS", "LMOVE", "a", "b", "LEFT", "RIGHT"},
+      {"COMMAND", "GETKEYSANDFLAGS", "SORT", "k", "STORE", "d"},
+      {"COMMAND", "GETKEYSANDFLAGS", "BITFIELD", "k", "GET", "u8", "0"},
+      {"COMMAND", "GETKEYSANDFLAGS", "BITFIELD", "k", "SET", "u8", "0", "1"},
+      {"COMMAND", "GETKEYSANDFLAGS", "DEL", "a", "b"},
+      {"CLIENT", "REPLY", "ON"},
+      {"CLIENT", "REPLY", "BOGUS"},
+      {"CLIENT", "UNBLOCK", "999"},
+      {"CLIENT", "UNBLOCK", "999", "ERROR"},
+      {"CLIENT", "UNBLOCK", "999", "BOGUS"},
+      {"CLIENT", "UNBLOCK", "x"},
+      {"CLIENT", "GETREDIR"},
+      {"CLIENT", "TRACKINGINFO"},
+      {"CLIENT", "CAPA", "redirect"},
+      {"CLIENT", "IMPORT-SOURCE", "ON"},
+      {"CLIENT", "LIST", "USER", "nosuch"},
+      {"CLIENT", "KILL", "USER", "nosuch"},
+      {"CLIENT", "KILL", "USER", "default", "SKIPME", "yes"},
+      {"SCRIPT", "SHOW", "0000000000000000000000000000000000000000"},
+      {"SCRIPT", "DEBUG", "NO"},
+      {"SCRIPT", "DEBUG", "BOGUS"},
+  });
+  both({"SCRIPT", "LOAD", "return 7"});
+  same({"SCRIPT", "SHOW", "59b6ab2fbe0ee4b25733de0f62e6cda4899ef8e9"});
+}
+
 TEST_F(Differential, Scripting) {
   both({"SCRIPT", "FLUSH"});
   script({
