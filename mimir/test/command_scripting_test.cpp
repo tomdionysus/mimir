@@ -115,7 +115,78 @@ TEST(CommandScripting, GlobalsAreReadOnly) {
 TEST(CommandScripting, NoFilesInTheSandbox) {
   Bed bed;
   EXPECT_EQ(bed.run({"EVAL", "return type(os.clock)", "0"}), bulk("function"));
-  EXPECT_EQ(bed.run({"EVAL", "return rawget(_G, 'dofile') == nil and rawget(_G, 'io') == nil", "0"}), integer(1));
+  EXPECT_EQ(bed.run({"EVAL", "return type(os.time)", "0"}), bulk("nil"));
+  for (const char* gone : {"dofile", "loadfile", "print", "io", "debug", "package", "require", "module", "getfenv", "setfenv", "newproxy"}) {
+    EXPECT_EQ(bed.run({"EVAL", std::string("return type(rawget(_G, '") + gone + "'))", "0"}), bulk("nil")) << gone;
+  }
+  for (const char* kept : {"pairs", "loadstring", "load", "coroutine", "unpack", "gcinfo", "cjson", "bit", "cmsgpack", "struct", "redis", "server"}) {
+    EXPECT_NE(bed.run({"EVAL", std::string("return type(rawget(_G, '") + kept + "'))", "0"}), bulk("nil")) << kept;
+  }
+}
+
+TEST(CommandScripting, EveryLibraryIsReadOnly) {
+  Bed bed;
+  for (const std::string body : {"redis.call = nil", "cjson.encode = nil", "string.foo = 1", "server.x = 1", "struct.pack = nil"}) {
+    EXPECT_EQ(bed.run({"EVAL", body, "0"}), error("ERR user_script:1: Attempt to modify a readonly table" + suffix(command::sha1_hex(body), 1))) << body;
+  }
+  for (const std::string body : {"rawset(_G, 'x', 1)", "setmetatable(_G, nil)"}) {
+    EXPECT_EQ(bed.run({"EVAL", body, "0"}), error("ERR Attempt to modify a readonly table" + suffix(command::sha1_hex(body), 1))) << body;
+  }
+  const std::string missing = "return _G.x";
+  EXPECT_EQ(bed.run({"EVAL", missing, "0"}),
+            error("ERR user_script:1: Script attempted to access nonexistent global variable 'x'" + suffix(command::sha1_hex(missing), 1)));
+  // Code compiled inside a script runs on the same read-only globals.
+  EXPECT_EQ(bed.run({"EVAL", "local f = loadstring('y = 1'); return pcall(f)", "0"}), nil());
+  // Strings keep their methods, and their metatable reads the string library.
+  EXPECT_EQ(bed.run({"EVAL", "return ('abc'):upper()", "0"}), bulk("ABC"));
+  EXPECT_EQ(bed.run({"EVAL", "return getmetatable('').__index == string", "0"}), integer(1));
+  // A library is walked through its proxy, which is handed back, never the
+  // table beneath.
+  EXPECT_EQ(bed.run({"EVAL", "local n = 0 for k, v in pairs(struct) do n = n + 1 end return n", "0"}), integer(3));
+  EXPECT_EQ(bed.run({"EVAL", "local f, s = pairs(string); return s == string", "0"}), integer(1));
+  EXPECT_EQ(bed.run({"EVAL", "local k = next(struct); return type(k)", "0"}), bulk("string"));
+  EXPECT_EQ(bed.run({"EVAL", "local n = 0 for i, v in ipairs({5, 6, 7}) do n = n + v end return n", "0"}), integer(18));
+  // Tables a script makes are its own.
+  EXPECT_EQ(bed.run({"EVAL", "local t = {}; t.x = 1; setmetatable(t, {}); rawset(t, 'y', 2); return t.x + t.y", "0"}), integer(3));
+}
+
+TEST(CommandScripting, Cjson) {
+  Bed bed;
+  EXPECT_EQ(bed.run({"EVAL", "return cjson.encode({1, 2, {a=1}})", "0"}), bulk("[1,2,{\"a\":1}]"));
+  EXPECT_EQ(bed.run({"EVAL", "return cjson.encode({a=1.5})", "0"}), bulk("{\"a\":1.5}"));
+  EXPECT_EQ(bed.run({"EVAL", "return cjson.decode('[1,2,3.25]')", "0"}), array({integer(1), integer(2), integer(3)}));
+  EXPECT_EQ(bed.run({"EVAL", "return cjson.encode(cjson.decode('[]'))", "0"}), bulk("{}"));
+  EXPECT_EQ(bed.run({"EVAL", "return cjson.encode(1/3)", "0"}), bulk("0.33333333333333"));
+  EXPECT_EQ(bed.run({"EVAL", "return cjson.encode({[1]=1, [3]=3})", "0"}), bulk("[1,null,3]"));
+  EXPECT_EQ(bed.run({"EVAL", "return cjson.decode('null') == cjson.null", "0"}), integer(1));
+}
+
+TEST(CommandScripting, BitAndCmsgpack) {
+  Bed bed;
+  EXPECT_EQ(bed.run({"EVAL", "return bit.band(0xff, 0x0f)", "0"}), integer(15));
+  EXPECT_EQ(bed.run({"EVAL", "return bit.tohex(255)", "0"}), bulk("000000ff"));
+  EXPECT_EQ(bed.run({"EVAL", "return bit.tobit(4294967296 + 5)", "0"}), integer(5));
+  // MessagePack: a positive fixint, a fixstr, a fixarray.
+  EXPECT_EQ(bed.run({"EVAL", "return cmsgpack.pack(1, 'a', {1, 2})", "0"}), bulk(std::string("\x01\xa1"
+                                                                                             "a\x92\x01\x02",
+                                                                                             6)));
+  EXPECT_EQ(bed.run({"EVAL", "return {cmsgpack.unpack(cmsgpack.pack(1, 'a'))}", "0"}), array({integer(1), bulk("a")}));
+}
+
+TEST(CommandScripting, Struct) {
+  Bed bed;
+  EXPECT_EQ(bed.run({"EVAL", "return struct.pack('<HH', 1, 2)", "0"}), bulk(std::string("\x01\x00\x02\x00", 4)));
+  EXPECT_EQ(bed.run({"EVAL", "return struct.pack('>i4', -2)", "0"}), bulk("\xff\xff\xff\xfe"));
+  EXPECT_EQ(bed.run({"EVAL", "return {struct.unpack('<HB', '\\1\\0\\7')}", "0"}), array({integer(1), integer(7), integer(4)}));
+  EXPECT_EQ(bed.run({"EVAL", "return struct.size('i4d')", "0"}), integer(12));
+  EXPECT_EQ(bed.run({"EVAL", "return struct.pack('s', 'ab')", "0"}), bulk(std::string("ab\0", 3)));
+  EXPECT_EQ(bed.run({"EVAL", "return {struct.unpack('bc0', struct.pack('bc0', 3, 'xyz'))}", "0"}), array({bulk("xyz"), integer(5)}));
+  // '!4' aligns the int to four bytes after the one-byte b.
+  EXPECT_EQ(bed.run({"EVAL", "return struct.pack('<!4bi', 1, 2)", "0"}), bulk(std::string("\x01\0\0\0\x02\0\0\0", 8)));
+  EXPECT_EQ(bed.run({"EVAL", "return struct.pack('x')", "0"}), bulk(std::string("\0", 1)));
+  EXPECT_EQ(bed.run({"EVAL", "return {struct.unpack('>d', struct.pack('>d', 1.5))}", "0"}), array({integer(1), integer(9)}));
+  const std::string bad = "return struct.pack('q', 1)";
+  EXPECT_EQ(bed.run({"EVAL", bad, "0"}), error("ERR user_script:1: bad argument #1 to 'pack' (invalid format option 'q')" + suffix(command::sha1_hex(bad), 1)));
 }
 
 TEST(CommandScripting, EvalshaRunsACachedScript) {
