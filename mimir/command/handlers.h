@@ -70,6 +70,25 @@ void rpoplpush(Call&);
 void lmpop(Call&);
 }  // namespace lists
 
+namespace hashes {
+void hset(Call&);
+void hmset(Call&);
+void hsetnx(Call&);
+void hget(Call&);
+void hmget(Call&);
+void hdel(Call&);
+void hlen(Call&);
+void hstrlen(Call&);
+void hexists(Call&);
+void hkeys(Call&);
+void hvals(Call&);
+void hgetall(Call&);
+void hincrby(Call&);
+void hincrbyfloat(Call&);
+void hrandfield(Call&);
+void hscan(Call&);
+}  // namespace hashes
+
 namespace generic {
 void del(Call&);
 void exists(Call&);

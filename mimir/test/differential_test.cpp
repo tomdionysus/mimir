@@ -331,6 +331,58 @@ TEST_F(Differential, Lists) {
   });
 }
 
+TEST_F(Differential, Hashes) {
+  script({
+      {"HSET", "h", "b", "1", "a", "2", "c", "3"},
+      {"HSET", "h", "b", "4"},
+      {"HSET", "h", "x"},
+      {"HGETALL", "h"},
+      {"HKEYS", "h"},
+      {"HVALS", "h"},
+      {"HDEL", "h", "a", "nofield"},
+      {"HGETALL", "h"},
+      {"HSET", "h", "a", "5"},
+      {"HGETALL", "h"},
+      {"HMSET", "h2", "f", "v"},
+      {"HMGET", "h", "a", "nofield", "c"},
+      {"HGET", "h", "nofield"},
+      {"HSETNX", "h", "a", "x"},
+      {"HSETNX", "h", "new", "x"},
+      {"HLEN", "h"},
+      {"HSTRLEN", "h", "new"},
+      {"HEXISTS", "h", "new"},
+      {"HINCRBY", "h", "n", "5"},
+      {"HINCRBY", "h", "n", "-10"},
+      {"HINCRBY", "h", "new", "1"},
+      {"HINCRBY", "h", "n", "x"},
+      {"HSET", "h", "max", "9223372036854775807"},
+      {"HINCRBY", "h", "max", "1"},
+      {"HSET", "h", "fl", "10.50"},
+      {"HINCRBYFLOAT", "h", "fl", "0.1"},
+      {"HINCRBYFLOAT", "h", "new", "1"},
+      {"HINCRBYFLOAT", "h", "fl", "x"},
+      {"HRANDFIELD", "nosuch"},
+      {"HRANDFIELD", "nosuch", "3"},
+      {"HRANDFIELD", "h", "0"},
+      {"HRANDFIELD", "h", "1", "BOGUS"},
+      {"HRANDFIELD", "h", "x"},
+      {"HRANDFIELD", "h", "100", "WITHVALUES"},
+      {"HSCAN", "h", "0"},
+      {"HSCAN", "h", "0", "MATCH", "n*", "NOVALUES"},
+      {"HSCAN", "h", "x"},
+      {"HSCAN", "h", "0", "COUNT", "0"},
+      {"HSCAN", "nosuch", "0"},
+      {"HGET", "nosuch", "f"},
+      {"SET", "s", "v"},
+      {"HSET", "s", "f", "v"},
+      {"HGETALL", "s"},
+      {"GET", "h"},
+      {"HDEL", "h2", "f"},
+      {"EXISTS", "h2"},
+      {"SCAN", "0", "TYPE", "hash"},
+  });
+}
+
 TEST_F(Differential, Connection) {
   script({
       {"PING"},
