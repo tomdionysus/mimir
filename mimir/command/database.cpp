@@ -35,7 +35,11 @@ bool spec_allowed_subscribed(std::string_view name) {
 }  // namespace
 
 Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings settings)
-    : _wall(wall), _settings(std::move(settings)), _started_ms(wall.unix_ms()), _random(std::random_device{}()) {
+    : _wall(wall),
+      _settings(std::move(settings)),
+      _started_ms(wall.unix_ms()),
+      _random(std::random_device{}()),
+      _scripting(ScriptingNames{_settings.server_name, _settings.compatible_version, _settings.redis_version}) {
   const size_t count = std::max<size_t>(1, _settings.databases);
   for (size_t i = 0; i < count; ++i) _dbs.push_back(std::make_unique<keyspace::Keyspace>(wall));
   // What CONFIG GET answers, in Valkey's names: no persistence of Valkey's

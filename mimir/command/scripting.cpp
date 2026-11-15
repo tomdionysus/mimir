@@ -14,6 +14,7 @@
 
 #include <openssl/evp.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <ctime>
@@ -25,6 +26,7 @@
 #include "mimir/command/database.h"
 #include "mimir/command/handlers.h"
 #include "mimir/command/lua_struct.h"
+#include "mimir/keyspace/glob.h"
 
 extern "C" {
 #include <lauxlib.h>
@@ -55,12 +57,15 @@ std::string sha1_hex(std::string_view bytes) {
 
 namespace {
 
-// One script's run, reached from the Lua side through the registry.
+// One script's or function's run, reached from the Lua side through the
+// registry: what its errors name (the script's sha or the function's name)
+// and the chunk its lines are in ("user_script" or "user_function").
 struct Run {
   Call* outer;
   Session session;
   bool read_only;
-  std::string sha;
+  std::string name;
+  const char* chunk;
 };
 
 constexpr const char* run_key = "mimir.run";
@@ -495,19 +500,21 @@ void wrap_global(lua_State* L, const char* name, lua_CFunction wrapper) {
 }
 
 // The script's line where an error arose.
-int script_line(lua_State* L) {
+int script_line(lua_State* L, std::string_view chunk) {
   lua_Debug ar;
   for (int level = 0; lua_getstack(L, level, &ar); ++level) {
     lua_getinfo(L, "Sl", &ar);
-    if (std::string_view(ar.source) == "@user_script" && ar.currentline > 0) return ar.currentline;
+    const std::string_view source = ar.source;
+    if (source.size() == chunk.size() + 1 && source[0] == '@' && source.substr(1) == chunk && ar.currentline > 0) return ar.currentline;
   }
   return 0;
 }
 
-// The message handler: makes the final error text, sha and line attached.
+// The message handler: makes the final error text, the script's sha (or the
+// function's name) and line attached.
 int on_error(lua_State* L) {
   Run& run = current(L);
-  const int line = script_line(L);
+  const int line = script_line(L, run.chunk);
   std::string message;
   if (lua_istable(L, 1)) {
     lua_getfield(L, 1, "err");
@@ -516,12 +523,29 @@ int on_error(lua_State* L) {
   } else {
     message = std::string("ERR ") + (lua_isstring(L, 1) ? lua_tostring(L, 1) : "unknown error");
   }
-  message += " script: " + run.sha + ", on @user_script:" + std::to_string(line) + ".";
+  message += " script: " + run.name + ", on @" + run.chunk + ":" + std::to_string(line) + ".";
   lua_pushstring(L, message.c_str());
   return 1;
 }
 
-void install(lua_State* L) {
+// "8.1.1" as Valkey numbers it: 0x080101.
+lua_Number version_number(const std::string& version) {
+  unsigned major = 0;
+  unsigned minor = 0;
+  unsigned patch = 0;
+  std::sscanf(version.c_str(), "%u.%u.%u", &major, &minor, &patch);
+  return static_cast<lua_Number>((major << 16) | (minor << 8) | patch);
+}
+
+// What the server says of itself, on a redis table at the top.
+void set_version_fields(lua_State* L, const ScriptingNames& names) {
+  lua_pushstring(L, names.redis_version.c_str());
+  lua_setfield(L, -2, "REDIS_VERSION");
+  lua_pushnumber(L, version_number(names.redis_version));
+  lua_setfield(L, -2, "REDIS_VERSION_NUM");
+}
+
+void install(lua_State* L, const ScriptingNames& names) {
   for (lua_CFunction open : {luaopen_base, luaopen_table, luaopen_string, luaopen_math}) {
     lua_pushcfunction(L, open);
     lua_call(L, 0, 0);
@@ -558,6 +582,13 @@ void install(lua_State* L) {
     lua_pushnumber(L, level++);
     lua_setfield(L, -2, name);
   }
+  set_version_fields(L, names);
+  lua_pushstring(L, names.server_name.c_str());
+  lua_setfield(L, -2, "SERVER_NAME");
+  lua_pushstring(L, names.valkey_version.c_str());
+  lua_setfield(L, -2, "VALKEY_VERSION");
+  lua_pushnumber(L, version_number(names.valkey_version));
+  lua_setfield(L, -2, "VALKEY_VERSION_NUM");
   lua_pushvalue(L, -1);
   lua_setglobal(L, "redis");
   lua_setglobal(L, "server");
@@ -639,7 +670,7 @@ void run_script(Call& call, const std::string& sha, const std::string& body, siz
   set_array(L, "KEYS",
             std::vector<std::string>(call.args.begin() + static_cast<std::ptrdiff_t>(first), call.args.begin() + static_cast<std::ptrdiff_t>(split)));
   set_array(L, "ARGV", std::vector<std::string>(call.args.begin() + static_cast<std::ptrdiff_t>(split), call.args.end()));
-  Run run{&call, Session{}, read_only, sha};
+  Run run{&call, Session{}, read_only, sha, "user_script"};
   run.session.id = call.session.id;
   run.session.db = call.session.db;
   lua_pushlightuserdata(L, &run);
@@ -658,15 +689,370 @@ void run_script(Call& call, const std::string& sha, const std::string& body, siz
   lua_settop(L, 0);
 }
 
+// FUNCTION's libraries. A library's code runs once, at FUNCTION LOAD, on
+// globals that hold only a narrow redis table (register_function, log, its
+// levels, the version): Valkey's load-time sandbox, in which even `type` and
+// `error` are missing. Once loaded, the library's globals become the runtime
+// ones, so a helper it defined sees what its functions see.
+constexpr const char* load_redis_key = "mimir.load_redis";
+constexpr const char* loading_key = "mimir.loading";
+constexpr const char* pending_key = "mimir.pending";
+
+constexpr const char* function_flags[] = {"no-writes", "allow-oom", "allow-stale", "no-cluster", "allow-cross-slot-keys"};
+
+bool valid_name(std::string_view name) {
+  if (name.empty()) return false;
+  for (char c : name) {
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') return false;
+  }
+  return true;
+}
+
+// What one FUNCTION LOAD has registered so far; the callbacks wait in the
+// registry's pending table under their names.
+struct LoadState {
+  std::vector<Scripting::Function> functions;
+  // An error FUNCTION LOAD answers as it is, not as a registration error.
+  const char* direct_error = nullptr;
+};
+
+// server.register_function(name, callback), or with one table of named
+// arguments (function_name, callback, description, flags). Raises only after
+// its C++ objects are gone.
+int register_function(lua_State* L) {
+  const char* failure = nullptr;
+  bool direct = false;
+  lua_getfield(L, LUA_REGISTRYINDEX, loading_key);
+  auto* load = static_cast<LoadState*>(lua_touserdata(L, -1));
+  lua_pop(L, 1);
+  // A library may keep register_function in a local and call it later.
+  if (!load) {
+    push_error(L, "ERR server.register_function can only be called on FUNCTION LOAD command");
+    return lua_error(L);
+  }
+  const int argc = lua_gettop(L);
+  // The four arguments' stack slots.
+  int name = 0;
+  int callback = 0;
+  int description = 0;
+  int flags = 0;
+  if (argc == 1) {
+    if (!lua_istable(L, 1)) {
+      failure = "ERR calling server.register_function with a single argument is only applicable to Lua table (representing named arguments).";
+    } else {
+      for (int i = 0; i < 4; ++i) lua_pushnil(L);
+      name = 2;
+      callback = 3;
+      description = 4;
+      flags = 5;
+      lua_pushnil(L);
+      while (!failure && lua_next(L, 1)) {
+        const char* key = lua_type(L, -2) == LUA_TSTRING ? lua_tostring(L, -2) : "";
+        const std::string_view k = key;
+        int slot = 0;
+        if (k == "function_name") {
+          if (!lua_isstring(L, -1)) failure = "ERR function_name argument given to server.register_function must be a string";
+          slot = name;
+        } else if (k == "callback") {
+          if (!lua_isfunction(L, -1)) failure = "ERR callback argument given to server.register_function must be a function";
+          slot = callback;
+        } else if (k == "description") {
+          if (!lua_isstring(L, -1)) failure = "ERR description argument given to server.register_function must be a string";
+          slot = description;
+        } else if (k == "flags") {
+          if (!lua_istable(L, -1)) failure = "ERR flags argument to server.register_function must be a table representing function flags";
+          slot = flags;
+        } else {
+          failure = "ERR unknown argument given to server.register_function";
+        }
+        if (failure) break;
+        lua_replace(L, slot);
+      }
+      if (!failure && lua_isnil(L, name)) failure = "ERR server.register_function must get a function name argument";
+      if (!failure && lua_isnil(L, callback)) failure = "ERR server.register_function must get a callback argument";
+    }
+  } else if (argc == 2) {
+    name = 1;
+    callback = 2;
+    if (!lua_isstring(L, 1)) {
+      failure = "ERR first argument to server.register_function must be a string";
+    } else if (!lua_isfunction(L, 2)) {
+      failure = "ERR second argument to server.register_function must be a function";
+    }
+  } else {
+    failure = "ERR wrong number of arguments to server.register_function";
+  }
+  // The flags, each one Valkey knows.
+  int flag_count = 0;
+  if (!failure && flags && !lua_isnil(L, flags)) {
+    lua_pushnil(L);
+    while (!failure && lua_next(L, flags)) {
+      bool known = false;
+      if (lua_type(L, -1) == LUA_TSTRING) {
+        for (const char* flag : function_flags) known = known || std::string_view(lua_tostring(L, -1)) == flag;
+      }
+      if (!known) failure = "ERR unknown flag given";
+      lua_pop(L, 1);
+      ++flag_count;
+    }
+  }
+  if (!failure) {
+    size_t length = 0;
+    const char* text = lua_tolstring(L, name, &length);
+    const std::string_view function_name(text, length);
+    if (!valid_name(function_name)) {
+      failure = "ERR Function names can only contain letters, numbers, or underscores(_) and must be at least one character long";
+      direct = true;
+    }
+    for (const auto& known : load->functions) {
+      if (!failure && known.name == function_name) {
+        failure = "ERR Function already exists in the library";
+        direct = true;
+      }
+    }
+  }
+  if (!failure) {
+    {
+      Scripting::Function function;
+      function.name = lua_tostring(L, name);
+      if (description && !lua_isnil(L, description)) function.description = lua_tostring(L, description);
+      if (flags && !lua_isnil(L, flags)) {
+        for (int i = 1; i <= flag_count; ++i) {
+          lua_rawgeti(L, flags, i);
+          if (lua_isstring(L, -1)) function.flags.emplace_back(lua_tostring(L, -1));
+          lua_pop(L, 1);
+        }
+      }
+      load->functions.push_back(std::move(function));
+    }
+    lua_getfield(L, LUA_REGISTRYINDEX, pending_key);
+    lua_pushvalue(L, name);
+    lua_pushvalue(L, callback);
+    lua_rawset(L, -3);
+    lua_pop(L, 1);
+    return 0;
+  }
+  if (direct) load->direct_error = failure;
+  push_error(L, failure);
+  return lua_error(L);
+}
+
+// The load-time redis table, read-only, refusing what it does not hold.
+void install_load_redis(lua_State* L, const ScriptingNames& names) {
+  lua_newtable(L);
+  lua_pushcfunction(L, register_function);
+  lua_setfield(L, -2, "register_function");
+  lua_pushcfunction(L, lua_noop);
+  lua_setfield(L, -2, "log");
+  int level = 0;
+  for (const char* name : {"LOG_DEBUG", "LOG_VERBOSE", "LOG_NOTICE", "LOG_WARNING"}) {
+    lua_pushnumber(L, level++);
+    lua_setfield(L, -2, name);
+  }
+  set_version_fields(L, names);
+  make_proxy(L, global_index);
+  lua_setfield(L, LUA_REGISTRYINDEX, load_redis_key);
+}
+
+// Removes a library's functions from the interpreter and the index.
+void forget_functions(Scripting& scripting, const Scripting::Library& library) {
+  lua_State* L = scripting.functions_state();
+  for (const auto& function : library.functions) {
+    scripting.function_index().erase(function.name);
+    lua_pushnil(L);
+    lua_setfield(L, LUA_REGISTRYINDEX, ("fn_" + function.name).c_str());
+  }
+}
+
+// FUNCTION LOAD [REPLACE] code: the library's name, or a refusal that
+// changes nothing.
+std::string load_library(Scripting& scripting, const std::vector<std::string>& args) {
+  bool replace = false;
+  for (size_t i = 2; i + 1 < args.size(); ++i) {
+    if (!iequals(args[i], "REPLACE")) throw CommandError("ERR Unknown option given: " + args[i]);
+    replace = true;
+  }
+  const std::string& code = args.back();
+  if (code.rfind("#!", 0) != 0) throw CommandError("ERR Missing library metadata");
+  const size_t newline = code.find('\n');
+  if (newline == std::string::npos) throw CommandError("ERR Invalid library metadata");
+  // "#!<engine> name=<name>": the engine up to the first space (empty if
+  // none), then values with any spaces between. Checked in Valkey's order:
+  // the values, the name given, the engine, the name's characters.
+  const std::string shebang = code.substr(2, newline - 2);
+  const size_t engine_end = std::min(shebang.find(' '), shebang.size());
+  const std::string engine = shebang.substr(0, engine_end);
+  std::optional<std::string> name;
+  for (size_t at = engine_end; at < shebang.size();) {
+    const size_t end = std::min(shebang.find(' ', at), shebang.size());
+    if (end > at) {
+      const std::string value = shebang.substr(at, end - at);
+      if (value.rfind("name=", 0) != 0) throw CommandError("ERR Invalid metadata value given: " + value);
+      if (name) throw CommandError("ERR Invalid metadata value, name argument was given multiple times");
+      name = value.substr(5);
+    }
+    at = end + 1;
+  }
+  if (!name) throw CommandError("ERR Library name was not given");
+  if (!iequals(engine, "lua")) throw CommandError("ERR Engine '" + engine + "' not found");
+  if (!valid_name(*name)) throw CommandError("ERR Library names can only contain letters, numbers, or underscores(_) and must be at least one character long");
+  auto existing = scripting.libraries().find(*name);
+  if (existing != scripting.libraries().end() && !replace) throw CommandError("ERR Library '" + *name + "' already exists");
+
+  lua_State* L = scripting.functions_state();
+  lua_settop(L, 0);
+  // The shebang's line stays, empty, so the library's lines count from it.
+  const std::string body = code.substr(newline);
+  if (luaL_loadbuffer(L, body.data(), body.size(), "@user_function") != 0) {
+    std::string message = lua_tostring(L, -1);
+    lua_settop(L, 0);
+    throw CommandError("ERR Error compiling function: " + message);
+  }
+  // [1] the chunk, [2] its globals: redis and server, the load-time table.
+  lua_newtable(L);
+  lua_getfield(L, LUA_REGISTRYINDEX, load_redis_key);
+  lua_pushvalue(L, -1);
+  lua_setfield(L, -3, "redis");
+  lua_setfield(L, -2, "server");
+  make_proxy(L, global_index);
+  lua_pushvalue(L, 2);
+  lua_setfenv(L, 1);
+  LoadState load;
+  lua_pushlightuserdata(L, &load);
+  lua_setfield(L, LUA_REGISTRYINDEX, loading_key);
+  lua_newtable(L);
+  lua_setfield(L, LUA_REGISTRYINDEX, pending_key);
+  lua_pushvalue(L, 1);
+  const int status = lua_pcall(L, 0, 0, 0);
+  lua_pushnil(L);
+  lua_setfield(L, LUA_REGISTRYINDEX, loading_key);
+  std::string refused;
+  if (status != 0) {
+    if (load.direct_error) {
+      refused = load.direct_error;
+    } else if (lua_istable(L, -1)) {
+      lua_getfield(L, -1, "err");
+      refused = std::string("ERR Error registering functions: ") + (lua_isstring(L, -1) ? lua_tostring(L, -1) : "ERR unknown error");
+    } else {
+      refused = std::string("ERR Error registering functions: ERR ") + (lua_isstring(L, -1) ? lua_tostring(L, -1) : "unknown error");
+    }
+  } else if (load.functions.empty()) {
+    refused = "ERR No functions registered";
+  } else {
+    for (const auto& function : load.functions) {
+      auto owner = scripting.function_index().find(function.name);
+      if (refused.empty() && owner != scripting.function_index().end() && owner->second != *name) refused = "ERR Function " + function.name + " already exists";
+    }
+  }
+  if (!refused.empty()) {
+    lua_settop(L, 0);
+    lua_pushnil(L);
+    lua_setfield(L, LUA_REGISTRYINDEX, pending_key);
+    throw CommandError(refused);
+  }
+  // Committed: the old library's functions go, the new ones come in, and the
+  // library's globals become the runtime ones.
+  if (existing != scripting.libraries().end()) forget_functions(scripting, existing->second);
+  lua_getfield(L, LUA_REGISTRYINDEX, pending_key);
+  for (const auto& function : load.functions) {
+    lua_getfield(L, -1, function.name.c_str());
+    lua_setfield(L, LUA_REGISTRYINDEX, ("fn_" + function.name).c_str());
+    scripting.function_index()[function.name] = *name;
+  }
+  lua_pop(L, 1);
+  lua_pushnil(L);
+  lua_setfield(L, LUA_REGISTRYINDEX, pending_key);
+  lua_getmetatable(L, 2);
+  lua_pushvalue(L, LUA_GLOBALSINDEX);
+  lua_pushcclosure(L, global_index, 1);
+  lua_setfield(L, -2, "__index");
+  lua_settop(L, 0);
+  scripting.libraries()[*name] = Scripting::Library{*name, code, std::move(load.functions)};
+  return *name;
+}
+
+void push_strings(lua_State* L, std::vector<std::string>::const_iterator begin, std::vector<std::string>::const_iterator end) {
+  lua_createtable(L, static_cast<int>(end - begin), 0);
+  int i = 0;
+  for (auto at = begin; at != end; ++at) {
+    lua_pushlstring(L, at->data(), at->size());
+    lua_rawseti(L, -2, ++i);
+  }
+}
+
+// FCALL and FCALL_RO: the function, given its keys and arguments.
+void run_function(Call& call, bool read_only_command) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+  Scripting& scripting = call.database.scripting_locked();
+  const std::string& name = call.args[1];
+  const Scripting::Function* function = scripting.find_function(name);
+  if (!function) throw CommandError("ERR Function not found");
+  auto numkeys = parse_integer(call.args[2]);
+  if (!numkeys) throw CommandError("ERR Bad number of keys provided");
+  if (*numkeys < 0) throw CommandError("ERR Number of keys can't be negative");
+  if (static_cast<uint64_t>(*numkeys) > call.args.size() - 3) throw CommandError("ERR Number of keys can't be greater than number of args");
+  const bool no_writes = function->has_flag("no-writes");
+  if (read_only_command && !no_writes) throw CommandError("ERR Can not execute a script with write flag using *_ro command.");
+  lua_State* L = scripting.functions_state();
+  lua_settop(L, 0);
+  Run run{&call, Session{}, no_writes, name, "user_function"};
+  run.session.id = call.session.id;
+  run.session.db = call.session.db;
+  lua_pushlightuserdata(L, &run);
+  lua_setfield(L, LUA_REGISTRYINDEX, run_key);
+  lua_getfield(L, LUA_REGISTRYINDEX, "mimir.on_error");
+  lua_getfield(L, LUA_REGISTRYINDEX, ("fn_" + name).c_str());
+  const auto split = call.args.begin() + 3 + static_cast<std::ptrdiff_t>(*numkeys);
+  push_strings(L, call.args.begin() + 3, split);
+  push_strings(L, split, call.args.end());
+  if (lua_pcall(L, 2, 1, 1) != 0) {
+    std::string message = lua_isstring(L, -1) ? lua_tostring(L, -1) : "ERR function failed";
+    lua_settop(L, 0);
+    throw CommandError(message);
+  }
+  write_reply(L, -1, call.reply);
+  lua_settop(L, 0);
+}
+
+void make_functions_state(lua_State*& L, const ScriptingNames& names) {
+  L = luaL_newstate();
+  install(L, names);
+  install_load_redis(L, names);
+}
+
 }  // namespace
 
-Scripting::Scripting() {
+bool Scripting::Function::has_flag(std::string_view flag) const {
+  for (const auto& held : flags) {
+    if (held == flag) return true;
+  }
+  return false;
+}
+
+Scripting::Scripting(ScriptingNames names) : _names(std::move(names)) {
   _lua = luaL_newstate();
-  install(_lua);
+  install(_lua, _names);
+  make_functions_state(_functions_lua, _names);
 }
 
 Scripting::~Scripting() {
   if (_lua) lua_close(_lua);
+  if (_functions_lua) lua_close(_functions_lua);
+}
+
+const Scripting::Function* Scripting::find_function(const std::string& name) const {
+  auto owner = _function_index.find(name);
+  if (owner == _function_index.end()) return nullptr;
+  for (const auto& function : _libraries.at(owner->second).functions) {
+    if (function.name == name) return &function;
+  }
+  return nullptr;
+}
+
+void Scripting::flush_functions() {
+  lua_close(_functions_lua);
+  _libraries.clear();
+  _function_index.clear();
+  make_functions_state(_functions_lua, _names);
 }
 
 const std::string* Scripting::body(const std::string& sha) const {
@@ -684,7 +1070,7 @@ void Scripting::flush() {
   lua_close(_lua);
   _bodies.clear();
   _lua = luaL_newstate();
-  install(_lua);
+  install(_lua, _names);
 }
 
 namespace scripts {
@@ -740,6 +1126,99 @@ void script(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
     throw CommandError("NOTBUSY No scripts in execution right now.");
   } else {
     throw CommandError("ERR unknown subcommand '" + call.args[1] + "'. Try SCRIPT HELP.");
+  }
+}
+
+void fcall(Call& call) { run_function(call, false); }
+void fcall_ro(Call& call) { run_function(call, true); }
+
+namespace {
+
+// One library as FUNCTION LIST answers it: a map, its functions maps too.
+void write_library(resp::Reply& reply, const Scripting::Library& library, bool with_code) {
+  reply.map(with_code ? 4 : 3);
+  reply.bulk("library_name");
+  reply.bulk(library.name);
+  reply.bulk("engine");
+  reply.bulk("LUA");
+  reply.bulk("functions");
+  reply.array(library.functions.size());
+  for (const auto& function : library.functions) {
+    reply.map(3);
+    reply.bulk("name");
+    reply.bulk(function.name);
+    reply.bulk("description");
+    if (function.description)
+      reply.bulk(*function.description);
+    else
+      reply.null();
+    reply.bulk("flags");
+    reply.set(function.flags.size());
+    for (const auto& flag : function.flags) reply.simple(flag);
+  }
+  if (with_code) {
+    reply.bulk("library_code");
+    reply.bulk(library.code);
+  }
+}
+
+}  // namespace
+
+void function(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+  const std::string sub = lower(call.args[1]);
+  Scripting& scripting = call.database.scripting_locked();
+  if (sub == "load") {
+    if (call.args.size() < 3) throw CommandError("ERR wrong number of arguments for 'function|load' command");
+    call.reply.bulk(load_library(scripting, call.args));
+  } else if (sub == "delete") {
+    if (call.args.size() != 3) throw CommandError("ERR wrong number of arguments for 'function|delete' command");
+    auto found = scripting.libraries().find(call.args[2]);
+    if (found == scripting.libraries().end()) throw CommandError("ERR Library not found");
+    forget_functions(scripting, found->second);
+    scripting.libraries().erase(found);
+    call.reply.simple("OK");
+  } else if (sub == "flush") {
+    if (call.args.size() > 3 || (call.args.size() == 3 && !iequals(call.args[2], "ASYNC") && !iequals(call.args[2], "SYNC"))) {
+      throw CommandError("ERR FUNCTION FLUSH only supports SYNC|ASYNC option");
+    }
+    scripting.flush_functions();
+    call.reply.simple("OK");
+  } else if (sub == "list") {
+    bool with_code = false;
+    std::optional<std::string> pattern;
+    for (size_t i = 2; i < call.args.size(); ++i) {
+      if (iequals(call.args[i], "WITHCODE")) {
+        with_code = true;
+      } else if (iequals(call.args[i], "LIBRARYNAME")) {
+        if (i + 1 >= call.args.size()) throw CommandError("ERR library name argument was not given");
+        pattern = call.args[++i];
+      } else {
+        throw CommandError("ERR Unknown argument " + call.args[i]);
+      }
+    }
+    std::vector<const Scripting::Library*> listed;
+    for (const auto& [name, library] : scripting.libraries()) {
+      if (!pattern || keyspace::glob_match(*pattern, name, true)) listed.push_back(&library);
+    }
+    call.reply.array(listed.size());
+    for (const auto* library : listed) write_library(call.reply, *library, with_code);
+  } else if (sub == "stats") {
+    if (call.args.size() != 2) throw CommandError("ERR wrong number of arguments for 'function|stats' command");
+    call.reply.map(2);
+    call.reply.bulk("running_script");
+    call.reply.null();
+    call.reply.bulk("engines");
+    call.reply.map(1);
+    call.reply.bulk("LUA");
+    call.reply.map(2);
+    call.reply.bulk("libraries_count");
+    call.reply.integer(static_cast<int64_t>(scripting.libraries().size()));
+    call.reply.bulk("functions_count");
+    call.reply.integer(static_cast<int64_t>(scripting.function_index().size()));
+  } else if (sub == "kill") {
+    throw CommandError("NOTBUSY No scripts in execution right now.");
+  } else {
+    throw CommandError("ERR unknown subcommand '" + call.args[1] + "'. Try FUNCTION HELP.");
   }
 }
 

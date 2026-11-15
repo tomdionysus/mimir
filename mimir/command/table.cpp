@@ -246,6 +246,9 @@ const std::array specs{
     Spec{"eval_ro", -3, "readonly noscript stale skip_monitor no_mandatory_keys", 0, 0, 0, Class::read, scripts::eval_ro, nullptr, numkeys_second},
     Spec{"evalsha_ro", -3, "readonly noscript stale skip_monitor no_mandatory_keys", 0, 0, 0, Class::read, scripts::evalsha_ro, nullptr, numkeys_second},
     Spec{"script", -2, "noscript", 0, 0, 0, Class::admin, scripts::script},
+    Spec{"fcall", -3, "noscript stale skip_monitor may_replicate no_mandatory_keys", 0, 0, 0, Class::agreement, scripts::fcall, nullptr, numkeys_second},
+    Spec{"fcall_ro", -3, "readonly noscript stale skip_monitor no_mandatory_keys", 0, 0, 0, Class::read, scripts::fcall_ro, nullptr, numkeys_second},
+    Spec{"function", -2, "noscript", 0, 0, 0, Class::admin, scripts::function},
     // Publish and subscribe: at most once, on this node and (in the cluster)
     // the nodes with announced interest.
     Spec{"subscribe", -2, "pubsub noscript loading stale", 0, 0, 0, Class::connection, pubsub::subscribe},

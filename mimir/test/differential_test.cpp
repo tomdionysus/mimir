@@ -999,6 +999,102 @@ TEST_F(Differential, Scripting) {
   });
 }
 
+TEST_F(Differential, Functions) {
+  both({"FUNCTION", "FLUSH"});
+  const std::string lib =
+      "#!lua name=lib1\n"
+      "redis.register_function('echo', function(keys, args) return {keys[1], args[1]} end)\n"
+      "redis.register_function{function_name='put', callback=function(keys, args) return redis.call('SET', keys[1], args[1]) end}\n"
+      "redis.register_function{function_name='get', callback=function(keys, args) return redis.call('GET', keys[1]) end, flags={'no-writes'}, "
+      "description='reads'}";
+  const std::string one = "#!lua name=one\nredis.register_function{function_name='f', callback=function() return 1 end, flags={'no-writes', 'allow-oom'}}";
+  script({
+      {"FUNCTION", "LOAD", lib},
+      {"FUNCTION", "LOAD", lib},
+      {"FCALL", "echo", "1", "k", "a"},
+      {"FCALL", "put", "1", "k", "v"},
+      {"FCALL_RO", "get", "1", "k"},
+      {"FCALL_RO", "put", "1", "k", "v"},
+      {"FCALL", "nosuch", "0"},
+      {"FCALL", "echo", "x"},
+      {"FCALL", "echo", "-1"},
+      {"FCALL", "echo", "5", "a"},
+      {"FUNCTION", "LOAD", one},
+      {"FUNCTION", "LIST", "LIBRARYNAME", "one"},
+      {"FUNCTION", "LIST", "WITHCODE", "LIBRARYNAME", "on?"},
+      {"FUNCTION", "LIST", "LIBRARYNAME", "zz"},
+      {"FUNCTION", "LIST", "LIBRARYNAME"},
+      {"FUNCTION", "LIST", "WAT"},
+      {"FUNCTION", "STATS"},
+      {"FUNCTION", "LOAD", "no shebang"},
+      {"FUNCTION", "LOAD", "#!lua"},
+      {"FUNCTION", "LOAD", "#!lua name=d"},
+      {"FUNCTION", "LOAD", "#!lua name=bad-name!\nx"},
+      {"FUNCTION", "LOAD", "#!lua name=l x=1\nx"},
+      {"FUNCTION", "LOAD", "#!lua name=\nx"},
+      {"FUNCTION", "LOAD", "#!lua name\nx"},
+      {"FUNCTION", "LOAD", "#!lua\nx"},
+      {"FUNCTION", "LOAD", "#!\nx"},
+      {"FUNCTION", "LOAD", "#! name=x\nx"},
+      {"FUNCTION", "LOAD", "#!py name=l\nx"},
+      {"FUNCTION", "LOAD", "#!lua name=d name=e\nx"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nreturn 1"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nlocal x = +"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.call('PING')"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nerror('boom')"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nx = 1"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.register_function('echo', function() return 1 end)"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.register_function('a', function() end)\nredis.register_function('a', function() end)"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.register_function('bad name', function() return 1 end)"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.register_function()"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.register_function(5)"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.register_function({}, 5)"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.register_function('d1', 5)"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.register_function{function_name='d1', callback=5}"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.register_function{function_name='n'}"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.register_function{callback=function() end}"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.register_function{function_name='n', callback=function() end, wat=1}"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.register_function{function_name='n', callback=function() end, flags='no-writes'}"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.register_function{function_name='n', callback=function() end, flags={'wat'}}"},
+      {"FUNCTION", "LOAD", "#!lua name=l\nredis.register_function{function_name='n', callback=function() end, description={}}"},
+      {"FUNCTION", "LOAD",
+       "#!lua name=w\nredis.register_function{function_name='w', callback=function(keys) return redis.call('SET', keys[1], 1) end, flags={'no-writes'}}"},
+      {"FCALL", "w", "1", "k"},
+      {"FUNCTION", "LOAD", "#!lua name=h\nredis.register_function('h', function(keys, args) error('inner') end)"},
+      {"FCALL", "h", "0"},
+      {"FUNCTION", "LOAD", "#!lua name=kk\nredis.register_function('kk', function(keys, args) return KEYS end)"},
+      {"FCALL", "kk", "0"},
+      {"FUNCTION", "LOAD",
+       "#!lua name=hh\nlocal function h() return string.upper('a') .. type(redis.call) end\nredis.register_function('hh', function(keys) return h() .. #keys "
+       "end)"},
+      {"FCALL", "hh", "2", "a", "b"},
+      {"FUNCTION", "LOAD", "#!lua name=r\nlocal reg = redis.register_function\nredis.register_function('r', function() reg('z', function() end) end)"},
+      {"FCALL", "r", "0"},
+      {"FUNCTION", "LOAD",
+       "#!lua name=v\nredis.register_function('v', function() return {redis.REDIS_VERSION, redis.REDIS_VERSION_NUM, redis.VALKEY_VERSION, "
+       "redis.VALKEY_VERSION_NUM} end)"},
+      {"FCALL", "v", "0"},
+      {"FUNCTION", "LOAD", "REPLACE", "#!lua name=lib1\nredis.register_function('echo', function() return 3 end)"},
+      {"FCALL", "echo", "0"},
+      {"FCALL", "put", "1", "k", "v"},
+      {"FUNCTION", "LOAD", "WAT", lib},
+      {"SCRIPT", "FLUSH"},
+      {"FCALL", "f", "0"},
+      {"FUNCTION", "DELETE", "one"},
+      {"FUNCTION", "DELETE", "one"},
+      {"FUNCTION", "DELETE"},
+      {"FUNCTION", "FLUSH", "WAT"},
+      {"FUNCTION", "FLUSH"},
+      {"FCALL", "echo", "0"},
+      {"FUNCTION", "STATS"},
+      {"FUNCTION", "KILL"},
+      {"FUNCTION", "WAT"},
+      {"FCALL"},
+      {"EVAL", "return {redis.REDIS_VERSION, redis.REDIS_VERSION_NUM, redis.VALKEY_VERSION, redis.VALKEY_VERSION_NUM}", "0"},
+  });
+  both({"FUNCTION", "FLUSH"});
+}
+
 TEST_F(Differential, ScriptingSandbox) {
   script({
       {"EVAL", "redis.call = nil", "0"},
