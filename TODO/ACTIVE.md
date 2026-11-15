@@ -15,8 +15,9 @@ classes of command, agreement in Dannan, durability, and the order.
 - Next, in order: FUNCTION and FCALL; then keyspace
   notifications, DUMP and RESTORE, SORT, the GEO commands, LCS; then
   authentication with the built-in user list (ACL).
-- Dannan 0.8.3 is tagged (outbound StreamConnector, RS256): move the pin from
-  0.8.2 as its own commit.
+- Pinned to Dannan 0.8.3. Dannan's 0.9 (agreement) is on its develop
+  (`dc9ede1`); its simulation harness design
+  (`../dannan/TODO/2026-11-15-simulation-harness.md`) is Mimir's to review.
 - Stage 3 waits on Dannan 0.9.0's agreement primitive and hybrid clock
   (rulings 6, 8, 19); every agreement command tags its write so a retry that
   reads its own effect answers as the first try would (Dannan's simulator
@@ -75,5 +76,5 @@ Asked of him when it is reached:
 5. Persistence, levels 1 and 2, checkpoints. Waits on Dagda's contract v2.
 6. Eviction, then the Lugh plugin. The plugin waits on Lugh's principal
    events and status scope; it links `lir::client` (Lir's develop at
-   `542517c`, fetched from `../lir` with `LIR_BUILD_SERVER=OFF`, until Lir's
+   `6b23268`, on Dannan 0.8.3's StreamConnector, fetched from `../lir` with `LIR_BUILD_SERVER=OFF`, until Lir's
    first tag).

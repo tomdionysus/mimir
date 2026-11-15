@@ -38,7 +38,7 @@ pkg_check_modules(LUA51 REQUIRED IMPORTED_TARGET lua5.1)
 set(MIMIR_DANNAN_REPOSITORY "${CMAKE_CURRENT_SOURCE_DIR}/../dannan" CACHE STRING "Dannan's repository: a path or a URL")
 # Not a cache variable: a moved pin must take effect in a build tree that
 # already exists.
-set(MIMIR_DANNAN_TAG "0.8.2")
+set(MIMIR_DANNAN_TAG "0.8.3")
 include(FetchContent)
 if(NOT TARGET dannan::dannan)
   FetchContent_Declare(dannan GIT_REPOSITORY "${MIMIR_DANNAN_REPOSITORY}" GIT_TAG "${MIMIR_DANNAN_TAG}")
