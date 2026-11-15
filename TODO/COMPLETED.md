@@ -2,6 +2,27 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: functions (FUNCTION, FCALL, FCALL_RO)
+
+- A second interpreter for libraries, as Valkey keeps one, so SCRIPT FLUSH
+  and FUNCTION FLUSH leave each other alone. A library loads on Valkey's
+  load-time sandbox (only register_function, log, its levels and the version;
+  even `type` and `error` absent), then its globals become the runtime ones,
+  so its helpers see what its functions see. Loading is atomic: a refusal at
+  any point changes nothing. A kept `register_function` called at run time is
+  refused, never touching a load that has ended.
+- FUNCTION LOAD [REPLACE], DELETE, FLUSH, LIST [LIBRARYNAME] [WITHCODE],
+  STATS, KILL; FCALL and FCALL_RO with the no-writes flag; errors in
+  Valkey 8's words, naming the function and `@user_function`.
+- `redis.REDIS_VERSION`, `REDIS_VERSION_NUM`, `VALKEY_VERSION`,
+  `VALKEY_VERSION_NUM` and `SERVER_NAME` (Mimir's own, as HELLO says) for
+  scripts and functions.
+- The differential gate's findings, matched: the shebang's errors and their
+  order (values, name given, engine, name's characters, existing library).
+  Not compared: FUNCTION LIST over several functions (Valkey answers in its
+  hash order). FUNCTION DUMP and RESTORE wait for the DUMP and RESTORE step.
+- Gate on node-a: release 227 passed; differential 19 of 19.
+
 ## 2026-11-15: scripting's libraries and sandbox (ruling 25)
 
 - `cjson`, `bit` and `cmsgpack` from Debian's packages (pkg-config for the

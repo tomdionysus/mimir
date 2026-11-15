@@ -15,7 +15,9 @@ classes of command, agreement in Dannan, durability, and the order.
   Valkey's libraries (ruling 25) and its read-only sandbox (proxies on
   Debian's Lua; `next`, `pairs`, `ipairs`, `rawget`, `rawset` and
   `setmetatable` see through or refuse them; `#` of a library table is 0).
-- Next, in order: FUNCTION and FCALL; then keyspace
+- FUNCTION and FCALL are in; FUNCTION DUMP and RESTORE come with DUMP and
+  RESTORE.
+- Next, in order: keyspace
   notifications, DUMP and RESTORE, SORT, the GEO commands, LCS; then
   authentication with the built-in user list (ACL).
 - Pinned to Dannan 0.8.3. Dannan's 0.9 (agreement) is on its develop

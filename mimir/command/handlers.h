@@ -101,6 +101,9 @@ void evalsha(Call&);
 void eval_ro(Call&);
 void evalsha_ro(Call&);
 void script(Call&);
+void fcall(Call&);
+void fcall_ro(Call&);
+void function(Call&);
 }  // namespace scripts
 
 namespace pubsub {
