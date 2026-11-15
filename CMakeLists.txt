@@ -29,7 +29,9 @@ find_package(Threads REQUIRED)
 
 # Dannan, the network layer, at its tag, cloned from the sibling checkout into
 # the build tree, so building Mimir never touches ../dannan.
-set(MIMIR_DANNAN_REPOSITORY "${CMAKE_CURRENT_SOURCE_DIR}/../dannan" CACHE PATH "Dannan's repository")
+# A string, not a PATH: CMake makes a PATH absolute, and a URL (hosted CI's
+# https://github.com/...) then becomes a directory under the source tree.
+set(MIMIR_DANNAN_REPOSITORY "${CMAKE_CURRENT_SOURCE_DIR}/../dannan" CACHE STRING "Dannan's repository: a path or a URL")
 # Not a cache variable: a moved pin must take effect in a build tree that
 # already exists.
 set(MIMIR_DANNAN_TAG "0.8.2")
