@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -56,6 +57,13 @@ struct Session {
   uint64_t created_ms = 0;
   // Set by QUIT: the connection closes once this command's reply is sent.
   bool closing = false;
+  // How a message published to this connection reaches it, from any thread,
+  // waiting on nothing; none: it cannot subscribe.
+  std::function<void(std::string)> push;
+  // Its channel and pattern subscriptions, and its shard channel ones: while
+  // either is above zero a RESP2 connection is in subscribed mode.
+  size_t subscriptions = 0;
+  size_t shard_subscriptions = 0;
 };
 
 // One command's call: its arguments (its name first), the connection's

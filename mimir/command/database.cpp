@@ -25,6 +25,13 @@ std::string unknown_command(const std::vector<std::string>& args) {
   return "ERR unknown command '" + args[0].substr(0, 128) + "', with args beginning with: " + listed;
 }
 
+bool spec_allowed_subscribed(std::string_view name) {
+  for (std::string_view allowed : {"subscribe", "ssubscribe", "psubscribe", "unsubscribe", "sunsubscribe", "punsubscribe", "ping", "quit", "reset"}) {
+    if (name == allowed) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings settings)
@@ -52,6 +59,14 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
   const int count = static_cast<int>(args.size());
   if ((spec->arity > 0 && count != spec->arity) || (spec->arity < 0 && count < -spec->arity)) {
     reply.error("ERR wrong number of arguments for '" + std::string(spec->name) + "' command");
+    out.append(reply.bytes());
+    return executed;
+  }
+  // A RESP2 connection with subscriptions takes only the pub/sub commands,
+  // PING, QUIT and RESET, as Valkey's subscribed mode does; RESP3 takes all.
+  if (session.protocol == resp::Protocol::resp2 && (session.subscriptions > 0 || session.shard_subscriptions > 0) && !spec_allowed_subscribed(spec->name)) {
+    reply.error("ERR Can't execute '" + std::string(spec->name) +
+                "': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context");
     out.append(reply.bytes());
     return executed;
   }

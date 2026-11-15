@@ -69,6 +69,18 @@ void pfcount(Call&);
 void pfmerge(Call&);
 }  // namespace hyperloglog
 
+namespace pubsub {
+void subscribe(Call&);
+void psubscribe(Call&);
+void ssubscribe(Call&);
+void unsubscribe(Call&);
+void punsubscribe(Call&);
+void sunsubscribe(Call&);
+void publish(Call&);
+void spublish(Call&);
+void pubsub(Call&);
+}  // namespace pubsub
+
 namespace lists {
 void lpush(Call&);
 void rpush(Call&);

@@ -160,6 +160,20 @@ TEST(Server, AClientThatLeavesWhileBlockedTakesNothing) {
   EXPECT_EQ(pushing.read(8), ":1\r\n:1\r\n");
 }
 
+TEST(Server, ASubscriberHearsItsConfirmationThenEveryMessageInOrder) {
+  ServerBed bed;
+  Client subscriber(bed.listener.port());
+  Client publisher(bed.listener.port());
+  // A reply already owed goes before the confirmation behind it.
+  subscriber.send("PING\r\nSUBSCRIBE news\r\n");
+  const std::string confirmed = "+PONG\r\n*3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n";
+  EXPECT_EQ(subscriber.read(confirmed.size()), confirmed);
+  publisher.send("PUBLISH news one\r\nPUBLISH news two\r\n");
+  EXPECT_EQ(publisher.read(8), ":1\r\n:1\r\n");
+  const std::string messages = "*3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$3\r\none\r\n*3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$3\r\ntwo\r\n";
+  EXPECT_EQ(subscriber.read(messages.size()), messages);
+}
+
 TEST(Server, ConnectionsShareOneKeyspaceAndHaveTheirOwnIds) {
   ServerBed bed;
   Client a(bed.listener.port());

@@ -59,6 +59,13 @@ void command_info(resp::Reply& reply, const Spec& spec) {
 
 void ping(Call& call) {
   if (call.args.size() > 2) wrong_arity("ping");
+  // In RESP2's subscribed mode a PING answers as a message would.
+  if (call.session.protocol == resp::Protocol::resp2 && (call.session.subscriptions > 0 || call.session.shard_subscriptions > 0)) {
+    call.reply.array(2);
+    call.reply.bulk("pong");
+    call.reply.bulk(call.args.size() == 2 ? call.args[1] : "");
+    return;
+  }
   if (call.args.size() == 2)
     call.reply.bulk(call.args[1]);
   else
@@ -101,6 +108,7 @@ void hello(Call& call) {
     }
   }
   call.session.protocol = protocol;
+  call.database.pubsub().set_protocol(call.session.id, protocol);
   call.reply = resp::Reply(protocol);
   if (name) call.session.name = *name;
   const DatabaseSettings& settings = call.database.settings();
@@ -214,6 +222,9 @@ void time(Call& call) {
 }
 
 void reset(Call& call) {
+  call.database.pubsub().drop(call.session.id);
+  call.session.subscriptions = 0;
+  call.session.shard_subscriptions = 0;
   call.session.protocol = resp::Protocol::resp2;
   call.session.name.clear();
   call.reply = resp::Reply(resp::Protocol::resp2);
