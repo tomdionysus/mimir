@@ -51,11 +51,16 @@ class Client {
   }
 
   std::string call(const std::vector<std::string>& args) {
+    send(args);
+    return read_reply();
+  }
+  void send(const std::vector<std::string>& args) {
     std::string request = "*" + std::to_string(args.size()) + "\r\n";
     for (const auto& arg : args) request += "$" + std::to_string(arg.size()) + "\r\n" + arg + "\r\n";
     asio::write(_socket, asio::buffer(request));
-    return read_reply();
   }
+  // The next whole reply or pushed message.
+  std::string read() { return read_reply(); }
 
  private:
   std::string line() {
@@ -97,6 +102,7 @@ class Client {
       case '*':
       case '~':
       case '>': {
+        if (head == "*-1\r\n") return head;
         const long long n = count();
         std::string out = head;
         for (long long i = 0; i < n; ++i) out += read_reply();
@@ -662,6 +668,49 @@ TEST_F(Differential, HyperLogLog) {
   same({"PFCOUNT", "both"});
   // A dense value's bytes are the format's alone, so they match too.
   same({"GET", "big"});
+}
+
+TEST_F(Differential, PubSub) {
+  // A second pair of connections subscribes on each server.
+  Client mimir_sub(*port_from("MIMIR_DIFF_MIMIR_PORT"));
+  Client valkey_sub(*port_from("MIMIR_DIFF_VALKEY_PORT"));
+  const auto both_sub = [&](const std::vector<std::string>& args, int replies) {
+    mimir_sub.send(args);
+    valkey_sub.send(args);
+    for (int i = 0; i < replies; ++i) EXPECT_EQ(mimir_sub.read(), valkey_sub.read()) << args[0];
+  };
+  both_sub({"SUBSCRIBE", "news", "sport"}, 2);
+  both_sub({"PSUBSCRIBE", "n*"}, 1);
+  same({"PUBLISH", "news", "hello"});
+  EXPECT_EQ(mimir_sub.read(), valkey_sub.read());
+  EXPECT_EQ(mimir_sub.read(), valkey_sub.read());
+  same({"PUBLISH", "nothing", "x"});
+  EXPECT_EQ(mimir_sub.read(), valkey_sub.read());
+  same({"PUBLISH", "elsewhere", "x"});
+  same({"PUBSUB", "CHANNELS"});
+  same({"PUBSUB", "NUMSUB", "news", "sport", "none"});
+  same({"PUBSUB", "NUMPAT"});
+  same({"PUBSUB", "BOGUS"});
+  both_sub({"GET", "k"}, 1);
+  both_sub({"PING"}, 1);
+  both_sub({"PING", "hi"}, 1);
+  both_sub({"UNSUBSCRIBE", "sport"}, 1);
+  both_sub({"PUNSUBSCRIBE"}, 1);
+  both_sub({"UNSUBSCRIBE"}, 1);
+  both_sub({"UNSUBSCRIBE"}, 1);
+  both_sub({"SSUBSCRIBE", "orders"}, 1);
+  same({"SPUBLISH", "orders", "1"});
+  EXPECT_EQ(mimir_sub.read(), valkey_sub.read());
+  same({"PUBSUB", "SHARDCHANNELS"});
+  same({"PUBSUB", "SHARDNUMSUB", "orders"});
+  both_sub({"SUNSUBSCRIBE"}, 1);
+  both_sub({"HELLO", "3"}, 0);
+  mimir_sub.read();
+  valkey_sub.read();
+  both_sub({"SUBSCRIBE", "r3"}, 1);
+  same({"PUBLISH", "r3", "m"});
+  EXPECT_EQ(mimir_sub.read(), valkey_sub.read());
+  both_sub({"GET", "k"}, 1);
 }
 
 TEST_F(Differential, Connection) {

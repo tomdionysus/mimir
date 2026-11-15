@@ -188,6 +188,17 @@ const std::array specs{
     Spec{"touch", -2, "readonly fast", 1, -1, 1, Class::read, generic::touch},
     Spec{"flushall", -1, "write", 0, 0, 0, Class::admin, generic::flushall},
     Spec{"flushdb", -1, "write", 0, 0, 0, Class::admin, generic::flushall},
+    // Publish and subscribe: at most once, on this node and (in the cluster)
+    // the nodes with announced interest.
+    Spec{"subscribe", -2, "pubsub noscript loading stale", 0, 0, 0, Class::connection, pubsub::subscribe},
+    Spec{"psubscribe", -2, "pubsub noscript loading stale", 0, 0, 0, Class::connection, pubsub::psubscribe},
+    Spec{"ssubscribe", -2, "pubsub noscript loading stale", 1, -1, 1, Class::connection, pubsub::ssubscribe},
+    Spec{"unsubscribe", -1, "pubsub noscript loading stale", 0, 0, 0, Class::connection, pubsub::unsubscribe},
+    Spec{"punsubscribe", -1, "pubsub noscript loading stale", 0, 0, 0, Class::connection, pubsub::punsubscribe},
+    Spec{"sunsubscribe", -1, "pubsub noscript loading stale", 1, -1, 1, Class::connection, pubsub::sunsubscribe},
+    Spec{"publish", 3, "pubsub loading stale fast may_replicate", 0, 0, 0, Class::connection, pubsub::publish},
+    Spec{"spublish", 3, "pubsub loading stale fast may_replicate", 1, 1, 1, Class::connection, pubsub::spublish},
+    Spec{"pubsub", -2, "", 0, 0, 0, Class::connection, pubsub::pubsub},
     // Connection and server.
     Spec{"ping", -1, "fast", 0, 0, 0, Class::connection, connection::ping},
     Spec{"echo", 2, "fast", 0, 0, 0, Class::connection, connection::echo},

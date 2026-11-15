@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "mimir/command/args.h"
+
 namespace mimir::server {
 
 // One client: its parser, its session, the read buffer, and a wait it may be
@@ -33,6 +35,11 @@ class Connection : public std::enable_shared_from_this<Connection> {
     _session.id = _server->_database.next_client_id();
     _session.created_ms = _server->_database.now_ms();
     _session.address = _stream->peer().address().to_string() + ":" + std::to_string(_stream->peer().port());
+    // Published messages are queued on the stream from the publisher's thread,
+    // waiting on nothing; a stream gone takes nothing.
+    _session.push = [stream = std::weak_ptr<dannan::listen::Stream>(_stream)](std::string bytes) {
+      if (auto alive = stream.lock()) alive->send(std::move(bytes));
+    };
   }
 
   void start() {
@@ -45,9 +52,17 @@ class Connection : public std::enable_shared_from_this<Connection> {
   // A parked connection reads on to see a close, up to this much held unread.
   static constexpr size_t held_while_parked = 1u << 20;
 
+  static bool pushes(std::string_view name) {
+    for (std::string_view one : {"subscribe", "psubscribe", "ssubscribe", "unsubscribe", "punsubscribe", "sunsubscribe", "publish", "spublish"}) {
+      if (command::iequals(name, one)) return true;
+    }
+    return false;
+  }
+
   void finished() {
     --_server->_open;
     _closing = true;
+    _server->_database.pubsub().drop(_session.id);
     if (_wait) {
       _server->_database.cancel_wait(*_wait);
       _wait.reset();
@@ -86,6 +101,13 @@ class Connection : public std::enable_shared_from_this<Connection> {
     try {
       while (auto args = _parser.next()) {
         ++_server->_commands;
+        // A command that pushes (a subscription's confirmation, a message to
+        // this connection itself) goes after the replies before it, so those
+        // are sent first.
+        if (!out.empty() && pushes(args->front())) {
+          _stream->send(std::move(out));
+          out.clear();
+        }
         auto executed = _server->_database.execute(_session, *args, out, wake());
         if (executed.wait) {
           park(*executed.wait, executed.wait_seconds);

@@ -17,6 +17,8 @@ add_library(mimir SHARED
   command/hashes.cpp
   command/hyperloglog.cpp
   command/lists.cpp
+  command/pubsub.cpp
+  command/pubsub_commands.cpp
   command/sets.cpp
   command/strings.cpp
   command/table.cpp

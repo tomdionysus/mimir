@@ -21,6 +21,7 @@
 
 #include "dannan/contract/thread_safety.h"
 #include "dannan/contract/time_source.h"
+#include "mimir/command/pubsub.h"
 #include "mimir/command/table.h"
 #include "mimir/keyspace/keyspace.h"
 #include "mimir/resp/reply.h"
@@ -82,6 +83,9 @@ class Database {
   // work; thread-safe.
   size_t expire_step(size_t budget);
 
+  // Publish and subscribe on this node: its own lock, never the keyspace's.
+  PubSub& pubsub() noexcept { return _pubsub; }
+
   const DatabaseSettings& settings() const noexcept { return _settings; }
   uint64_t now_ms() const noexcept { return _wall.unix_ms(); }
   // A random number for RANDOMKEY and SPOP's like. Called under the lock.
@@ -106,6 +110,7 @@ class Database {
 
   const dannan::contract::WallClock& _wall;
   const DatabaseSettings _settings;
+  PubSub _pubsub;
   std::atomic<int64_t> _next_client{1};
   dannan::contract::Mutex _mutex;
   keyspace::Keyspace _keys DANNAN_GUARDED_BY(_mutex);
