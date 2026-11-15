@@ -139,6 +139,12 @@ class Database {
   void welcome_locked(Session& session) DANNAN_REQUIRES(_mutex);
   // A refused AUTH, for ACL LOG.
   void log_auth_failure_locked(Session& session, std::string_view username) DANNAN_REQUIRES(_mutex);
+  // MONITOR: `session` is told of every command run from now on, until it goes.
+  void monitor_locked(Session& session) DANNAN_REQUIRES(_mutex);
+  // CLIENT UNBLOCK: ends connection `client`'s wait, with its timeout reply or
+  // an UNBLOCKED error; whether it was waiting. Its wake is called once the
+  // lock is let go.
+  bool unblock_locked(int64_t client, bool error) DANNAN_REQUIRES(_mutex);
 
   // Keyspace notifications (Valkey's "Keyspace notifications"): an event of
   // class `cls` ('g', '$', 'l', 's', 'h', 'z', 'x', 'e', 't', 'd', 'n' or
@@ -195,6 +201,10 @@ class Database {
   // are on.
   void look_up_keys(const Spec& spec, const std::vector<std::string>& args, size_t db) DANNAN_REQUIRES(_mutex);
   void publish_events() DANNAN_REQUIRES(_mutex);
+  // MONITOR's line for a command run by `session` (or a script, "lua").
+  void feed_monitors(const Session& session, const Spec& spec, const std::vector<std::string>& args, size_t db) DANNAN_REQUIRES(_mutex);
+  // execute() without CLIENT REPLY's suppression.
+  Executed execute_one(Session& session, const std::vector<std::string>& args, std::string& out, Wake wake);
 
   struct Event {
     size_t db;
@@ -224,6 +234,10 @@ class Database {
   std::unordered_map<std::string, std::vector<Session*>> _watchers DANNAN_GUARDED_BY(_mutex);
   Scripting _scripting DANNAN_GUARDED_BY(_mutex);
   Acl _acl DANNAN_GUARDED_BY(_mutex);
+  // MONITOR's connections, by id.
+  std::map<int64_t, Session*> _monitors DANNAN_GUARDED_BY(_mutex);
+  // Waits ended by CLIENT UNBLOCK during a command: woken after it.
+  Woken _released DANNAN_GUARDED_BY(_mutex);
   // The classes notify-keyspace-events takes, as bits; the events waiting to
   // be published.
   uint32_t _notify_flags DANNAN_GUARDED_BY(_mutex) = 0;

@@ -14,6 +14,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // Valkey's access control lists (Valkey 8, "ACL"): users, each with passwords
@@ -114,6 +115,11 @@ class Acl {
   // Whether ACL knows the command `args` names (with its subcommand, for a
   // container): DRYRUN's "Command not found" otherwise.
   static bool known(const std::vector<std::string>& args);
+  // COMMAND GETKEYS: whether the command takes keys at all, and the keys
+  // `args` names (by index), each with Valkey's flags for it ("RW access
+  // update"), found by Valkey's key specifications.
+  static bool has_keys(const std::vector<std::string>& args);
+  static std::vector<std::pair<size_t, std::string_view>> keys_with_flags(const std::vector<std::string>& args);
 
   // The categories in Valkey's order, and the commands in one (by full name);
   // none for a category that does not exist.

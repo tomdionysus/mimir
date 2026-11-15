@@ -214,6 +214,123 @@ std::string Database::timeout_reply(resp::Protocol protocol, bool null_bulk) {
 }
 
 Executed Database::execute(Session& session, const std::vector<std::string>& args, std::string& out, Wake wake) {
+  const size_t before = out.size();
+  Executed executed = execute_one(session, args, out, std::move(wake));
+  // CLIENT REPLY: OFF drops every reply; SKIP drops the reply of the command
+  // after the one that set it. Read without the lock: only this connection's
+  // own commands change them.
+  if (session.reply_off || session.reply_skip) out.resize(before);
+  session.reply_skip = false;
+  if (session.reply_skip_next) {
+    session.reply_skip = true;
+    session.reply_skip_next = false;
+  }
+  return executed;
+}
+
+void Database::monitor_locked(Session& session) {
+  session.monitoring = true;
+  _monitors[session.id] = &session;
+}
+
+bool Database::unblock_locked(int64_t client, bool error) {
+  for (auto& [id, waiter] : _waiters) {
+    if (waiter.session->id != client) continue;
+    std::string bytes;
+    if (error) {
+      resp::Reply reply(waiter.session->protocol);
+      reply.error("UNBLOCKED client unblocked via CLIENT UNBLOCK");
+      bytes = reply.take();
+    } else {
+      bytes = timeout_reply(waiter.session->protocol, waiter.null_bulk);
+    }
+    _released.emplace_back(std::move(waiter.wake), std::move(bytes));
+    forget_waiter(id);
+    return true;
+  }
+  return false;
+}
+
+namespace {
+
+// An argument as MONITOR shows it: quoted, with Valkey's escapes.
+void quote_into(std::string& out, std::string_view arg) {
+  static constexpr char hex[] = "0123456789abcdef";
+  out += '"';
+  for (unsigned char c : arg) {
+    switch (c) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      case '\a':
+        out += "\\a";
+        break;
+      case '\b':
+        out += "\\b";
+        break;
+      default:
+        if (c >= 0x20 && c < 0x7f) {
+          out += static_cast<char>(c);
+        } else {
+          out += "\\x";
+          out += hex[c >> 4];
+          out += hex[c & 0xf];
+        }
+    }
+  }
+  out += '"';
+}
+
+// Whether argument `i` of `args` is a secret MONITOR must not show.
+bool redacted(const std::vector<std::string>& args, size_t i) {
+  if (iequals(args[0], "auth")) return i >= 1;
+  if (iequals(args[0], "acl")) return args.size() > 1 && iequals(args[1], "setuser") && i >= 3;
+  if (iequals(args[0], "hello")) {
+    for (size_t j = 2; j + 2 < args.size(); ++j)
+      if (iequals(args[j], "AUTH") && (i == j + 1 || i == j + 2)) return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+void Database::feed_monitors(const Session& session, const Spec& spec, const std::vector<std::string>& args, size_t db) {
+  if (_monitors.empty()) return;
+  // Valkey shows neither administrative commands nor those that ask not to be.
+  if (spec.flags.find("admin") != std::string_view::npos || spec.flags.find("skip_monitor") != std::string_view::npos) return;
+  const uint64_t now = _wall.unix_ms();
+  std::string line = std::to_string(now / 1000) + ".";
+  const std::string micros = std::to_string((now % 1000) * 1000);
+  line += std::string(6 - micros.size(), '0') + micros;
+  line += " [" + std::to_string(db) + " " + (session.scripted ? std::string("lua") : session.address) + "]";
+  for (size_t i = 0; i < args.size(); ++i) {
+    line += ' ';
+    if (redacted(args, i))
+      line += "\"(redacted)\"";
+    else
+      quote_into(line, args[i]);
+  }
+  for (const auto& [id, monitor] : _monitors) {
+    if (!monitor->push) continue;
+    resp::Reply reply(monitor->protocol);
+    reply.simple(line);
+    monitor->push(reply.take());
+  }
+}
+
+Executed Database::execute_one(Session& session, const std::vector<std::string>& args, std::string& out, Wake wake) {
   Executed executed;
   resp::Reply reply(session.protocol);
   if (args.empty()) return executed;
@@ -285,6 +402,7 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
     Call call{session, *this, *_dbs[db], reply, args};
     call.db = db;
     look_up_keys(*spec, args, db);
+    feed_monitors(session, *spec, args, db);
     try {
       spec->handler(call);
     } catch (const CommandError& e) {
@@ -293,6 +411,8 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
       reply = resp::Reply(session.protocol);
       reply.error(e.what());
     }
+    for (auto& released : _released) woken.push_back(std::move(released));
+    _released.clear();
     if (call.blocked) {
       if (wake) {
         const uint64_t id = _next_wait++;
@@ -326,6 +446,7 @@ void Database::run_locked(Session& session, const std::vector<std::string>& args
   Call call{session, *this, *_dbs[db], reply, args};
   call.db = db;
   look_up_keys(*spec, args, db);
+  feed_monitors(session, *spec, args, db);
   try {
     spec->handler(call);
   } catch (const CommandError& e) {
@@ -439,6 +560,7 @@ void Database::forget(Session& session) {
   dannan::contract::Lock lock(_mutex);
   unwatch_locked(session);
   _sessions.erase(session.id);
+  _monitors.erase(session.id);
 }
 
 void Database::forget_waiter(uint64_t id) {

@@ -16,6 +16,7 @@
 #include "mimir/command/database.h"
 #include "mimir/command/handlers.h"
 #include "mimir/keyspace/glob.h"
+#include "mimir/version.h"
 
 namespace mimir::command::server {
 
@@ -95,6 +96,7 @@ uint64_t usage_of(const std::string& key, const keyspace::Entry& entry) {
 }  // namespace
 
 void config(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+  if (help::reply_help(call, "config")) return;
   auto& settings = call.database.config_locked();
   const std::string sub = lower(call.args[1]);
   if (sub == "get") {
@@ -199,6 +201,7 @@ void waitaof(Call& call) {
 }
 
 void memory(Call& call) {
+  if (help::reply_help(call, "memory")) return;
   const std::string sub = lower(call.args[1]);
   if (sub == "usage") {
     if (call.args.size() != 3 && call.args.size() != 5) throw CommandError(syntax_error);
@@ -213,12 +216,19 @@ void memory(Call& call) {
       call.reply.integer(static_cast<int64_t>(usage_of(call.args[2], *entry)));
   } else if (sub == "doctor") {
     call.reply.verbatim("txt", "Hi Sam, I can't find any memory issue in your instance. I can only account for what occurs on this base.");
+  } else if (sub == "purge") {
+    if (call.args.size() != 2) throw CommandError("ERR wrong number of arguments for 'memory|purge' command");
+    call.reply.simple("OK");
+  } else if (sub == "malloc-stats") {
+    if (call.args.size() != 2) throw CommandError("ERR wrong number of arguments for 'memory|malloc-stats' command");
+    call.reply.verbatim("txt", "Stats not supported for the current allocator");
   } else {
     throw CommandError("ERR unknown subcommand '" + call.args[1] + "'. Try MEMORY HELP.");
   }
 }
 
 void slowlog(Call& call) {
+  if (help::reply_help(call, "slowlog")) return;
   const std::string sub = lower(call.args[1]);
   if (sub == "get") {
     if (call.args.size() == 3) integer_argument(call.args[2]);
@@ -233,5 +243,147 @@ void slowlog(Call& call) {
 }
 
 void lastsave(Call& call) { call.reply.integer(static_cast<int64_t>(call.database.started_ms() / 1000)); }
+
+namespace {
+
+constexpr const char* cluster_disabled = "ERR This instance has cluster support disabled";
+
+// CLUSTER's subcommands in Valkey 8.1.1: each answered as a standalone Valkey
+// answers it until Mimir's cluster stage gives them their meaning.
+constexpr std::string_view cluster_subcommands[] = {"addslots",
+                                                    "addslotsrange",
+                                                    "bumpepoch",
+                                                    "count-failure-reports",
+                                                    "countkeysinslot",
+                                                    "delslots",
+                                                    "delslotsrange",
+                                                    "failover",
+                                                    "flushslots",
+                                                    "forget",
+                                                    "getkeysinslot",
+                                                    "help",
+                                                    "info",
+                                                    "keyslot",
+                                                    "links",
+                                                    "meet",
+                                                    "myid",
+                                                    "myshardid",
+                                                    "nodes",
+                                                    "replicas",
+                                                    "replicate",
+                                                    "reset",
+                                                    "saveconfig",
+                                                    "set-config-epoch",
+                                                    "setslot",
+                                                    "shards",
+                                                    "slaves",
+                                                    "slots",
+                                                    "slot-stats"};
+
+std::string_view commandlog_type(const std::string& type) {
+  for (std::string_view known : {"slow", "large-request", "large-reply"})
+    if (iequals(type, known)) return known;
+  throw CommandError("ERR type should be one of the following: slow, large-request, large-reply");
+}
+
+}  // namespace
+
+void cluster(Call& call) {
+  for (auto sub : cluster_subcommands)
+    if (iequals(call.args[1], sub)) throw CommandError(cluster_disabled);
+  throw CommandError("ERR unknown subcommand '" + call.args[1] + "'. Try CLUSTER HELP.");
+}
+
+void asking(Call&) { throw CommandError(cluster_disabled); }
+void readonly(Call& call) { call.reply.simple("OK"); }
+void readwrite(Call& call) { call.reply.simple("OK"); }
+
+void debug(Call&) {
+  throw CommandError(
+      "ERR DEBUG command not allowed. If the enable-debug-command option is set to \"local\", you can run it from a local connection, otherwise you need to "
+      "set this option in the configuration file, and then restart the server.");
+}
+
+void module(Call& call) {
+  if (help::reply_help(call, "module")) return;
+  const std::string sub = lower(call.args[1]);
+  if (sub == "list") {
+    if (call.args.size() != 2) throw CommandError("ERR wrong number of arguments for 'module|list' command");
+    call.reply.array(0);
+  } else if (sub == "load" || sub == "loadex" || sub == "unload") {
+    if (call.args.size() < 3 || (sub == "unload" && call.args.size() != 3))
+      throw CommandError("ERR wrong number of arguments for 'module|" + sub + "' command");
+    // Mimir loads no modules; Valkey refuses them unless configured otherwise.
+    throw CommandError(
+        "ERR MODULE command not allowed. If the enable-module-command option is set to \"local\", you can run it from a local connection, otherwise you "
+        "need to set this option in the configuration file, and then restart the server.");
+  } else {
+    throw CommandError("ERR unknown subcommand '" + call.args[1] + "'. Try MODULE HELP.");
+  }
+}
+
+void pfselftest(Call& call) { call.reply.simple("OK"); }
+
+// Latency monitoring is off, as Valkey's is by default: nothing is sampled.
+void latency(Call& call) {
+  if (help::reply_help(call, "latency")) return;
+  const std::string sub = lower(call.args[1]);
+  const size_t argc = call.args.size();
+  if (sub == "latest") {
+    if (argc != 2) throw CommandError("ERR wrong number of arguments for 'latency|latest' command");
+    call.reply.array(0);
+  } else if (sub == "history") {
+    if (argc != 3) throw CommandError("ERR wrong number of arguments for 'latency|history' command");
+    call.reply.array(0);
+  } else if (sub == "reset") {
+    call.reply.integer(0);
+  } else if (sub == "graph") {
+    if (argc != 3) throw CommandError("ERR wrong number of arguments for 'latency|graph' command");
+    throw CommandError("ERR No samples available for event '" + call.args[2] + "'");
+  } else if (sub == "doctor") {
+    if (argc != 2) throw CommandError("ERR wrong number of arguments for 'latency|doctor' command");
+    call.reply.verbatim("txt",
+                        "Latency monitoring is disabled in this Mimir node. You may use \"CONFIG SET latency-monitor-threshold <milliseconds>.\" in order "
+                        "to enable it, once Mimir samples latency.");
+  } else if (sub == "histogram") {
+    // Per-command latency tracking is not kept: no command has a histogram.
+    call.reply.map(0);
+  } else {
+    throw CommandError("ERR unknown subcommand '" + call.args[1] + "'. Try LATENCY HELP.");
+  }
+}
+
+// Valkey 8.1's command log: nothing is logged yet, as SLOWLOG logs nothing.
+void commandlog(Call& call) {
+  if (help::reply_help(call, "commandlog")) return;
+  const std::string sub = lower(call.args[1]);
+  const size_t argc = call.args.size();
+  if (sub == "get") {
+    if (argc != 4) throw CommandError("ERR wrong number of arguments for 'commandlog|get' command");
+    auto count = parse_integer(call.args[2]);
+    if (!count || *count < -1) throw CommandError("ERR count should be greater than or equal to -1");
+    commandlog_type(call.args[3]);
+    call.reply.array(0);
+  } else if (sub == "len") {
+    if (argc != 3) throw CommandError("ERR wrong number of arguments for 'commandlog|len' command");
+    commandlog_type(call.args[2]);
+    call.reply.integer(0);
+  } else if (sub == "reset") {
+    if (argc != 3) throw CommandError("ERR wrong number of arguments for 'commandlog|reset' command");
+    commandlog_type(call.args[2]);
+    call.reply.simple("OK");
+  } else {
+    throw CommandError("ERR unknown subcommand '" + call.args[1] + "'. Try COMMANDLOG HELP.");
+  }
+}
+
+void lolwut(Call& call) { call.reply.verbatim("txt", "Mimir ver. " + std::string(mimir::version) + "\n"); }
+
+// Called under the database's lock, as every handler is.
+void monitor(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+  if (!call.session.push) throw CommandError("ERR MONITOR needs a connection that can be written to");
+  call.database.monitor_locked(call.session);
+  call.reply.simple("OK");
+}
 
 }  // namespace mimir::command::server

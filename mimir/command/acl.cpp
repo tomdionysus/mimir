@@ -39,6 +39,8 @@ struct FindKeys {
 };
 struct KeySpec {
   KeyNeed need;
+  // Valkey's own flags for the spec, as COMMAND GETKEYSANDFLAGS answers them.
+  std::string_view flags;
   BeginSearch begin;
   FindKeys find;
 };
@@ -385,6 +387,7 @@ std::string pattern_text(const Acl::KeyPattern& k) {
 struct KeyRef {
   size_t position;
   uint8_t need;
+  std::string_view flags;
 };
 
 // The keys `args` names and what each needs, by the command's key specs as
@@ -434,7 +437,7 @@ std::vector<KeyRef> keys_by_specs(const Entry& entry, const std::vector<std::str
       return {};
     }
     if (last >= argc || last < first || first >= argc) return {};
-    for (int i = first; i <= last; i += std::max(step, 1)) keys.push_back(KeyRef{static_cast<size_t>(i), spec.need});
+    for (int i = first; i <= last; i += std::max(step, 1)) keys.push_back(KeyRef{static_cast<size_t>(i), spec.need, spec.flags});
   }
   return keys;
 }
@@ -445,8 +448,8 @@ std::vector<KeyRef> keys_of_command(size_t id, const std::vector<std::string>& a
   // Valkey's own getkeys procedures find them.
   if (entry.name == "set") {
     for (size_t i = 3; i < args.size(); ++i)
-      if (iequals(args[i], "GET")) return {KeyRef{1, k_RW}};
-    return {KeyRef{1, k_W}};
+      if (iequals(args[i], "GET")) return {KeyRef{1, k_RW, "RW access update"}};
+    return {KeyRef{1, k_W, "OW update"}};
   }
   if (entry.name == "bitfield") {
     bool read_only = true;
@@ -464,11 +467,12 @@ std::vector<KeyRef> keys_of_command(size_t id, const std::vector<std::string>& a
         break;
       }
     }
-    return {KeyRef{1, read_only ? uint8_t{k_R} : uint8_t{k_RW}}};
+    if (read_only) return {KeyRef{1, k_R, "RO access"}};
+    return {KeyRef{1, k_RW, "RW access update"}};
   }
-  if (entry.name == "sort_ro") return {KeyRef{1, k_R}};
+  if (entry.name == "sort_ro") return {KeyRef{1, k_R, "RO access"}};
   if (entry.name == "sort") {
-    std::vector<KeyRef> keys{KeyRef{1, k_R}};
+    std::vector<KeyRef> keys{KeyRef{1, k_R, "RO access"}};
     std::optional<size_t> store;
     for (size_t i = 2; i < args.size(); ++i) {
       if (iequals(args[i], "LIMIT")) {
@@ -479,7 +483,7 @@ std::vector<KeyRef> keys_of_command(size_t id, const std::vector<std::string>& a
         i += 1;
       }
     }
-    if (store) keys.push_back(KeyRef{*store, k_W});
+    if (store) keys.push_back(KeyRef{*store, k_W, "OW update"});
     return keys;
   }
   return keys_by_specs(entry, args);
@@ -705,6 +709,21 @@ std::string Acl::full_name(const std::vector<std::string>& args) {
 }
 
 bool Acl::known(const std::vector<std::string>& args) { return command_id(args).has_value(); }
+
+bool Acl::has_keys(const std::vector<std::string>& args) {
+  auto id = command_id(args);
+  if (!id) return false;
+  const Entry& entry = table().entries[*id];
+  return !entry.specs.empty() || entry.name == "set" || entry.name == "bitfield" || entry.name == "sort" || entry.name == "sort_ro";
+}
+
+std::vector<std::pair<size_t, std::string_view>> Acl::keys_with_flags(const std::vector<std::string>& args) {
+  std::vector<std::pair<size_t, std::string_view>> out;
+  auto id = command_id(args);
+  if (!id) return out;
+  for (const KeyRef& ref : keys_of_command(*id, args)) out.emplace_back(ref.position, ref.flags);
+  return out;
+}
 
 std::string Acl::message(const AclVerdict& verdict, std::string_view user, const std::vector<std::string>& args, bool verbose) {
   switch (verdict.denial) {

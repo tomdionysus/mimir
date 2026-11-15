@@ -1114,6 +1114,7 @@ void evalsha(Call& call) { evalsha_generic(call, false); }
 void evalsha_ro(Call& call) { evalsha_generic(call, true); }
 
 void script(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+  if (help::reply_help(call, "script")) return;
   const std::string sub = lower(call.args[1]);
   Scripting& scripting = call.database.scripting_locked();
   if (sub == "load") {
@@ -1139,6 +1140,22 @@ void script(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
     call.reply.simple("OK");
   } else if (sub == "kill") {
     throw CommandError("NOTBUSY No scripts in execution right now.");
+  } else if (sub == "show") {
+    if (call.args.size() != 3) throw CommandError("ERR wrong number of arguments for 'script|show' command");
+    const std::string* body = scripting.body(lower(call.args[2]));
+    if (!body) throw CommandError("NOSCRIPT No matching script.");
+    call.reply.bulk(*body);
+  } else if (sub == "debug") {
+    if (call.args.size() != 3) throw CommandError("ERR wrong number of arguments for 'script|debug' command");
+    if (iequals(call.args[2], "NO")) {
+      call.reply.simple("OK");
+    } else if (iequals(call.args[2], "YES") || iequals(call.args[2], "SYNC")) {
+      // Valkey's Lua debugger steps a script interactively on its connection;
+      // Mimir has none.
+      throw CommandError("ERR Mimir has no Lua debugger: SCRIPT DEBUG takes only NO");
+    } else {
+      throw CommandError("ERR Use SCRIPT DEBUG YES/SYNC/NO");
+    }
   } else {
     throw CommandError("ERR unknown subcommand '" + call.args[1] + "'. Try SCRIPT HELP.");
   }
@@ -1180,6 +1197,7 @@ void write_library(resp::Reply& reply, const Scripting::Library& library, bool w
 }  // namespace
 
 void function(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+  if (help::reply_help(call, "function")) return;
   const std::string sub = lower(call.args[1]);
   Scripting& scripting = call.database.scripting_locked();
   if (sub == "load") {

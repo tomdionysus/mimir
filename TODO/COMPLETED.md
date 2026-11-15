@@ -2,6 +2,29 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: the rest of Valkey's command list, as a standalone Valkey answers it
+
+- Valkey 8.1.1's COMMAND LIST (379 commands and subcommands) checked against
+  mimir-node: what it called unknown is now answered.
+- HELP for every container, Valkey's text (`mimir/command/help.cpp`).
+  CLUSTER and ASKING as a standalone Valkey refuses them; READONLY and
+  READWRITE; DEBUG, MODULE LOAD and UNLOAD refused as by default; MODULE LIST;
+  PFSELFTEST; LATENCY and COMMANDLOG (8.1) with nothing sampled; MEMORY PURGE
+  and MALLOC-STATS; SCRIPT SHOW and DEBUG NO; LOLWUT, Mimir's own.
+- COMMAND GETKEYS and GETKEYSANDFLAGS from the key-spec table, regenerated to
+  carry Valkey's full flags. COMMAND DOCS answers no documentation: Valkey's
+  documentation is its text, not copied.
+- CLIENT REPLY ON/OFF/SKIP, CLIENT UNBLOCK (TIMEOUT or ERROR), CAPA, GETREDIR
+  and TRACKINGINFO (tracking off), IMPORT-SOURCE, and USER on LIST and KILL.
+- MONITOR: every command run is pushed in Valkey's form, scripts' as "lua";
+  administrative and skip_monitor commands are not, and AUTH, HELLO's AUTH
+  and ACL SETUSER's rules are shown "(redacted)".
+- Still owed: CLIENT PAUSE and UNPAUSE, CLIENT TRACKING and CACHING (client-
+  side caching), MEMORY STATS, PFDEBUG; Valkey's persistence and replication
+  commands wait on the maintainer (ACTIVE.md).
+- Gate on node-d: release 296 passed (11 new); differential 33 of 33
+  (the new `Differential.Introspection`), passed on its first run.
+
 ## 2026-11-15: HSCAN, SSCAN and ZSCAN page large collections (ruling 30)
 
 - `mimir/keyspace/scan_order.h`: every hash field, set member and sorted-set

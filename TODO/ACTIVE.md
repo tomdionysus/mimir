@@ -8,7 +8,12 @@ durability, and the order.
 ## Resume here
 
 - State: `develop` pushed (the remote is public since 2026-11-15). Last gate:
-  release 285 passed, differential 32 of 32 (SCAN paging, ruling 30).
+  release 296 passed, differential 33 of 33.
+- Single-node work still owed (none waits on anyone): CLIENT PAUSE and
+  UNPAUSE; client-side caching (CLIENT TRACKING, CACHING, invalidation pushes);
+  MEMORY STATS; PFDEBUG. Valkey's persistence and replication commands (SAVE,
+  BGSAVE, BGREWRITEAOF, SHUTDOWN, REPLICAOF, SLAVEOF, SYNC, PSYNC, REPLCONF,
+  FAILOVER, MIGRATE, RESTORE-ASKING) wait on the maintainer's ruling.
 - The single-node stage is complete: every Valkey type and command family,
   RESP2 and RESP3, pub/sub, transactions, server commands, configurable
   databases, scripting (EVAL, FUNCTION, Valkey's Lua libraries and read-only
