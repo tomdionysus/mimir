@@ -6,6 +6,7 @@
 #
 
 add_executable(mimir_tests
+  command_acl_test.cpp
   command_bitmaps_test.cpp
   command_blocking_test.cpp
   command_databases_test.cpp

@@ -35,6 +35,8 @@ class Connection : public std::enable_shared_from_this<Connection> {
     _session.id = _server->_database.next_client_id();
     _session.created_ms = _server->_database.now_ms();
     _session.address = _stream->peer().address().to_string() + ":" + std::to_string(_stream->peer().port());
+    _session.tls = _stream->is_tls();
+    _server->_database.welcome(_session);
     // Published messages are queued on the stream from the publisher's thread,
     // waiting on nothing; a stream gone takes nothing.
     _session.push = [stream = std::weak_ptr<dannan::listen::Stream>(_stream)](std::string bytes) {
@@ -112,7 +114,12 @@ class Connection : public std::enable_shared_from_this<Connection> {
     if (_wait || _closing) return;
     std::string out;
     try {
-      while (auto args = _parser.next()) {
+      for (;;) {
+        // Until it authenticates, a connection's requests are held to
+        // Valkey's small bounds. Only this strand changes `authenticated`.
+        _parser.restrict(!_session.authenticated);
+        auto args = _parser.next();
+        if (!args) break;
         ++_server->_commands;
         // A command that pushes (a subscription's confirmation, a message to
         // this connection itself) goes after the replies before it, so those

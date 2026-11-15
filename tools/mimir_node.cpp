@@ -19,8 +19,13 @@
 // it, or a MIMIR_* variable, the flags winning: `--port 6379` is
 // `listen: {port: 6379}` and MIMIR_PORT.
 //
+// Users are `acl: {users: [...]}`, each a line of a Valkey ACL file, best kept
+// in secrets.yaml (`user alice on >secret ~app:* +@read`); AUTH is taken only
+// over TLS unless `auth: {plaintext: true}` (ruling 28).
+//
 //   mimir-node [--listen ADDR] [--port N] [--databases N] [--tls-port N --tls-certificate PEM --tls-key PEM]
-//              [--tls-client-ca PEM] [--seconds N] [--log-level LEVEL] [--log-format text|json]
+//              [--tls-client-ca PEM] [--auth-plaintext] [--user LINE]... [--seconds N] [--log-level LEVEL]
+//              [--log-format text|json]
 //   mimir-node --version
 
 #include <boost/asio/io_context.hpp>
@@ -31,6 +36,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -59,6 +65,8 @@ dannan::config::Reader reader() {
       Setting{"tls.key", Setting::Kind::value, "--tls-key", "MIMIR_TLS_KEY", "a PEM key's path"},
       Setting{"tls.client_ca", Setting::Kind::value, "--tls-client-ca", "MIMIR_TLS_CLIENT_CA", "a PEM bundle's path"},
       Setting{"databases", Setting::Kind::value, "--databases", "MIMIR_DATABASES", "a count of databases, 1 to 1024"},
+      Setting{"auth.plaintext", Setting::Kind::toggle, "--auth-plaintext", "MIMIR_AUTH_PLAINTEXT", "whether AUTH is taken without TLS"},
+      Setting{"acl.users", Setting::Kind::list, "--user", "", "lines of a Valkey ACL file: \"user <name> <rules>...\""},
       Setting{"seconds", Setting::Kind::value, "--seconds", "", "seconds to run, 0 for ever"},
       Setting{"log.level", Setting::Kind::value, "--log-level", "MIMIR_LOG_LEVEL", "ALL, DEBUG, INFO, WARN or ERROR"},
       Setting{"log.format", Setting::Kind::value, "--log-format", "MIMIR_LOG_FORMAT", "text or json"},
@@ -92,7 +100,15 @@ int main(int argc, char** argv) {
     asio::io_context io;
     mimir::command::DatabaseSettings database_settings;
     database_settings.databases = static_cast<size_t>(settings.number("databases", 1, 1024).value_or(1));
-    mimir::command::Database database(dannan::contract::system_wall_clock(), database_settings);
+    database_settings.auth_plaintext = settings.toggle("auth.plaintext").value_or(false);
+    database_settings.users = settings.list("acl.users");
+    std::unique_ptr<mimir::command::Database> made;
+    try {
+      made = std::make_unique<mimir::command::Database>(dannan::contract::system_wall_clock(), database_settings);
+    } catch (const std::invalid_argument& e) {
+      throw dannan::config::ConfigError(e.what());
+    }
+    mimir::command::Database& database = *made;
     auto server = std::make_shared<mimir::server::Server>(database, logger.child("server"));
     const auto accepted = [server](std::shared_ptr<dannan::listen::Stream> stream) { server->serve(std::move(stream)); };
 

@@ -243,6 +243,14 @@ bool call_command(lua_State* L, Run& run) {
     push_error(L, refused);
     return false;
   }
+  // The script runs as its caller's user, each command checked as it is called.
+  std::optional<std::string> denied = [&]() DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+    return run.outer->database.acl_refusal_locked(run.outer->session, args, "lua");
+  }();
+  if (denied) {
+    push_error(L, "ERR ACL failure in script: " + *denied);
+    return false;
+  }
   resp::Reply reply(resp::Protocol::resp2);
   try {
     // Under the lock the script's own command holds.
@@ -673,6 +681,8 @@ void run_script(Call& call, const std::string& sha, const std::string& body, siz
   set_array(L, "ARGV", std::vector<std::string>(call.args.begin() + static_cast<std::ptrdiff_t>(split), call.args.end()));
   Run run{&call, Session{}, read_only, sha, "user_script"};
   run.session.id = call.session.id;
+  run.session.user = call.session.user;
+  run.session.authenticated = run.session.welcomed = true;
   run.session.db = call.session.db;
   run.session.scripted = true;
   lua_pushlightuserdata(L, &run);
@@ -998,6 +1008,8 @@ void run_function(Call& call, bool read_only_command) DANNAN_NO_THREAD_SAFETY_AN
   lua_settop(L, 0);
   Run run{&call, Session{}, no_writes, name, "user_function"};
   run.session.id = call.session.id;
+  run.session.user = call.session.user;
+  run.session.authenticated = run.session.welcomed = true;
   run.session.db = call.session.db;
   run.session.scripted = true;
   lua_pushlightuserdata(L, &run);

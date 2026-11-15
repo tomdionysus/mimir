@@ -2,6 +2,35 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: ACL and AUTH (rulings 12, 27, 28)
+
+- `mimir/command/acl`: Valkey's users, passwords as SHA-256 (Dannan's), the
+  root selector and those in parentheses, every SETUSER rule with Valkey's
+  merging (a key pattern's flags join in place; a later command or category
+  rule replaces earlier ones for it and its subcommands), ACL LIST's and
+  GETUSER's descriptions, and Valkey's refusal words. All or none per SETUSER.
+- Keys are checked by Valkey's own key specifications, taken from Valkey
+  8.1.1's COMMAND INFO into `acl_table.inc` with each command's categories
+  (also COMMAND INFO's categories now); SET, BITFIELD, SORT and SORT_RO by
+  Valkey's getkeys procedures. The plan's "readonly R, write W" was wrong
+  (probe: COPY needs R on its source, W on its destination; SET without GET
+  only W; INCR both).
+- Checks in Valkey's order: unknown and arity, NOAUTH, a transaction's own
+  refusals, then ACL (command, keys, channels; the most relevant refusal over
+  selectors), before queueing in MULTI; EXEC checks each again; each
+  `redis.call` is checked as the caller ("ERR ACL failure in script: ...").
+  ACL LOG groups as Valkey's does (ten newest, a minute).
+- AUTH and HELLO's AUTH; ruling 28: refused on a plaintext connection unless
+  `auth.plaintext`. RESET returns to the default user. DELUSER closes the
+  user's connections; SETUSER closes subscribers whose channels it revokes.
+  CLIENT LIST's `user=` and `cmd=` (the full name, "client|list", as Valkey).
+- Ruling 27 at one node: users seeded from `acl.users` (ACL-file lines, or
+  `--user`). The parser's unauthenticated bounds are now applied.
+- The differential's first run found one difference (EXEC's words for a
+  command whose permissions changed after queueing), fixed.
+- Gate on node-d: release 277 passed (20 new); differential 32 of 32
+  (the new `Differential.Acl`, mimir-node run with `--auth-plaintext`).
+
 ## 2026-11-15: session handoff
 
 - Landed this session (each entry below has its gate): scripting with

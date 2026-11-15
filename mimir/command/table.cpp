@@ -302,6 +302,10 @@ const std::array specs{
     Spec{"info", -1, "loading stale", 0, 0, 0, Class::connection, connection::info},
     Spec{"time", 1, "loading stale fast", 0, 0, 0, Class::connection, connection::time},
     Spec{"reset", 1, "noscript loading stale fast no_auth allow_busy", 0, 0, 0, Class::connection, connection::reset},
+    // Users and their permissions: cluster state by agreement (ruling 27).
+    Spec{"acl", -2, "", 0, 0, 0, Class::agreement, acl::acl,
+         [](const std::vector<std::string>&
+                args) { return args.size() > 1 && (iequals(args[1], "setuser") || iequals(args[1], "deluser")) ? Class::agreement : Class::connection; }},
 };
 
 const std::unordered_map<std::string, const Spec*>& by_name() {

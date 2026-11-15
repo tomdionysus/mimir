@@ -31,23 +31,6 @@ void unknown_subcommand(const std::string& subcommand, std::string_view command)
   throw CommandError("ERR unknown subcommand '" + subcommand + "'. Try " + upper(command) + " HELP.");
 }
 
-// One line of CLIENT LIST, in Valkey's field order for the fields Mimir keeps.
-std::string client_line(const Session& s, uint64_t now) {
-  std::string flags;
-  if (s.subscriptions > 0 || s.shard_subscriptions > 0) flags += "P";
-  if (s.in_multi) flags += "x";
-  if (flags.empty()) flags = "N";
-  std::ostringstream line;
-  line << "id=" << s.id << " addr=" << s.address << " laddr= fd=-1 name=" << s.name << " age=" << (now - std::min(now, s.created_ms)) / 1000
-       << " idle=" << (now - std::min(now, s.last_ms)) / 1000 << " flags=" << flags << " capa= db=" << s.db << " sub=" << s.subscriptions
-       << " psub=0 ssub=" << s.shard_subscriptions << " multi=" << (s.in_multi ? static_cast<int64_t>(s.queued.size()) : -1) << " watch=" << s.watched.size()
-       << " qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0"
-       << " rbs=0 rbp=0 obl=0 oll=0 omem=0 tot-mem=0 events=r cmd=" << s.last_command
-       << " user=default redir=-1 resp=" << (s.protocol == resp::Protocol::resp3 ? 3 : 2) << " lib-name=" << s.lib_name << " lib-ver=" << s.lib_version
-       << " tot-cmds=" << s.commands << "\n";
-  return line.str();
-}
-
 void wrong_arity(std::string_view name) { throw CommandError("ERR wrong number of arguments for '" + std::string(name) + "' command"); }
 
 void command_info(resp::Reply& reply, const Spec& spec) {
@@ -66,14 +49,46 @@ void command_info(resp::Reply& reply, const Spec& spec) {
   reply.integer(spec.first_key);
   reply.integer(spec.last_key);
   reply.integer(spec.step);
-  // ACL categories, tips, key specifications and subcommands: not yet kept.
-  reply.set(0);
+  const auto categories = Acl::categories_of(spec.name);
+  reply.set(categories.size());
+  for (const auto& category : categories) reply.simple(category);
+  // Tips, key specifications and subcommands: not yet kept.
   reply.set(0);
   reply.array(0);
   reply.array(0);
 }
 
+// AUTH and HELLO's AUTH: refused on a plaintext connection unless the settings
+// allow it (ruling 28), then the user's password checked; a refusal is logged.
+void authenticate(Call& call, const std::string& username, const std::string& password) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+  if (!call.session.tls && !call.database.settings().auth_plaintext)
+    throw CommandError("ERR AUTH needs a TLS connection on this server: a password is never taken in clear (auth.plaintext is off)");
+  if (!call.database.acl_locked().authenticate(username, password)) {
+    call.database.log_auth_failure_locked(call.session, username);
+    throw CommandError(wrong_pass);
+  }
+  call.session.user = username;
+  call.session.authenticated = true;
+}
+
 }  // namespace
+
+// One line of CLIENT LIST, in Valkey's field order for the fields Mimir keeps.
+std::string client_line(const Session& s, uint64_t now) {
+  std::string flags;
+  if (s.subscriptions > 0 || s.shard_subscriptions > 0) flags += "P";
+  if (s.in_multi) flags += "x";
+  if (flags.empty()) flags = "N";
+  std::ostringstream line;
+  line << "id=" << s.id << " addr=" << s.address << " laddr= fd=-1 name=" << s.name << " age=" << (now - std::min(now, s.created_ms)) / 1000
+       << " idle=" << (now - std::min(now, s.last_ms)) / 1000 << " flags=" << flags << " capa= db=" << s.db << " sub=" << s.subscriptions
+       << " psub=0 ssub=" << s.shard_subscriptions << " multi=" << (s.in_multi ? static_cast<int64_t>(s.queued.size()) : -1) << " watch=" << s.watched.size()
+       << " qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0"
+       << " rbs=0 rbp=0 obl=0 oll=0 omem=0 tot-mem=0 events=r cmd=" << s.last_command << " user=" << s.user
+       << " redir=-1 resp=" << (s.protocol == resp::Protocol::resp3 ? 3 : 2) << " lib-name=" << s.lib_name << " lib-ver=" << s.lib_version
+       << " tot-cmds=" << s.commands << "\n";
+  return line.str();
+}
 
 void ping(Call& call) {
   if (call.args.size() > 2) wrong_arity("ping");
@@ -115,10 +130,12 @@ void hello(Call& call) {
     protocol = *version == 3 ? resp::Protocol::resp3 : resp::Protocol::resp2;
     i = 2;
   }
+  std::optional<std::pair<std::string, std::string>> credentials;
   for (; i < call.args.size(); ++i) {
     const bool more = i + 1 < call.args.size();
     if (iequals(call.args[i], "AUTH") && i + 2 < call.args.size()) {
-      throw CommandError("ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?");
+      credentials.emplace(call.args[i + 1], call.args[i + 2]);
+      i += 2;
     } else if (iequals(call.args[i], "SETNAME") && more) {
       name = call.args[++i];
       if (!valid_name(*name)) throw CommandError("ERR Client names cannot contain spaces, newlines or special characters.");
@@ -126,6 +143,11 @@ void hello(Call& call) {
       throw CommandError("ERR Syntax error in HELLO option '" + call.args[i] + "'");
     }
   }
+  if (credentials) authenticate(call, credentials->first, credentials->second);
+  if (!call.session.authenticated)
+    throw CommandError(
+        "NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO <proto> AUTH <user> <pass> option can be used to "
+        "authenticate the client and select the RESP protocol version at the same time");
   call.session.protocol = protocol;
   call.database.pubsub().set_protocol(call.session.id, protocol);
   call.reply = resp::Reply(protocol);
@@ -148,9 +170,17 @@ void hello(Call& call) {
   call.reply.array(0);
 }
 
-void auth(Call& call) {
+void auth(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   if (call.args.size() > 3) throw CommandError(syntax_error);
-  throw CommandError("ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?");
+  if (call.args.size() == 3) {
+    authenticate(call, call.args[1], call.args[2]);
+  } else {
+    const Acl::User* fallback = call.database.acl_locked().find("default");
+    if (fallback && fallback->nopass && (call.session.tls || call.database.settings().auth_plaintext))
+      throw CommandError("ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?");
+    authenticate(call, "default", call.args[1]);
+  }
+  call.reply.simple("OK");
 }
 
 // Called under the database's lock, as every handler is.
@@ -366,7 +396,10 @@ void time(Call& call) {
   call.reply.bulk(std::to_string((now % 1000) * 1000));
 }
 
-void reset(Call& call) {
+void reset(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+  // The connection is the default user again, authenticated only if that
+  // user needs no password.
+  call.database.welcome_locked(call.session);
   call.database.pubsub().drop(call.session.id);
   call.session.subscriptions = 0;
   call.session.shard_subscriptions = 0;
