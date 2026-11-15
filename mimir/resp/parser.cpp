@@ -167,6 +167,10 @@ std::optional<std::vector<std::string>> RequestParser::next_inline() {
   } catch (const ProtocolError& e) {
     fail(e.what());
   }
+  // The same count an array is held to.
+  if (words.size() > (_restricted ? _limits.restricted_arguments : _limits.max_arguments)) {
+    fail(_restricted ? "Protocol error: unauthenticated multibulk length" : "Protocol error: invalid multibulk length");
+  }
   _position = newline + 1;
   return words;
 }
