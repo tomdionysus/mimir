@@ -50,6 +50,26 @@ void getrange(Call&);
 void setrange(Call&);
 }  // namespace strings
 
+namespace lists {
+void lpush(Call&);
+void rpush(Call&);
+void lpushx(Call&);
+void rpushx(Call&);
+void lpop(Call&);
+void rpop(Call&);
+void llen(Call&);
+void lrange(Call&);
+void lindex(Call&);
+void lset(Call&);
+void linsert(Call&);
+void lrem(Call&);
+void ltrim(Call&);
+void lpos(Call&);
+void lmove(Call&);
+void rpoplpush(Call&);
+void lmpop(Call&);
+}  // namespace lists
+
 namespace generic {
 void del(Call&);
 void exists(Call&);

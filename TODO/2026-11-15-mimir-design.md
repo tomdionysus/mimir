@@ -184,6 +184,24 @@ reuses one; the acceptor interface is batched per replica set, so a slot's
 hosted system; a strict read is an identity proposal, one mechanism for both.
 
 Recommended starting point: CASPaxos, which is this shape and needs no log.
+
+Dannan's design is `../dannan/TODO/2026-11-15-agreement-design.md` (CASPaxos,
+`AcceptorStore`, `Outcome`, a one-round fast path). Mimir's review
+(2026-11-15) asked for four things, the second the one that matters most:
+- **Large values**: a prepare answers with a ballot and a small summary, not
+  the value; the proposer uses its own replica's value when it holds the
+  highest ballot; an accept carries a whole value or a delta against a base
+  ballot, which the store applies through Mimir's function. Without this an
+  LPOP on a 100 MB list moves about 400 MB.
+- **Mixing the classes**: the reduction of a majority's prepare answers into
+  the current value is Mimir's, defaulting to the highest ballot. Mimir's
+  reducer joins in the merge writes some acceptors have seen and others have
+  not, so an agreement command sees every merge write acknowledged on a
+  majority (ruling 16). Without it the two classes cannot share a key.
+- The committed attempt's reply (a popped element, `SET NX`'s answer) returned
+  in the `Outcome`, since a change may run more than once across retries.
+- Catch-up after a restart owned by the store (a shard's state transferred
+  whole), and names as bytes on the wire.
 Lugh's per-user lease for TOTP replay and Louhi's single active scheduler want
 the same guarantee and are the second and third consumers; Dagda's leases are
 not it (two holders are briefly possible, and fences carry the rest).
