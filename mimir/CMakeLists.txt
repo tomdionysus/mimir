@@ -13,6 +13,7 @@ add_library(mimir SHARED
   command/connection.cpp
   command/database.cpp
   command/generic.cpp
+  command/lists.cpp
   command/strings.cpp
   command/table.cpp
   keyspace/glob.cpp

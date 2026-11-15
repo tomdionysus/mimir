@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <optional>
 #include <string>
@@ -37,8 +38,11 @@ enum class Type : uint8_t { string, list, hash, set, zset };
 // "string", "list", "hash", "set", "zset": TYPE's words.
 std::string_view type_name(Type) noexcept;
 
+using List = std::deque<std::string>;
+
 struct Entry {
-  std::variant<std::string> value;
+  // In Type's order: the variant's index is the type.
+  std::variant<std::string, List> value;
   // Unix milliseconds; none: the key never expires.
   std::optional<uint64_t> expires_at;
 
