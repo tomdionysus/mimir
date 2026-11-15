@@ -7,8 +7,10 @@
 
 // The string commands, as Valkey 8 documents them.
 
+#include <algorithm>
 #include <climits>
 #include <cmath>
+#include <vector>
 
 #include "mimir/command/args.h"
 #include "mimir/command/database.h"
@@ -382,6 +384,110 @@ void setrange(Call& call) {
   value->replace(at, piece.size(), piece);
   call.notify('$', "setrange", key);
   call.reply.integer(static_cast<int64_t>(value->size()));
+}
+
+// LCS: the longest common subsequence of two strings, by the table of
+// prefixes' LCS lengths; IDX walks the table back from the end, as Valkey
+// does, so the ranges it names (and their order) are Valkey's.
+void lcs(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+  keyspace::Entry* ea = call.keys.find(call.args[1]);
+  keyspace::Entry* eb = call.keys.find(call.args[2]);
+  if ((ea && ea->type() != keyspace::Type::string) || (eb && eb->type() != keyspace::Type::string)) {
+    throw CommandError("ERR The specified keys must contain string values");
+  }
+  const std::string a = ea ? std::get<std::string>(ea->value) : std::string();
+  const std::string b = eb ? std::get<std::string>(eb->value) : std::string();
+  bool get_len = false, get_idx = false, with_match_len = false;
+  int64_t min_match_len = 0;
+  for (size_t j = 3; j < call.args.size(); ++j) {
+    const bool more = j + 1 < call.args.size();
+    if (iequals(call.args[j], "IDX")) {
+      get_idx = true;
+    } else if (iequals(call.args[j], "LEN")) {
+      get_len = true;
+    } else if (iequals(call.args[j], "WITHMATCHLEN")) {
+      with_match_len = true;
+    } else if (iequals(call.args[j], "MINMATCHLEN") && more) {
+      min_match_len = std::max<int64_t>(0, integer_argument(call.args[++j]));
+    } else {
+      throw CommandError(syntax_error);
+    }
+  }
+  if (get_idx && get_len) throw CommandError("ERR If you want both the length and indexes, please just use IDX.");
+  const uint64_t alen = a.size();
+  const uint64_t blen = b.size();
+  // The table is transient memory, bounded as Valkey bounds it.
+  const uint64_t cells = (alen + 1) * (blen + 1);
+  const auto& settings = call.database.config_locked();
+  const uint64_t limit = std::stoull(settings.at("proto-max-bulk-len"));
+  if (cells * sizeof(uint32_t) > limit) throw CommandError("ERR Insufficient memory, transient memory for LCS exceeds proto-max-bulk-len");
+  std::vector<uint32_t> table(cells, 0);
+  const auto at = [&](uint64_t i, uint64_t j) -> uint32_t& { return table[j + i * (blen + 1)]; };
+  for (uint64_t i = 1; i <= alen; ++i) {
+    for (uint64_t j = 1; j <= blen; ++j) {
+      at(i, j) = a[i - 1] == b[j - 1] ? at(i - 1, j - 1) + 1 : std::max(at(i - 1, j), at(i, j - 1));
+    }
+  }
+  uint32_t idx = at(alen, blen);
+  const bool compute = get_idx || !get_len;
+  std::string result(compute ? idx : 0, '\0');
+  struct Range {
+    uint64_t a_start, a_end, b_start, b_end, len;
+  };
+  std::vector<Range> ranges;
+  uint64_t a_start = alen, a_end = 0, b_start = 0, b_end = 0;
+  uint64_t i = alen, j = blen;
+  while (compute && i > 0 && j > 0) {
+    bool emit = false;
+    if (a[i - 1] == b[j - 1]) {
+      result[idx - 1] = a[i - 1];
+      if (a_start == alen) {
+        a_start = a_end = i - 1;
+        b_start = b_end = j - 1;
+      } else if (a_start == i && b_start == j) {
+        --a_start;
+        --b_start;
+      } else {
+        emit = true;
+      }
+      if (a_start == 0 || b_start == 0) emit = true;
+      --idx;
+      --i;
+      --j;
+    } else {
+      if (at(i - 1, j) > at(i, j - 1))
+        --i;
+      else
+        --j;
+      if (a_start != alen) emit = true;
+    }
+    const uint64_t match_len = a_end - a_start + 1;
+    if (emit) {
+      if (min_match_len == 0 || match_len >= static_cast<uint64_t>(min_match_len)) ranges.push_back(Range{a_start, a_end, b_start, b_end, match_len});
+      a_start = alen;
+    }
+  }
+  if (get_idx) {
+    call.reply.map(2);
+    call.reply.bulk("matches");
+    call.reply.array(ranges.size());
+    for (const auto& r : ranges) {
+      call.reply.array(with_match_len ? 3 : 2);
+      call.reply.array(2);
+      call.reply.integer(static_cast<int64_t>(r.a_start));
+      call.reply.integer(static_cast<int64_t>(r.a_end));
+      call.reply.array(2);
+      call.reply.integer(static_cast<int64_t>(r.b_start));
+      call.reply.integer(static_cast<int64_t>(r.b_end));
+      if (with_match_len) call.reply.integer(static_cast<int64_t>(r.len));
+    }
+    call.reply.bulk("len");
+    call.reply.integer(at(alen, blen));
+  } else if (get_len) {
+    call.reply.integer(idx);
+  } else {
+    call.reply.bulk(result);
+  }
 }
 
 }  // namespace strings
