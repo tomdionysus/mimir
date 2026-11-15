@@ -28,7 +28,10 @@ TEST(CommandServer, ConfigGetAndSet) {
   EXPECT_EQ(bed.run({"CONFIG", "GET", "maxmemory"}), bulks({"maxmemory", "0"}));
   EXPECT_EQ(bed.run({"CONFIG", "GET", "databases", "nosuch"}), bulks({"databases", "1"}));
   EXPECT_EQ(bed.run({"CONFIG", "SET", "notify-keyspace-events", "KEA"}), ok());
-  EXPECT_EQ(bed.run({"CONFIG", "GET", "notify-keyspace-events"}), bulks({"notify-keyspace-events", "KEA"}));
+  // Answered in Valkey's order: 'A' first, then K, E (the differential gate's finding).
+  EXPECT_EQ(bed.run({"CONFIG", "GET", "notify-keyspace-events"}), bulks({"notify-keyspace-events", "AKE"}));
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "notify-keyspace-events", "KEq"}),
+            error("ERR CONFIG SET failed (possibly related to argument 'notify-keyspace-events') - Invalid event class character. Use 'Ag$lshzxeKEtmdn'."));
   EXPECT_EQ(bed.run({"CONFIG", "SET", "nosuch", "1"}), error("ERR Unknown option or number of arguments for CONFIG SET - 'nosuch'"));
   EXPECT_EQ(bed.run({"CONFIG", "SET", "databases", "16"}),
             error("ERR CONFIG SET failed (possibly related to argument 'databases') - can't set immutable config"));

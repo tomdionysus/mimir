@@ -191,6 +191,7 @@ void bitfield_generic(Call& call, bool read_only) {
   std::string empty;
   std::string& bytes = writes ? string_or_create(call.keys, call.args[1]) : (existing ? *existing : empty);
   call.reply.array(ops.size());
+  size_t changes = 0;
   for (const Op& op : ops) {
     const uint64_t raw = read_field(bytes, op.offset, op.type.bits);
     const int64_t current = op.type.is_signed ? as_signed(raw, op.type.bits) : static_cast<int64_t>(raw);
@@ -218,7 +219,9 @@ void bitfield_generic(Call& call, bool read_only) {
       write_field(bytes, op.offset, op.type.bits, static_cast<uint64_t>(*next));
       call.reply.integer(*next);
     }
+    ++changes;
   }
+  if (changes) call.notify('$', "setbit", call.args[1]);
 }
 
 }  // namespace
@@ -230,6 +233,7 @@ void setbit(Call& call) {
   std::string& bytes = string_or_create(call.keys, call.args[1]);
   call.reply.integer(get_bit(bytes, offset) ? 1 : 0);
   set_bit(bytes, offset, bit == "1");
+  call.notify('$', "setbit", call.args[1]);
 }
 
 void getbit(Call& call) {
@@ -338,10 +342,12 @@ void bitop(Call& call) {
     result[byte] = static_cast<char>(value);
   }
   call.reply.integer(static_cast<int64_t>(result.size()));
-  if (result.empty())
-    call.keys.erase(call.args[2]);
-  else
+  if (result.empty()) {
+    if (call.keys.erase(call.args[2])) call.notify('g', "del", call.args[2]);
+  } else {
     call.keys.put(call.args[2], keyspace::Entry{std::move(result), std::nullopt});
+    call.notify('$', "set", call.args[2]);
+  }
 }
 
 void bitfield(Call& call) { bitfield_generic(call, false); }

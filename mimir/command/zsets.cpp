@@ -44,8 +44,12 @@ SortedSet& zset_or_create(keyspace::Keyspace& keys, std::string_view key) {
   return std::get<SortedSet>(keys.put(key, keyspace::Entry{SortedSet{}, std::nullopt}).value);
 }
 
-void drop_if_empty(keyspace::Keyspace& keys, std::string_view key, const SortedSet& zset) {
-  if (zset.empty()) keys.erase(key);
+// After a change to `key`: its event, then an emptied key's going.
+void changed(Call& call, std::string_view event, std::string_view key, const SortedSet& zset) {
+  call.notify('z', event, key);
+  if (!zset.empty()) return;
+  call.keys.erase(key);
+  call.notify('g', "del", key);
 }
 
 // A blocking command's source, as lists' blocking_source.
@@ -103,7 +107,7 @@ void multi_pop(Call& call, size_t numkeys_at, std::optional<double> seconds) {
       call.reply.bulk(item.member);
       call.reply.real(item.score);
     }
-    drop_if_empty(call.keys, call.args[k], *zset);
+    changed(call, min ? "zpopmin" : "zpopmax", call.args[k], *zset);
     return;
   }
   if (seconds)
@@ -126,7 +130,7 @@ void blocking_pop(Call& call, bool min) {
     call.reply.bulk(key);
     call.reply.bulk(item.member);
     call.reply.real(item.score);
-    drop_if_empty(call.keys, key, *zset);
+    changed(call, min ? "zpopmin" : "zpopmax", key, *zset);
     return;
   }
   park(call, std::move(keys), seconds);
@@ -427,7 +431,7 @@ void pop_generic(Call& call, bool min) {
       call.reply.real(item.score);
     }
   }
-  drop_if_empty(call.keys, call.args[1], *zset);
+  changed(call, min ? "zpopmin" : "zpopmax", call.args[1], *zset);
 }
 
 enum class Aggregate { sum, min, max };
@@ -563,12 +567,19 @@ void combine_store(Call& call, SetOp op, std::string_view name) {
   Combined combined = combine(call, 2, op, false, name);
   call.reply.integer(static_cast<int64_t>(combined.items.size()));
   if (combined.items.empty()) {
-    call.keys.erase(call.args[1]);
+    if (call.keys.erase(call.args[1])) call.notify('g', "del", call.args[1]);
     return;
   }
   SortedSet made;
   for (const auto& [member, score] : combined.items) made.set(member, score);
   call.keys.put(call.args[1], keyspace::Entry{std::move(made), std::nullopt});
+  call.notify('z', op == SetOp::onion ? "zunionstore" : op == SetOp::inter ? "zinterstore" : "zdiffstore", call.args[1]);
+}
+
+// A key made for a write that then failed goes again, unannounced: it never
+// held anything.
+void discard_if_empty(Call& call, std::string_view key, const SortedSet& zset) {
+  if (zset.empty()) call.keys.erase(key);
 }
 
 }  // namespace
@@ -622,7 +633,7 @@ void zadd(Call& call) {
   }
   SortedSet& zset = existing ? *existing : zset_or_create(call.keys, call.args[1]);
   int64_t added = 0;
-  int64_t changed = 0;
+  int64_t updated = 0;
   std::optional<double> incr_result;
   for (size_t p = 0; p < scores.size(); ++p) {
     const std::string& member = call.args[pairs_start + 2 * p + 1];
@@ -633,14 +644,14 @@ void zadd(Call& call) {
       if (incr) {
         score += *current;
         if (std::isnan(score)) {
-          drop_if_empty(call.keys, call.args[1], zset);
+          discard_if_empty(call, call.args[1], zset);
           throw CommandError("ERR resulting score is not a number (NaN)");
         }
       }
       if ((gt && score <= *current) || (lt && score >= *current)) continue;
       if (score != *current) {
         zset.set(member, score);
-        ++changed;
+        ++updated;
       }
       if (incr) incr_result = score;
     } else {
@@ -650,7 +661,8 @@ void zadd(Call& call) {
       if (incr) incr_result = score;
     }
   }
-  drop_if_empty(call.keys, call.args[1], zset);
+  discard_if_empty(call, call.args[1], zset);
+  if (added || updated) call.notify('z', incr ? "zincr" : "zadd", call.args[1]);
   if (incr) {
     if (incr_result)
       call.reply.real(*incr_result);
@@ -658,7 +670,7 @@ void zadd(Call& call) {
       call.reply.null();
     return;
   }
-  call.reply.integer(ch ? added + changed : added);
+  call.reply.integer(ch ? added + updated : added);
 }
 
 void zincrby(Call& call) {
@@ -666,10 +678,11 @@ void zincrby(Call& call) {
   SortedSet& zset = zset_or_create(call.keys, call.args[1]);
   const double next = zset.score(call.args[3]).value_or(0) + by;
   if (std::isnan(next)) {
-    drop_if_empty(call.keys, call.args[1], zset);
+    discard_if_empty(call, call.args[1], zset);
     throw CommandError("ERR resulting score is not a number (NaN)");
   }
   zset.set(call.args[3], next);
+  call.notify('z', "zincr", call.args[1]);
   call.reply.real(next);
 }
 
@@ -746,10 +759,12 @@ void zrangestore(Call& call) {
   if (source)
     for (const auto* item : select(*source, call.args[3], call.args[4], request)) made.set(item->member, item->score);
   call.reply.integer(static_cast<int64_t>(made.size()));
-  if (made.empty())
-    call.keys.erase(call.args[1]);
-  else
+  if (made.empty()) {
+    if (call.keys.erase(call.args[1])) call.notify('g', "del", call.args[1]);
+  } else {
     call.keys.put(call.args[1], keyspace::Entry{std::move(made), std::nullopt});
+    call.notify('z', "zrangestore", call.args[1]);
+  }
 }
 
 void zrevrange(Call& call) { legacy_range(call, By::index, true, false); }
@@ -798,17 +813,17 @@ void zrem(Call& call) {
   }
   int64_t removed = 0;
   for (size_t i = 2; i < call.args.size(); ++i) removed += zset->erase(call.args[i]) ? 1 : 0;
-  drop_if_empty(call.keys, call.args[1], *zset);
+  if (removed) changed(call, "zrem", call.args[1], *zset);
   call.reply.integer(removed);
 }
 
 namespace {
-void remove_span(Call& call, std::pair<size_t, size_t> span, SortedSet& zset) {
+void remove_span(Call& call, std::pair<size_t, size_t> span, SortedSet& zset, std::string_view event) {
   std::vector<std::string> members;
   for (size_t r = span.first; r < span.second; ++r) members.push_back(zset.at(r).member);
   for (const auto& member : members) zset.erase(member);
   call.reply.integer(static_cast<int64_t>(members.size()));
-  drop_if_empty(call.keys, call.args[1], zset);
+  if (!members.empty()) changed(call, event, call.args[1], zset);
 }
 }  // namespace
 
@@ -820,7 +835,7 @@ void zremrangebyrank(Call& call) {
     call.reply.integer(0);
     return;
   }
-  remove_span(call, ranks_in_index(start, stop, zset->size()), *zset);
+  remove_span(call, ranks_in_index(start, stop, zset->size()), *zset, "zremrangebyrank");
 }
 
 void zremrangebyscore(Call& call) {
@@ -831,7 +846,7 @@ void zremrangebyscore(Call& call) {
     call.reply.integer(0);
     return;
   }
-  remove_span(call, ranks_in_scores(*zset, min, max), *zset);
+  remove_span(call, ranks_in_scores(*zset, min, max), *zset, "zremrangebyscore");
 }
 
 void zremrangebylex(Call& call) {
@@ -842,7 +857,7 @@ void zremrangebylex(Call& call) {
     call.reply.integer(0);
     return;
   }
-  remove_span(call, ranks_in_lex(*zset, min, max), *zset);
+  remove_span(call, ranks_in_lex(*zset, min, max), *zset, "zremrangebylex");
 }
 
 void zpopmin(Call& call) { pop_generic(call, true); }

@@ -206,7 +206,8 @@ void xadd(Call& call) {
   }
   if (!stream) stream = &std::get<Stream>(call.keys.put(key, keyspace::Entry{Stream{}, std::nullopt}).value);
   stream->append(id, std::vector<std::string>(call.args.begin() + static_cast<std::ptrdiff_t>(i), call.args.end()));
-  if (trim) apply_trim(*stream, *trim);
+  call.notify('t', "xadd", key);
+  if (trim && apply_trim(*stream, *trim) > 0) call.notify('t', "xtrim", key);
   call.reply.bulk(id.text());
 }
 
@@ -261,6 +262,7 @@ void xdel(Call& call) {
   int64_t removed = 0;
   if (stream)
     for (const auto& id : ids) removed += stream->remove(id) ? 1 : 0;
+  if (removed) call.notify('t', "xdel", call.args[1]);
   call.reply.integer(removed);
 }
 
@@ -270,7 +272,9 @@ void xtrim(Call& call) {
   Trim trim = parse_trim(call, i);
   if (i != call.args.size()) throw CommandError(syntax_error);
   Stream* stream = stream_value(call.keys, call.args[1]);
-  call.reply.integer(stream ? static_cast<int64_t>(apply_trim(*stream, trim)) : 0);
+  const uint64_t removed = stream ? apply_trim(*stream, trim) : 0;
+  if (removed) call.notify('t', "xtrim", call.args[1]);
+  call.reply.integer(static_cast<int64_t>(removed));
 }
 
 void xsetid(Call& call) {
@@ -301,6 +305,7 @@ void xsetid(Call& call) {
   stream->last_id = id;
   if (added) stream->entries_added = *added;
   if (max_deleted) stream->max_deleted = *max_deleted;
+  call.notify('t', "xsetid", call.args[1]);
   call.reply.simple("OK");
 }
 

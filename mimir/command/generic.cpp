@@ -52,11 +52,14 @@ void expire_generic(Call& call, bool seconds, bool relative, std::string_view co
     return;
   }
   if (at <= call.keys.now_ms()) {
+    // A time already past expires the key now, and says so.
     call.keys.erase(key);
+    call.notify('x', "expired", key);
   } else {
     keyspace::Entry updated = std::move(*entry);
     updated.expires_at = at;
     call.keys.put(key, std::move(updated));
+    call.notify('g', "expire", key);
   }
   call.reply.integer(1);
 }
@@ -94,7 +97,11 @@ std::optional<keyspace::Type> type_named(std::string_view name) {
 
 void del(Call& call) {
   int64_t removed = 0;
-  for (size_t i = 1; i < call.args.size(); ++i) removed += call.keys.erase(call.args[i]) ? 1 : 0;
+  for (size_t i = 1; i < call.args.size(); ++i) {
+    if (!call.keys.erase(call.args[i])) continue;
+    ++removed;
+    call.notify('g', "del", call.args[i]);
+  }
   call.reply.integer(removed);
 }
 
@@ -127,14 +134,23 @@ void persist(Call& call) {
   keyspace::Entry updated = std::move(*entry);
   updated.expires_at.reset();
   call.keys.put(call.args[1], std::move(updated));
+  call.notify('g', "persist", call.args[1]);
   call.reply.integer(1);
 }
+
+namespace {
+void rename_notified(Call& call, const std::string& from, const std::string& to) {
+  call.keys.rename(from, to);
+  call.notify('g', "rename_from", from);
+  call.notify('g', "rename_to", to);
+}
+}  // namespace
 
 void rename(Call& call) {
   const std::string& from = call.args[1];
   const std::string& to = call.args[2];
   if (!call.keys.find(from)) throw CommandError("ERR no such key");
-  if (from != to) call.keys.rename(from, to);
+  if (from != to) rename_notified(call, from, to);
   call.reply.simple("OK");
 }
 
@@ -146,7 +162,7 @@ void renamenx(Call& call) {
     call.reply.integer(0);
     return;
   }
-  call.keys.rename(from, to);
+  rename_notified(call, from, to);
   call.reply.integer(1);
 }
 
@@ -243,6 +259,7 @@ void copy(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   }
   keyspace::Entry copied = *source;
   into.put(to, std::move(copied));
+  call.database.notify_locked(target, 'g', "copy_to", to);
   call.reply.integer(1);
 }
 
@@ -259,6 +276,8 @@ void move(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   // The key keeps its value and its expiry.
   into.put(call.args[1], std::move(*source));
   call.keys.erase(call.args[1]);
+  call.notify('g', "move_from", call.args[1]);
+  call.database.notify_locked(static_cast<size_t>(db), 'g', "move_to", call.args[1]);
   call.reply.integer(1);
 }
 

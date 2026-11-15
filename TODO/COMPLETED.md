@@ -2,6 +2,26 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: keyspace notifications
+
+- notify-keyspace-events with Valkey's classes, its error for a bad one and
+  its order for CONFIG GET ('A', then K, E, m); events published on
+  __keyspace@<db>__ and __keyevent@<db>__ once each command ends, inside
+  EXEC and scripts too, and after active expiry.
+- Every write command announces what Valkey announces, in Valkey's order (the
+  push before the pop for LMOVE, an emptied key's "del" last, MOVE and COPY
+  ... DB in their target database). The keyspace tells of every expired key it
+  removes, however found, and of every key that comes to be ("new"); a read
+  looks its keys up first, so a missing one is a "keymiss" and an expired one
+  is announced, as Valkey's lookups do. SWAPDB rebinds each keyspace to its
+  new number.
+- The gate is Valkey's own answers: a subscriber on each server, every
+  command's events compared one command at a time (about 230 commands over
+  four tests). Passed on its first full run.
+- Corrected a test written from Mimir's old behaviour: CONFIG GET of
+  notify-keyspace-events answers Valkey's normalised form, not what was set.
+- Gate on node-a: release 234 passed; differential 24 of 24.
+
 ## 2026-11-15: functions (FUNCTION, FCALL, FCALL_RO)
 
 - A second interpreter for libraries, as Valkey keeps one, so SCRIPT FLUSH

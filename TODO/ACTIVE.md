@@ -17,8 +17,9 @@ classes of command, agreement in Dannan, durability, and the order.
   `setmetatable` see through or refuse them; `#` of a library table is 0).
 - FUNCTION and FCALL are in; FUNCTION DUMP and RESTORE come with DUMP and
   RESTORE.
-- Next, in order: keyspace
-  notifications, DUMP and RESTORE, SORT, the GEO commands, LCS; then
+- Keyspace notifications are in.
+- Next, in order: DUMP and RESTORE (with FUNCTION DUMP and RESTORE), SORT,
+  the GEO commands, LCS; then
   authentication with the built-in user list (ACL).
 - Pinned to Dannan 0.8.3. Dannan's 0.9 (agreement) is on its develop
   (`dc9ede1`); its simulation harness design

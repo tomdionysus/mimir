@@ -121,8 +121,18 @@ void config(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
       if (name == "databases" || name == "cluster-enabled") {
         throw CommandError("ERR CONFIG SET failed (possibly related to argument '" + call.args[i] + "') - can't set immutable config");
       }
+      if (name == "notify-keyspace-events" && !Database::valid_notify_flags(call.args[i + 1])) {
+        throw CommandError("ERR CONFIG SET failed (possibly related to argument '" + call.args[i] +
+                           "') - Invalid event class character. Use 'Ag$lshzxeKEtmdn'.");
+      }
     }
-    for (size_t i = 2; i < call.args.size(); i += 2) settings[lower(call.args[i])] = call.args[i + 1];
+    for (size_t i = 2; i < call.args.size(); i += 2) {
+      const std::string name = lower(call.args[i]);
+      if (name == "notify-keyspace-events")
+        call.database.set_notify_flags_locked(call.args[i + 1]);
+      else
+        settings[name] = call.args[i + 1];
+    }
     call.reply.simple("OK");
   } else if (sub == "resetstat") {
     call.reply.simple("OK");

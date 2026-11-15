@@ -96,6 +96,12 @@ struct Call {
   keyspace::Keyspace& keys;
   resp::Reply& reply;
   const std::vector<std::string>& args;
+  // The number of the database `keys` is.
+  size_t db = 0;
+
+  // A keyspace notification for `key` in this call's database (Database::
+  // notify_locked). Called after the change it announces.
+  void notify(char cls, std::string_view event, std::string_view key);
 
   // A blocking command (BLPOP and its kin). Serving a waiter that a write woke,
   // `ready_key` is the key that became ready and the only one the command may

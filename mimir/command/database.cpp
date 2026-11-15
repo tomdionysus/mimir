@@ -8,6 +8,7 @@
 #include "mimir/command/database.h"
 
 #include <algorithm>
+#include <optional>
 
 #include "mimir/command/args.h"
 
@@ -23,6 +24,56 @@ std::string unknown_command(const std::vector<std::string>& args) {
     listed += "'" + args[i].substr(0, 128 - listed.size()) + "' ";
   }
   return "ERR unknown command '" + args[0].substr(0, 128) + "', with args beginning with: " + listed;
+}
+
+// notify-keyspace-events' classes as bits, in Valkey's letters.
+constexpr std::string_view notify_letters = "g$lshzxetdnmKE";
+constexpr uint32_t notify_bit(char letter) {
+  for (size_t i = 0; i < notify_letters.size(); ++i) {
+    if (notify_letters[i] == letter) return 1u << i;
+  }
+  return 0;
+}
+// 'A': every class of event but "new" and "keymiss".
+constexpr uint32_t notify_all = (1u << 10) - 1;
+constexpr uint32_t notify_keyspace = notify_bit('K');
+constexpr uint32_t notify_keyevent = notify_bit('E');
+
+std::optional<uint32_t> parse_notify_flags(std::string_view text) {
+  uint32_t flags = 0;
+  for (char c : text) {
+    if (c == 'A') {
+      flags |= notify_all;
+    } else if (const uint32_t bit = notify_bit(c)) {
+      flags |= bit;
+    } else {
+      return std::nullopt;
+    }
+  }
+  return flags;
+}
+
+// CONFIG GET's answer: 'A' or the classes in Valkey's order, then K, E, m.
+std::string notify_flags_text(uint32_t flags) {
+  std::string out;
+  if ((flags & notify_all) == notify_all) {
+    out = "A";
+  } else {
+    for (char c : std::string_view("g$lshzxetdn")) {
+      if (flags & notify_bit(c)) out += c;
+    }
+  }
+  for (char c : std::string_view("KEm")) {
+    if (flags & notify_bit(c)) out += c;
+  }
+  return out;
+}
+
+bool reads_its_keys(const Spec& spec) {
+  // A script's keys are the script's to read, not the command's.
+  if (spec.flags.find("noscript") != std::string_view::npos) return false;
+  if (spec.name == "getdel" || spec.name == "getex") return true;
+  return spec.flags.find("readonly") != std::string_view::npos;
 }
 
 bool spec_allowed_subscribed(std::string_view name) {
@@ -70,6 +121,55 @@ Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings set
              {"busy-reply-threshold", "5000"},
              {"slowlog-log-slower-than", "10000"},
              {"slowlog-max-len", "128"}};
+  dannan::contract::Lock lock(_mutex);
+  bind_listeners();
+}
+
+void Call::notify(char cls, std::string_view event, std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS { database.notify_locked(db, cls, event, key); }
+
+void Database::bind_listeners() {
+  for (size_t i = 0; i < _dbs.size(); ++i) {
+    keyspace::Keyspace::Listener listener;
+    listener.expired = [this, i](std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS { notify_locked(i, 'x', "expired", key); };
+    listener.created = [this, i](std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS { notify_locked(i, 'n', "new", key); };
+    _dbs[i]->set_listener(std::move(listener));
+  }
+}
+
+bool Database::valid_notify_flags(std::string_view flags) { return parse_notify_flags(flags).has_value(); }
+
+bool Database::set_notify_flags_locked(std::string_view text) {
+  auto flags = parse_notify_flags(text);
+  if (!flags) return false;
+  _notify_flags = *flags;
+  _config["notify-keyspace-events"] = notify_flags_text(*flags);
+  return true;
+}
+
+void Database::notify_locked(size_t db, char cls, std::string_view event, std::string_view key) {
+  if (!(_notify_flags & (notify_keyspace | notify_keyevent))) return;
+  if (!(_notify_flags & notify_bit(cls))) return;
+  _events.push_back(Event{db, std::string(event), std::string(key)});
+}
+
+void Database::look_up_keys(const Spec& spec, const std::vector<std::string>& args, size_t db) {
+  if (!(_notify_flags & (notify_keyspace | notify_keyevent)) || !reads_its_keys(spec)) return;
+  for (auto key : keys_of(spec, args)) {
+    if (!_dbs[db]->find(key)) notify_locked(db, 'm', "keymiss", key);
+  }
+}
+
+void Database::publish_events() {
+  if (_events.empty()) return;
+  // Taken first: a subscriber's push may not reach back here, but a
+  // publication made now must not see events queued during it.
+  std::vector<Event> events = std::move(_events);
+  _events.clear();
+  for (const auto& e : events) {
+    const std::string db = std::to_string(e.db);
+    if (_notify_flags & notify_keyspace) _pubsub.publish("__keyspace@" + db + "__:" + e.key, e.event);
+    if (_notify_flags & notify_keyevent) _pubsub.publish("__keyevent@" + db + "__:" + e.event, e.key);
+  }
 }
 
 std::string Database::timeout_reply(resp::Protocol protocol, bool null_bulk) {
@@ -135,6 +235,8 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
     // The database the command ran in, before it may change it (SELECT).
     const size_t db = session.db;
     Call call{session, *this, *_dbs[db], reply, args};
+    call.db = db;
+    look_up_keys(*spec, args, db);
     try {
       spec->handler(call);
     } catch (const CommandError& e) {
@@ -152,6 +254,7 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
         _waiters.emplace(id, Waiter{&session, call.block_args ? *call.block_args : args, std::move(keys), call.block_null_bulk, std::move(wake)});
         executed.wait = id;
         executed.wait_seconds = call.block_seconds;
+        publish_events();
         return executed;
       }
       // Nowhere to wait: the answer is the timeout's, at once.
@@ -161,6 +264,7 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
       touch(*spec, args, db);
     }
     if (!_waiters.empty()) serve_ready(woken);
+    publish_events();
   }
   for (auto& [wake_one, bytes] : woken) wake_one(std::move(bytes));
   return executed;
@@ -172,6 +276,8 @@ void Database::run_locked(Session& session, const std::vector<std::string>& args
   resp::Reply reply(session.protocol);
   const size_t db = session.db;
   Call call{session, *this, *_dbs[db], reply, args};
+  call.db = db;
+  look_up_keys(*spec, args, db);
   try {
     spec->handler(call);
   } catch (const CommandError& e) {
@@ -179,6 +285,9 @@ void Database::run_locked(Session& session, const std::vector<std::string>& args
     reply = resp::Reply(session.protocol);
     reply.error(e.what());
   }
+  // Each command's events go out as it ends, inside a transaction or a script
+  // as outside, as Valkey sends them.
+  publish_events();
   // Inside a transaction a blocking command does not wait.
   if (call.blocked) {
     out.raw(timeout_reply(session.protocol, call.block_null_bulk));
@@ -238,6 +347,7 @@ void Database::touch(const Spec& spec, const std::vector<std::string>& args, siz
 
 void Database::swap_locked(size_t a, size_t b) {
   std::swap(_dbs.at(a), _dbs.at(b));
+  bind_listeners();
   for (auto& [key, sessions] : _watchers) {
     const size_t db = unscoped(key).first;
     if (db != a && db != b) continue;
@@ -317,6 +427,7 @@ void Database::serve_ready(Woken& woken) {
         const Spec* spec = find_spec(waiter.args[0]);
         resp::Reply reply(waiter.session->protocol);
         Call call{*waiter.session, *this, *_dbs[db], reply, waiter.args};
+        call.db = db;
         call.ready_key = &key;
         try {
           spec->handler(call);
@@ -356,6 +467,7 @@ size_t Database::expire_step(size_t budget) {
   dannan::contract::Lock lock(_mutex);
   size_t removed = 0;
   for (auto& db : _dbs) removed += db->expire_step(budget);
+  publish_events();
   return removed;
 }
 
