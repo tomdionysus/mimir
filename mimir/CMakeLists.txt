@@ -14,6 +14,7 @@ add_library(mimir SHARED
   command/connection.cpp
   command/database.cpp
   command/generic.cpp
+  command/geo.cpp
   command/hashes.cpp
   command/hyperloglog.cpp
   command/lists.cpp
@@ -30,6 +31,7 @@ add_library(mimir SHARED
   command/table.cpp
   command/transactions.cpp
   command/zsets.cpp
+  keyspace/geo.cpp
   keyspace/glob.cpp
   keyspace/hash.cpp
   keyspace/hll.cpp

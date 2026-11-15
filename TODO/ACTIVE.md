@@ -19,7 +19,8 @@ classes of command, agreement in Dannan, durability, and the order.
 - Keyspace notifications are in.
 - DUMP and RESTORE are in, FUNCTION DUMP and RESTORE with them.
 - SORT and SORT_RO are in.
-- Next, in order: the GEO commands, LCS; then
+- The GEO commands are in.
+- Next, in order: LCS; then
   authentication with the built-in user list (ACL).
 - Pinned to Dannan 0.8.3. Dannan's 0.9 (agreement) is on its develop
   (`dc9ede1`); its simulation harness design

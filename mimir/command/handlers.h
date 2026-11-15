@@ -95,6 +95,21 @@ void watch(Call&);
 void unwatch(Call&);
 }  // namespace transactions
 
+namespace geo {
+void geoadd(Call&);
+void geodist(Call&);
+void geohash(Call&);
+void geopos(Call&);
+void georadius(Call&);
+void georadius_ro(Call&);
+void georadiusbymember(Call&);
+void georadiusbymember_ro(Call&);
+void geosearch(Call&);
+void geosearchstore(Call&);
+Class classify_georadius(const std::vector<std::string>&);
+std::vector<std::string_view> georadius_keys(const std::vector<std::string>&);
+}  // namespace geo
+
 namespace sorting {
 void sort(Call&);
 void sort_ro(Call&);

@@ -2,6 +2,22 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: the GEO commands
+
+- GEOADD (ZADD over geohashes), GEODIST, GEOHASH, GEOPOS, GEORADIUS and
+  GEORADIUSBYMEMBER with their _RO forms, GEOSEARCH and GEOSEARCHSTORE.
+  `mimir/keyspace/geo`: Valkey's geohash (52-bit interleave over the Web
+  Mercator latitude range), its sphere and haversine, GEOHASH's re-encoding
+  over the standard range, and its search: the step estimated from the
+  radius, the nine cells in Valkey's order with the useless ones left out,
+  each read in score order, so an unsorted answer and COUNT ANY match too.
+- The gate: Valkey's documented examples as unit tests; a differential of
+  about seventy cases (positions, geohashes and distances near the poles and
+  the date line, unsorted, sorted and counted searches by radius and box,
+  STORE and STOREDIST, and the errors in Valkey's order) passed on its first
+  run.
+- Gate on node-d: release 256 passed; differential 30 of 30.
+
 ## 2026-11-15: SORT and SORT_RO
 
 - Numbers or ALPHA, DESC, LIMIT, BY (a key's value or "->" a hash field; no
