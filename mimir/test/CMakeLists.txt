@@ -10,6 +10,7 @@ add_executable(mimir_tests
   command_blocking_test.cpp
   command_generic_test.cpp
   command_hashes_test.cpp
+  command_hyperloglog_test.cpp
   command_lists_test.cpp
   command_sets_test.cpp
   command_strings_test.cpp
