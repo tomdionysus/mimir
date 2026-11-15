@@ -129,6 +129,37 @@ TEST(Server, QuitClosesAfterItsReplyAndIgnoresWhatFollows) {
   EXPECT_EQ(client.read_to_end(), "+PONG\r\n+OK\r\n");
 }
 
+TEST(Server, ABlockedClientIsWokenByAnotherAndItsPipelineWaitsBehindIt) {
+  ServerBed bed;
+  Client waiting(bed.listener.port());
+  Client pushing(bed.listener.port());
+  // The PING behind the BLPOP is answered only after the BLPOP is.
+  waiting.send("BLPOP jobs 0\r\nPING\r\n");
+  // Wait for the BLPOP to be parked: an event, not a time.
+  for (int i = 0; i < 100000 && bed.database.waiting() == 0; ++i) std::this_thread::yield();
+  ASSERT_EQ(bed.database.waiting(), 1u);
+  pushing.send("RPUSH jobs work\r\n");
+  EXPECT_EQ(pushing.read(4), ":1\r\n");
+  const std::string expected = "*2\r\n$4\r\njobs\r\n$4\r\nwork\r\n+PONG\r\n";
+  EXPECT_EQ(waiting.read(expected.size()), expected);
+}
+
+TEST(Server, AClientThatLeavesWhileBlockedTakesNothing) {
+  ServerBed bed;
+  {
+    Client gone(bed.listener.port());
+    gone.send("BLPOP jobs 0\r\n");
+    for (int i = 0; i < 100000 && bed.database.waiting() == 0; ++i) std::this_thread::yield();
+    ASSERT_EQ(bed.database.waiting(), 1u);
+  }
+  // The close is seen and the wait withdrawn: an event, waited on.
+  for (int i = 0; i < 1000000 && bed.database.waiting() != 0; ++i) std::this_thread::yield();
+  ASSERT_EQ(bed.database.waiting(), 0u);
+  Client pushing(bed.listener.port());
+  pushing.send("RPUSH jobs work\r\nLLEN jobs\r\n");
+  EXPECT_EQ(pushing.read(8), ":1\r\n:1\r\n");
+}
+
 TEST(Server, ConnectionsShareOneKeyspaceAndHaveTheirOwnIds) {
   ServerBed bed;
   Client a(bed.listener.port());

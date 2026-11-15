@@ -61,11 +61,27 @@ struct Session {
 // One command's call: its arguments (its name first), the connection's
 // session, the database it runs against, and the reply it writes.
 struct Call {
+  Call(Session& session_, Database& database_, keyspace::Keyspace& keys_, resp::Reply& reply_, const std::vector<std::string>& args_)
+      : session(session_), database(database_), keys(keys_), reply(reply_), args(args_) {}
+
   Session& session;
   Database& database;
   keyspace::Keyspace& keys;
   resp::Reply& reply;
   const std::vector<std::string>& args;
+
+  // A blocking command (BLPOP and its kin). Serving a waiter that a write woke,
+  // `ready_key` is the key that became ready and the only one the command may
+  // take from. A blocking command that finds nothing to take writes no reply
+  // and sets `blocked`, the keys it waits on and its timeout in seconds (zero:
+  // for ever); the database then parks it, or answers its timeout reply at
+  // once where it may not wait.
+  const std::string* ready_key = nullptr;
+  bool blocked = false;
+  std::vector<std::string> block_keys;
+  double block_seconds = 0;
+  // Its timeout reply is a null bulk string (BLMOVE, BRPOPLPUSH), not a null array.
+  bool block_null_bulk = false;
 };
 
 using Handler = void (*)(Call&);

@@ -9,6 +9,7 @@
 // becomes empty is removed, so no key ever holds an empty list.
 
 #include <climits>
+#include <cmath>
 
 #include "mimir/command/args.h"
 #include "mimir/command/database.h"
@@ -34,6 +35,24 @@ List& list_or_create(keyspace::Keyspace& keys, std::string_view key) {
 
 void drop_if_empty(keyspace::Keyspace& keys, std::string_view key, const List& list) {
   if (list.empty()) keys.erase(key);
+}
+
+// A blocking command's source list. Serving a woken wait, only the ready key
+// counts and a value of another type is no list (the wait goes on); otherwise
+// another type is WRONGTYPE, as for any list command.
+List* blocking_source(Call& call, const std::string& key) {
+  if (!call.ready_key) return list_value(call.keys, key);
+  if (key != *call.ready_key) return nullptr;
+  keyspace::Entry* entry = call.keys.find(key);
+  if (!entry || entry->type() != keyspace::Type::list) return nullptr;
+  return &std::get<List>(entry->value);
+}
+
+void park(Call& call, std::vector<std::string> keys, double seconds, bool null_bulk) {
+  call.blocked = true;
+  call.block_keys = std::move(keys);
+  call.block_seconds = seconds;
+  call.block_null_bulk = null_bulk;
 }
 
 // LEFT or RIGHT, as true for left.
@@ -117,14 +136,15 @@ void pop(Call& call, bool left) {
   drop_if_empty(call.keys, key, *list);
 }
 
-// LMOVE's work, shared with RPOPLPUSH.
-void move(Call& call, bool from_left, bool to_left) {
+// LMOVE's work, shared with RPOPLPUSH and their blocking forms; whether
+// anything moved.
+bool move(Call& call, bool from_left, bool to_left, bool blocking = false) {
   const std::string& source = call.args[1];
   const std::string& destination = call.args[2];
-  List* from = list_value(call.keys, source);
+  List* from = blocking ? blocking_source(call, source) : list_value(call.keys, source);
   if (!from) {
-    call.reply.null();
-    return;
+    if (!blocking) call.reply.null();
+    return false;
   }
   // The destination's type is checked before anything moves.
   list_value(call.keys, destination);
@@ -135,7 +155,7 @@ void move(Call& call, bool from_left, bool to_left) {
       from->push_front(std::move(element));
     else
       from->push_back(std::move(element));
-    return;
+    return true;
   }
   drop_if_empty(call.keys, source, *from);
   List& to = list_or_create(call.keys, destination);
@@ -143,6 +163,62 @@ void move(Call& call, bool from_left, bool to_left) {
     to.push_front(std::move(element));
   else
     to.push_back(std::move(element));
+  return true;
+}
+
+// BLPOP and BRPOP: the first of the keys holding something, else wait.
+void blocking_pop(Call& call, bool left) {
+  const double seconds = block_timeout(call.args.back());
+  std::vector<std::string> keys(call.args.begin() + 1, call.args.end() - 1);
+  for (const auto& key : keys) {
+    List* list = blocking_source(call, key);
+    if (!list) continue;
+    call.reply.array(2);
+    call.reply.bulk(key);
+    call.reply.bulk(take(*list, left));
+    drop_if_empty(call.keys, key, *list);
+    return;
+  }
+  park(call, std::move(keys), seconds, false);
+}
+
+// LMPOP and BLMPOP: numkeys at `numkeys_at`, the keys, LEFT or RIGHT, COUNT.
+void multi_pop(Call& call, size_t numkeys_at, std::optional<double> seconds) {
+  auto numkeys = parse_integer(call.args[numkeys_at]);
+  if (!numkeys || *numkeys <= 0) throw CommandError("ERR numkeys should be greater than 0");
+  // The keys, then LEFT or RIGHT, then COUNT n at most.
+  if (static_cast<uint64_t>(*numkeys) > call.args.size() - numkeys_at - 2) throw CommandError(syntax_error);
+  const size_t first = numkeys_at + 1;
+  const size_t where_at = first + static_cast<size_t>(*numkeys);
+  const bool left = side(call.args[where_at]);
+  int64_t count = 1;
+  bool have_count = false;
+  for (size_t i = where_at + 1; i < call.args.size(); ++i) {
+    if (iequals(call.args[i], "COUNT") && i + 1 < call.args.size() && !have_count) {
+      auto parsed = parse_integer(call.args[++i]);
+      if (!parsed || *parsed <= 0) throw CommandError("ERR count should be greater than 0");
+      count = *parsed;
+      have_count = true;
+    } else {
+      throw CommandError(syntax_error);
+    }
+  }
+  for (size_t k = first; k < where_at; ++k) {
+    List* list = seconds ? blocking_source(call, call.args[k]) : list_value(call.keys, call.args[k]);
+    if (!list) continue;
+    const size_t n = std::min(static_cast<size_t>(count), list->size());
+    call.reply.array(2);
+    call.reply.bulk(call.args[k]);
+    call.reply.array(n);
+    for (size_t i = 0; i < n; ++i) call.reply.bulk(take(*list, left));
+    drop_if_empty(call.keys, call.args[k], *list);
+    return;
+  }
+  if (seconds)
+    park(call, std::vector<std::string>(call.args.begin() + static_cast<std::ptrdiff_t>(first), call.args.begin() + static_cast<std::ptrdiff_t>(where_at)),
+         *seconds, false);
+  else
+    call.reply.null_array();
 }
 
 }  // namespace
@@ -329,37 +405,36 @@ void lmove(Call& call) {
 
 void rpoplpush(Call& call) { move(call, false, true); }
 
-void lmpop(Call& call) {
-  auto numkeys = parse_integer(call.args[1]);
-  if (!numkeys || *numkeys <= 0) throw CommandError("ERR numkeys should be greater than 0");
-  // The keys, then LEFT or RIGHT, then COUNT n at most.
-  if (static_cast<uint64_t>(*numkeys) > call.args.size() - 3) throw CommandError(syntax_error);
-  const size_t where_at = 2 + static_cast<size_t>(*numkeys);
-  const bool left = side(call.args[where_at]);
-  int64_t count = 1;
-  bool have_count = false;
-  for (size_t i = where_at + 1; i < call.args.size(); ++i) {
-    if (iequals(call.args[i], "COUNT") && i + 1 < call.args.size() && !have_count) {
-      auto parsed = parse_integer(call.args[++i]);
-      if (!parsed || *parsed <= 0) throw CommandError("ERR count should be greater than 0");
-      count = *parsed;
-      have_count = true;
-    } else {
-      throw CommandError(syntax_error);
-    }
-  }
-  for (size_t k = 2; k < where_at; ++k) {
-    List* list = list_value(call.keys, call.args[k]);
-    if (!list) continue;
-    const size_t n = std::min(static_cast<size_t>(count), list->size());
-    call.reply.array(2);
-    call.reply.bulk(call.args[k]);
-    call.reply.array(n);
-    for (size_t i = 0; i < n; ++i) call.reply.bulk(take(*list, left));
-    drop_if_empty(call.keys, call.args[k], *list);
-    return;
-  }
-  call.reply.null_array();
+void lmpop(Call& call) { multi_pop(call, 1, std::nullopt); }
+
+void blpop(Call& call) { blocking_pop(call, true); }
+void brpop(Call& call) { blocking_pop(call, false); }
+
+void blmove(Call& call) {
+  const bool from_left = side(call.args[3]);
+  const bool to_left = side(call.args[4]);
+  const double seconds = block_timeout(call.args[5]);
+  if (!move(call, from_left, to_left, true)) park(call, {call.args[1]}, seconds, true);
 }
 
+void brpoplpush(Call& call) {
+  const double seconds = block_timeout(call.args[3]);
+  if (!move(call, false, true, true)) park(call, {call.args[1]}, seconds, true);
+}
+
+void blmpop(Call& call) { multi_pop(call, 2, block_timeout(call.args[1])); }
+
 }  // namespace mimir::command::lists
+
+namespace mimir::command {
+
+double block_timeout(std::string_view text) {
+  auto value = parse_long_double(text);
+  if (!value) throw CommandError("ERR timeout is not a float or out of range");
+  if (*value < 0) throw CommandError("ERR timeout is negative");
+  // An infinite or too large a timeout is out of range (the differential gate's finding).
+  if (std::isinf(*value) || *value > static_cast<long double>(LLONG_MAX) / 1000) throw CommandError("ERR timeout is out of range");
+  return static_cast<double>(*value);
+}
+
+}  // namespace mimir::command

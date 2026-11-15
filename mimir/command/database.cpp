@@ -7,6 +7,8 @@
 
 #include "mimir/command/database.h"
 
+#include <algorithm>
+
 #include "mimir/command/args.h"
 
 namespace mimir::command {
@@ -28,31 +30,126 @@ std::string unknown_command(const std::vector<std::string>& args) {
 Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings settings)
     : _wall(wall), _settings(std::move(settings)), _keys(wall), _random(std::random_device{}()) {}
 
-void Database::execute(Session& session, const std::vector<std::string>& args, std::string& out) {
+std::string Database::timeout_reply(resp::Protocol protocol, bool null_bulk) {
+  resp::Reply reply(protocol);
+  if (null_bulk)
+    reply.null();
+  else
+    reply.null_array();
+  return reply.take();
+}
+
+Executed Database::execute(Session& session, const std::vector<std::string>& args, std::string& out, Wake wake) {
+  Executed executed;
   resp::Reply reply(session.protocol);
-  if (args.empty()) return;
+  if (args.empty()) return executed;
   const Spec* spec = find_spec(args[0]);
   if (!spec) {
     reply.error(unknown_command(args));
     out.append(reply.bytes());
-    return;
+    return executed;
   }
   const int count = static_cast<int>(args.size());
   if ((spec->arity > 0 && count != spec->arity) || (spec->arity < 0 && count < -spec->arity)) {
     reply.error("ERR wrong number of arguments for '" + std::string(spec->name) + "' command");
     out.append(reply.bytes());
-    return;
+    return executed;
   }
+  Woken woken;
+  {
+    dannan::contract::Lock lock(_mutex);
+    Call call{session, *this, _keys, reply, args};
+    try {
+      spec->handler(call);
+    } catch (const CommandError& e) {
+      // A handler refuses before it changes anything; what it wrote is dropped.
+      call.blocked = false;
+      reply = resp::Reply(session.protocol);
+      reply.error(e.what());
+    }
+    if (call.blocked) {
+      if (wake) {
+        const uint64_t id = _next_wait++;
+        _waiters.emplace(id, Waiter{&session, args, call.block_keys, call.block_null_bulk, std::move(wake)});
+        for (const auto& key : call.block_keys) _waiting_on[key].push_back(id);
+        executed.wait = id;
+        executed.wait_seconds = call.block_seconds;
+        return executed;
+      }
+      // Nowhere to wait: the answer is the timeout's, at once.
+      out.append(timeout_reply(session.protocol, call.block_null_bulk));
+    } else {
+      out.append(reply.bytes());
+    }
+    if (!_waiters.empty()) serve_ready(woken);
+  }
+  for (auto& [wake_one, bytes] : woken) wake_one(std::move(bytes));
+  return executed;
+}
+
+void Database::forget_waiter(uint64_t id) {
+  auto found = _waiters.find(id);
+  if (found == _waiters.end()) return;
+  for (const auto& key : found->second.keys) {
+    auto queue = _waiting_on.find(key);
+    if (queue == _waiting_on.end()) continue;
+    auto& ids = queue->second;
+    ids.erase(std::remove(ids.begin(), ids.end(), id), ids.end());
+    if (ids.empty()) _waiting_on.erase(queue);
+  }
+  _waiters.erase(found);
+}
+
+void Database::serve_ready(Woken& woken) {
+  // A pass may make other keys ready (BLMOVE's destination), so passes repeat
+  // until one serves nothing; each pass serves at least one wait or stops, so
+  // the passes are bounded by the waits parked.
+  for (bool progress = true; progress;) {
+    progress = false;
+    std::vector<std::string> ready;
+    for (const auto& [key, ids] : _waiting_on)
+      if (_keys.contains(key)) ready.push_back(key);
+    for (const std::string& key : ready) {
+      for (;;) {
+        auto queue = _waiting_on.find(key);
+        if (queue == _waiting_on.end() || queue->second.empty() || !_keys.contains(key)) break;
+        const uint64_t id = queue->second.front();
+        Waiter& waiter = _waiters.at(id);
+        const Spec* spec = find_spec(waiter.args[0]);
+        resp::Reply reply(waiter.session->protocol);
+        Call call{*waiter.session, *this, _keys, reply, waiter.args};
+        call.ready_key = &key;
+        try {
+          spec->handler(call);
+        } catch (const CommandError& e) {
+          // The key was ready but the command cannot complete (a destination of
+          // another type): it ends with its error, as Valkey ends it.
+          call.blocked = false;
+          reply = resp::Reply(waiter.session->protocol);
+          reply.error(e.what());
+        }
+        // Not served from this key (another type now): the next key's turn.
+        if (call.blocked) break;
+        woken.emplace_back(std::move(waiter.wake), reply.take());
+        forget_waiter(id);
+        progress = true;
+      }
+    }
+  }
+}
+
+std::optional<std::string> Database::cancel_wait(uint64_t id) {
   dannan::contract::Lock lock(_mutex);
-  Call call{session, *this, _keys, reply, args};
-  try {
-    spec->handler(call);
-  } catch (const CommandError& e) {
-    // A handler refuses before it changes anything; what it wrote is dropped.
-    reply = resp::Reply(session.protocol);
-    reply.error(e.what());
-  }
-  out.append(reply.bytes());
+  auto found = _waiters.find(id);
+  if (found == _waiters.end()) return std::nullopt;
+  std::string bytes = timeout_reply(found->second.session->protocol, found->second.null_bulk);
+  forget_waiter(id);
+  return bytes;
+}
+
+size_t Database::waiting() {
+  dannan::contract::Lock lock(_mutex);
+  return _waiters.size();
 }
 
 size_t Database::expire_step(size_t budget) {

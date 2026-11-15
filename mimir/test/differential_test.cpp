@@ -537,6 +537,30 @@ TEST_F(Differential, SortedSets) {
   both({"HELLO", "2"});
 }
 
+TEST_F(Differential, BlockingPopsThatAnswerAtOnce) {
+  script({
+      {"RPUSH", "l", "a", "b", "c"},
+      {"BLPOP", "nosuch", "l", "0"},
+      {"BRPOP", "l", "0"},
+      {"BLMOVE", "l", "m", "LEFT", "RIGHT", "0"},
+      {"BRPOPLPUSH", "m", "l", "0"},
+      {"BLMPOP", "0", "2", "nosuch", "l", "LEFT", "COUNT", "5"},
+      {"ZADD", "z", "1", "a", "2", "b"},
+      {"BZPOPMIN", "z", "0"},
+      {"BZPOPMAX", "nosuch", "z", "0"},
+      {"ZADD", "z", "3", "c", "4", "d"},
+      {"BZMPOP", "0", "1", "z", "MAX", "COUNT", "1"},
+      {"BLPOP", "l", "-1"},
+      {"BLPOP", "l", "soon"},
+      {"BZPOPMIN", "z", "inf"},
+      {"BLMOVE", "a", "b", "UP", "LEFT", "0"},
+      {"BLMPOP", "0", "0", "a", "LEFT"},
+      {"SET", "s", "v"},
+      {"BLPOP", "s", "0"},
+      {"BZPOPMIN", "s", "0"},
+  });
+}
+
 TEST_F(Differential, Connection) {
   script({
       {"PING"},
