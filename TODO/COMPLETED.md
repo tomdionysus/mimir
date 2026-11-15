@@ -2,6 +2,24 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: step 2b, first part (lists, hashes, sets, sorted sets)
+
+- Lists that do not block (`bcf584a`), hashes in first-set order (`b7ebeb4`),
+  sets in Valkey's encodings' orders (`d6fc37b`), sorted sets on an
+  order-statistic treap (`9c76170`), each command with its class.
+- The differential gate's findings, each fixed: a set leaving its integer
+  shape keeps its sorted order; ZRANDMEMBER over a whole small set answers
+  highest first. SCAN's order is the server's own and is no longer compared.
+- Hosted CI: the Dannan repository setting was a CMake PATH, which made the
+  GitHub URL a local path and failed every job (`ae3c874`, fixed; Lir told,
+  since Lir's CMake has the same line).
+
+Gates, node-d (build server 5, GCC 14.2, Release, warnings as errors, `-j2`,
+`nice 19`): `tools/ci.sh release` **133 passed**, 7 differential cases skipped
+there without their ports, 0 warnings; the differential gate against Valkey
+8.1.1 **7 of 7 passed** (strings, keys, lists, hashes, sets, sorted sets,
+connection).
+
 ## 2026-11-15: the skeleton and step 2a (one node: RESP, keyspace, strings, keys, connection)
 
 - The project, by the 2026 style document's checklist: rules (`CLAUDE.md`,
