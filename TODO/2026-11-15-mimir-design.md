@@ -65,6 +65,18 @@ marked:
     huge part of higher order behaviour"). Mimir builds no consensus, no lease
     standing in for it and no workaround meanwhile; stage 3 has no interim path.
 
+20. **Scripting uses Debian's liblua5.1** (EVAL, EVALSHA, SCRIPT, FUNCTION,
+    FCALL), linked as a system package, not vendored.
+21. **The number of databases is configurable**: one by default, more if
+    configured, fixed for the cluster's life as the shard count is.
+22. **Multi-key commands over several slots are allowed, atomic across
+    slots** (MGET, MSET, DEL, the STOREs, MULTI/EXEC): in the cluster stage
+    this needs a cross-shard commit on Dannan's agreement.
+23. **An agreement command decides, then answers, at every level**: the
+    level governs durability only (memory, local disk, majority on disk), so a
+    lock or a popped element is never handed out twice. (Kvasir's levels,
+    ruled for SQL, differ.)
+
 ## Waiting on Tom
 
 Nothing. Proposed and not yet put to him: the shard count is one value for the

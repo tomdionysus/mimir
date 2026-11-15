@@ -41,8 +41,10 @@ classes of command, agreement in Dannan, durability, and the order.
 
 ## Waiting on Tom
 
-Nothing blocks the single-node stage. Asked of him when it is reached:
-- The levels for agreement commands, and the switch's spelling. Tom ruled for
+Nothing blocks the single-node stage (rulings 20 to 23 on 2026-11-15 settled
+scripting, databases, cross-slot commands and the levels for agreement).
+Asked of him when it is reached:
+- The switch's spelling, one for Mimir and Kvasir. Tom ruled for
   Kvasir (2026-11-15, Kvasir's design, "Acknowledgement levels"): level 1 is
   local disk with the cluster's decision after, the default level is YAML with
   no built-in value (a node without one refuses to start), and on a minority
