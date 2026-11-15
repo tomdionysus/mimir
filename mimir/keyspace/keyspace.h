@@ -20,6 +20,7 @@
 
 #include "dannan/contract/time_source.h"
 #include "mimir/keyspace/hash.h"
+#include "mimir/keyspace/set.h"
 
 // One node's keys and their values: what a shard holds in memory. Keys are
 // kept in the order of their position, which is their hash slot then a 64-bit
@@ -43,7 +44,7 @@ using List = std::deque<std::string>;
 
 struct Entry {
   // In Type's order: the variant's index is the type.
-  std::variant<std::string, List, Hash> value;
+  std::variant<std::string, List, Hash, Set> value;
   // Unix milliseconds; none: the key never expires.
   std::optional<uint64_t> expires_at;
 

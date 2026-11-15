@@ -15,11 +15,13 @@ add_library(mimir SHARED
   command/generic.cpp
   command/hashes.cpp
   command/lists.cpp
+  command/sets.cpp
   command/strings.cpp
   command/table.cpp
   keyspace/glob.cpp
   keyspace/hash.cpp
   keyspace/keyspace.cpp
+  keyspace/set.cpp
   keyspace/slot.cpp
   resp/parser.cpp
   resp/reply.cpp
