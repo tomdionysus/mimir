@@ -71,6 +71,16 @@ std::string notify_flags_text(uint32_t flags) {
   return out;
 }
 
+// Whether `flags` (COMMAND's, space-separated) holds `flag` as a whole word.
+bool has_flag(std::string_view flags, std::string_view flag) {
+  while (!flags.empty()) {
+    const size_t space = flags.find(' ');
+    if (flags.substr(0, space) == flag) return true;
+    flags = space == std::string_view::npos ? std::string_view() : flags.substr(space + 1);
+  }
+  return false;
+}
+
 bool reads_its_keys(const Spec& spec) {
   // A script's keys are the script's to read, not the command's.
   if (spec.flags.find("noscript") != std::string_view::npos) return false;
@@ -233,9 +243,47 @@ void Database::monitor_locked(Session& session) {
   _monitors[session.id] = &session;
 }
 
+void Database::pause_locked(uint64_t until_ms, bool all) {
+  const bool active = _pause_until_ms > _wall.unix_ms();
+  _pause_all = all || (active && _pause_all);
+  _pause_until_ms = std::max(active ? _pause_until_ms : 0, until_ms);
+}
+
+void Database::unpause_locked() {
+  _pause_until_ms = 0;
+  _pause_all = false;
+  std::vector<uint64_t> held;
+  for (const auto& [id, waiter] : _waiters)
+    if (waiter.postponed) held.push_back(id);
+  for (uint64_t id : held) {
+    _released.emplace_back(std::move(_waiters.at(id).wake), std::string());
+    forget_waiter(id);
+  }
+}
+
+bool Database::paused_locked(const Spec& spec, const Session& session) {
+  if (_pause_until_ms == 0) return false;
+  if (_wall.unix_ms() >= _pause_until_ms) {
+    _pause_until_ms = 0;
+    return false;
+  }
+  if (_pause_all) return true;
+  // A write pause holds what writes or may replicate: EXEC when its queue
+  // does.
+  const auto writes = [](const Spec& s) { return has_flag(s.flags, "write") || has_flag(s.flags, "may_replicate"); };
+  if (writes(spec)) return true;
+  if (spec.name == "exec") {
+    for (const auto& queued : session.queued) {
+      const Spec* each = find_spec(queued[0]);
+      if (each && writes(*each)) return true;
+    }
+  }
+  return false;
+}
+
 bool Database::unblock_locked(int64_t client, bool error) {
   for (auto& [id, waiter] : _waiters) {
-    if (waiter.session->id != client) continue;
+    if (waiter.session->id != client || waiter.postponed) continue;
     std::string bytes;
     if (error) {
       resp::Reply reply(waiter.session->protocol);
@@ -379,6 +427,17 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
       out.append(reply.bytes());
       return executed;
     }
+    // CLIENT PAUSE holds the command, unrun, until the pause ends; a caller
+    // that cannot wait has it run at once.
+    if (wake && paused_locked(*spec, session)) {
+      const uint64_t id = _next_wait++;
+      _waiters.emplace(id, Waiter{&session, args, {}, false, std::move(wake), true});
+      const uint64_t now = _wall.unix_ms();
+      executed.wait = id;
+      executed.wait_seconds = std::max(0.001, static_cast<double>(_pause_until_ms - std::min(now, _pause_until_ms)) / 1000.0);
+      executed.postponed = true;
+      return executed;
+    }
     // Between MULTI and EXEC a command is queued, but for those that steer the
     // transaction itself.
     if (session.in_multi && spec->name != "exec" && spec->name != "discard" && spec->name != "quit" && spec->name != "reset") {
@@ -419,7 +478,7 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         std::vector<std::string> keys;
         for (const auto& key : call.block_keys) keys.push_back(scoped(db, key));
         for (const auto& key : keys) _waiting_on[key].push_back(id);
-        _waiters.emplace(id, Waiter{&session, call.block_args ? *call.block_args : args, std::move(keys), call.block_null_bulk, std::move(wake)});
+        _waiters.emplace(id, Waiter{&session, call.block_args ? *call.block_args : args, std::move(keys), call.block_null_bulk, std::move(wake), false});
         executed.wait = id;
         executed.wait_seconds = call.block_seconds;
         publish_events();
@@ -623,7 +682,8 @@ std::optional<std::string> Database::cancel_wait(uint64_t id) {
   dannan::contract::Lock lock(_mutex);
   auto found = _waiters.find(id);
   if (found == _waiters.end()) return std::nullopt;
-  std::string bytes = timeout_reply(found->second.session->protocol, found->second.null_bulk);
+  // A command CLIENT PAUSE held has no reply yet: no bytes, to be run again.
+  std::string bytes = found->second.postponed ? std::string() : timeout_reply(found->second.session->protocol, found->second.null_bulk);
   forget_waiter(id);
   return bytes;
 }
@@ -635,6 +695,9 @@ size_t Database::waiting() {
 
 size_t Database::expire_step(size_t budget) {
   dannan::contract::Lock lock(_mutex);
+  // While CLIENT PAUSE holds writes nothing expires, as Valkey's pause holds
+  // its expiry.
+  if (_pause_until_ms > _wall.unix_ms()) return 0;
   size_t removed = 0;
   for (auto& db : _dbs) removed += db->expire_step(budget);
   publish_events();

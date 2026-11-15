@@ -66,6 +66,9 @@ struct Executed {
   // for ever). Nothing was appended to `out` for it.
   std::optional<uint64_t> wait;
   double wait_seconds = 0;
+  // Parked by CLIENT PAUSE, not run: when the wait ends (its wake, or
+  // cancel_wait, with no bytes) the connection runs it again.
+  bool postponed = false;
 };
 
 class Database {
@@ -143,8 +146,14 @@ class Database {
   void monitor_locked(Session& session) DANNAN_REQUIRES(_mutex);
   // CLIENT UNBLOCK: ends connection `client`'s wait, with its timeout reply or
   // an UNBLOCKED error; whether it was waiting. Its wake is called once the
-  // lock is let go.
+  // lock is let go. A command held by CLIENT PAUSE is not waiting.
   bool unblock_locked(int64_t client, bool error) DANNAN_REQUIRES(_mutex);
+  // CLIENT PAUSE and UNPAUSE: until `until_ms` (wall clock), every command
+  // (`all`) or those that write or may replicate are held. A later pause
+  // keeps the later end and the stricter mode, as Valkey's does. UNPAUSE
+  // releases the held commands to run.
+  void pause_locked(uint64_t until_ms, bool all) DANNAN_REQUIRES(_mutex);
+  void unpause_locked() DANNAN_REQUIRES(_mutex);
 
   // Keyspace notifications (Valkey's "Keyspace notifications"): an event of
   // class `cls` ('g', '$', 'l', 's', 'h', 'z', 'x', 'e', 't', 'd', 'n' or
@@ -178,7 +187,11 @@ class Database {
     std::vector<std::string> keys;
     bool null_bulk;
     Wake wake;
+    // Held by CLIENT PAUSE: released with no bytes, to be run again.
+    bool postponed = false;
   };
+  // Whether CLIENT PAUSE holds this command now.
+  bool paused_locked(const Spec& spec, const Session& session) DANNAN_REQUIRES(_mutex);
   using Woken = std::vector<std::pair<Wake, std::string>>;
 
   // Serves parked commands whose keys now hold something, oldest first per
@@ -236,8 +249,12 @@ class Database {
   Acl _acl DANNAN_GUARDED_BY(_mutex);
   // MONITOR's connections, by id.
   std::map<int64_t, Session*> _monitors DANNAN_GUARDED_BY(_mutex);
-  // Waits ended by CLIENT UNBLOCK during a command: woken after it.
+  // Waits ended by CLIENT UNBLOCK or UNPAUSE during a command: woken after it.
   Woken _released DANNAN_GUARDED_BY(_mutex);
+  // CLIENT PAUSE: until when (wall clock ms; zero: not paused), and whether
+  // every command is held or only those that write.
+  uint64_t _pause_until_ms DANNAN_GUARDED_BY(_mutex) = 0;
+  bool _pause_all DANNAN_GUARDED_BY(_mutex) = false;
   // The classes notify-keyspace-events takes, as bits; the events waiting to
   // be published.
   uint32_t _notify_flags DANNAN_GUARDED_BY(_mutex) = 0;

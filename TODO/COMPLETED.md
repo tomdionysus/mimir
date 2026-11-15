@@ -2,6 +2,21 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-16: CLIENT PAUSE and UNPAUSE
+
+- As Valkey 8.1.1 behaves (probed by timing each command under a pause): WRITE
+  holds what writes or may replicate (SET, PUBLISH, EVAL, PFCOUNT, an EXEC
+  whose queue writes), ALL holds everything, UNPAUSE included; a later pause
+  keeps the later end and the stricter mode; active expiry stops meanwhile.
+- A held command parks unrun (a wait with no reply, not a blocked command, so
+  CLIENT UNBLOCK does not end it); when the pause ends or is lifted, its
+  connection runs it again.
+- The same timing probe run against mimir-node matched Valkey's on every line.
+- The differential's RESTORE case compared an exact PTTL across the two
+  servers, which raced the clock under load (one failure, 5000 against 4999);
+  it compares TTL now.
+- Gate on node-d: release 298 passed (2 new); differential 33 of 33.
+
 ## 2026-11-15: the rest of Valkey's command list, as a standalone Valkey answers it
 
 - Valkey 8.1.1's COMMAND LIST (379 commands and subcommands) checked against
