@@ -68,6 +68,12 @@ const std::array specs{
     Spec{"rpoplpush", 3, "write denyoom", 1, 2, 1, Class::agreement, lists::rpoplpush},
     // LMPOP's keys follow numkeys; the table's positions cannot say where they end.
     Spec{"lmpop", -4, "write", 0, 0, 0, Class::agreement, lists::lmpop},
+    // The blocking pops: agreement, and a wait where nothing is there yet.
+    Spec{"blpop", -3, "write blocking", 1, -2, 1, Class::agreement, lists::blpop},
+    Spec{"brpop", -3, "write blocking", 1, -2, 1, Class::agreement, lists::brpop},
+    Spec{"blmove", 6, "write denyoom blocking", 1, 2, 1, Class::agreement, lists::blmove},
+    Spec{"brpoplpush", 4, "write denyoom blocking", 1, 2, 1, Class::agreement, lists::brpoplpush},
+    Spec{"blmpop", -5, "write blocking", 0, 0, 0, Class::agreement, lists::blmpop},
     // Hashes. Field writes merge; what depends on a field's value is configurable
     // or commits by agreement.
     Spec{"hset", -4, "write denyoom fast", 1, 1, 1, Class::merge, hashes::hset},
@@ -131,6 +137,9 @@ const std::array specs{
     Spec{"zpopmin", -2, "write fast", 1, 1, 1, Class::agreement, zsets::zpopmin},
     Spec{"zpopmax", -2, "write fast", 1, 1, 1, Class::agreement, zsets::zpopmax},
     Spec{"zmpop", -4, "write", 0, 0, 0, Class::agreement, zsets::zmpop},
+    Spec{"bzpopmin", -3, "write fast blocking", 1, -2, 1, Class::agreement, zsets::bzpopmin},
+    Spec{"bzpopmax", -3, "write fast blocking", 1, -2, 1, Class::agreement, zsets::bzpopmax},
+    Spec{"bzmpop", -5, "write blocking", 0, 0, 0, Class::agreement, zsets::bzmpop},
     Spec{"zrandmember", -2, "readonly", 1, 1, 1, Class::read, zsets::zrandmember},
     Spec{"zscan", -3, "readonly", 1, 1, 1, Class::read, zsets::zscan},
     // The combining commands' keys follow numkeys.

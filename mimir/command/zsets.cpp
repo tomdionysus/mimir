@@ -48,6 +48,90 @@ void drop_if_empty(keyspace::Keyspace& keys, std::string_view key, const SortedS
   if (zset.empty()) keys.erase(key);
 }
 
+// A blocking command's source, as lists' blocking_source.
+SortedSet* blocking_source(Call& call, const std::string& key) {
+  if (!call.ready_key) return zset_value(call.keys, key);
+  if (key != *call.ready_key) return nullptr;
+  keyspace::Entry* entry = call.keys.find(key);
+  if (!entry || entry->type() != keyspace::Type::zset) return nullptr;
+  return &std::get<SortedSet>(entry->value);
+}
+
+void park(Call& call, std::vector<std::string> keys, double seconds) {
+  call.blocked = true;
+  call.block_keys = std::move(keys);
+  call.block_seconds = seconds;
+}
+
+// ZMPOP and BZMPOP: numkeys at `numkeys_at`, the keys, MIN or MAX, COUNT.
+void multi_pop(Call& call, size_t numkeys_at, std::optional<double> seconds) {
+  auto numkeys = parse_integer(call.args[numkeys_at]);
+  if (!numkeys || *numkeys <= 0) throw CommandError("ERR numkeys should be greater than 0");
+  if (static_cast<uint64_t>(*numkeys) > call.args.size() - numkeys_at - 2) throw CommandError(syntax_error);
+  const size_t first = numkeys_at + 1;
+  const size_t where_at = first + static_cast<size_t>(*numkeys);
+  bool min;
+  if (iequals(call.args[where_at], "MIN"))
+    min = true;
+  else if (iequals(call.args[where_at], "MAX"))
+    min = false;
+  else
+    throw CommandError(syntax_error);
+  int64_t count = 1;
+  bool have_count = false;
+  for (size_t i = where_at + 1; i < call.args.size(); ++i) {
+    if (iequals(call.args[i], "COUNT") && i + 1 < call.args.size() && !have_count) {
+      auto parsed = parse_integer(call.args[++i]);
+      if (!parsed || *parsed <= 0) throw CommandError("ERR count should be greater than 0");
+      count = *parsed;
+      have_count = true;
+    } else {
+      throw CommandError(syntax_error);
+    }
+  }
+  for (size_t k = first; k < where_at; ++k) {
+    SortedSet* zset = seconds ? blocking_source(call, call.args[k]) : zset_value(call.keys, call.args[k]);
+    if (!zset) continue;
+    const size_t n = std::min(static_cast<size_t>(count), zset->size());
+    call.reply.array(2);
+    call.reply.bulk(call.args[k]);
+    call.reply.array(n);
+    for (size_t i = 0; i < n; ++i) {
+      SortedSet::Item item = zset->at(min ? 0 : zset->size() - 1);
+      zset->erase(item.member);
+      call.reply.array(2);
+      call.reply.bulk(item.member);
+      call.reply.real(item.score);
+    }
+    drop_if_empty(call.keys, call.args[k], *zset);
+    return;
+  }
+  if (seconds)
+    park(call, std::vector<std::string>(call.args.begin() + static_cast<std::ptrdiff_t>(first), call.args.begin() + static_cast<std::ptrdiff_t>(where_at)),
+         *seconds);
+  else
+    call.reply.null_array();
+}
+
+// BZPOPMIN and BZPOPMAX: [key, member, score] from the first key holding one.
+void blocking_pop(Call& call, bool min) {
+  const double seconds = block_timeout(call.args.back());
+  std::vector<std::string> keys(call.args.begin() + 1, call.args.end() - 1);
+  for (const auto& key : keys) {
+    SortedSet* zset = blocking_source(call, key);
+    if (!zset) continue;
+    SortedSet::Item item = zset->at(min ? 0 : zset->size() - 1);
+    zset->erase(item.member);
+    call.reply.array(3);
+    call.reply.bulk(key);
+    call.reply.bulk(item.member);
+    call.reply.real(item.score);
+    drop_if_empty(call.keys, key, *zset);
+    return;
+  }
+  park(call, std::move(keys), seconds);
+}
+
 // A score as Valkey reads one: strtod's whole text, no leading space, not NaN;
 // "inf", "+inf" and "-inf" are scores.
 std::optional<double> parse_score(std::string_view text) {
@@ -764,49 +848,10 @@ void zremrangebylex(Call& call) {
 void zpopmin(Call& call) { pop_generic(call, true); }
 void zpopmax(Call& call) { pop_generic(call, false); }
 
-void zmpop(Call& call) {
-  auto numkeys = parse_integer(call.args[1]);
-  if (!numkeys || *numkeys <= 0) throw CommandError("ERR numkeys should be greater than 0");
-  if (static_cast<uint64_t>(*numkeys) > call.args.size() - 3) throw CommandError(syntax_error);
-  const size_t where_at = 2 + static_cast<size_t>(*numkeys);
-  bool min;
-  if (iequals(call.args[where_at], "MIN"))
-    min = true;
-  else if (iequals(call.args[where_at], "MAX"))
-    min = false;
-  else
-    throw CommandError(syntax_error);
-  int64_t count = 1;
-  bool have_count = false;
-  for (size_t i = where_at + 1; i < call.args.size(); ++i) {
-    if (iequals(call.args[i], "COUNT") && i + 1 < call.args.size() && !have_count) {
-      auto parsed = parse_integer(call.args[++i]);
-      if (!parsed || *parsed <= 0) throw CommandError("ERR count should be greater than 0");
-      count = *parsed;
-      have_count = true;
-    } else {
-      throw CommandError(syntax_error);
-    }
-  }
-  for (size_t k = 2; k < where_at; ++k) {
-    SortedSet* zset = zset_value(call.keys, call.args[k]);
-    if (!zset) continue;
-    const size_t n = std::min(static_cast<size_t>(count), zset->size());
-    call.reply.array(2);
-    call.reply.bulk(call.args[k]);
-    call.reply.array(n);
-    for (size_t i = 0; i < n; ++i) {
-      SortedSet::Item item = zset->at(min ? 0 : zset->size() - 1);
-      zset->erase(item.member);
-      call.reply.array(2);
-      call.reply.bulk(item.member);
-      call.reply.real(item.score);
-    }
-    drop_if_empty(call.keys, call.args[k], *zset);
-    return;
-  }
-  call.reply.null_array();
-}
+void zmpop(Call& call) { multi_pop(call, 1, std::nullopt); }
+void bzpopmin(Call& call) { blocking_pop(call, true); }
+void bzpopmax(Call& call) { blocking_pop(call, false); }
+void bzmpop(Call& call) { multi_pop(call, 2, block_timeout(call.args[1])); }
 
 void zrandmember(Call& call) {
   if (call.args.size() == 2) {

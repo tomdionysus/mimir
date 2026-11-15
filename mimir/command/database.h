@@ -9,8 +9,14 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
+#include <functional>
+#include <map>
+#include <optional>
 #include <random>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "dannan/contract/thread_safety.h"
@@ -35,6 +41,19 @@ struct DatabaseSettings {
   std::string redis_version = "7.2.4";
 };
 
+// A parked command's wake: given its reply once a write has served it. Called
+// on the thread of the write that served it, never under the database's lock;
+// it posts to the waiting connection's own strand.
+using Wake = std::function<void(std::string reply)>;
+
+// What execute() did with a command that may wait.
+struct Executed {
+  // The command is parked: its wait's id, and its timeout in seconds (zero:
+  // for ever). Nothing was appended to `out` for it.
+  std::optional<uint64_t> wait;
+  double wait_seconds = 0;
+};
+
 class Database {
  public:
   Database(const dannan::contract::WallClock& wall, DatabaseSettings settings = {});
@@ -45,8 +64,19 @@ class Database {
   // Runs one command and appends its reply to `out`, in the session's protocol
   // (HELLO's reply in the protocol it chooses). A command that cannot run
   // (unknown, wrong arity, a refused argument) writes its error and changes
-  // nothing. Waits on the database's lock; thread-safe.
-  void execute(Session& session, const std::vector<std::string>& args, std::string& out);
+  // nothing. A blocking command that finds nothing is parked when `wake` is
+  // given, and answered with its timeout reply at once when it is not. After
+  // a write, parked commands whose keys it made ready are served, oldest
+  // first, and their wakes called once the lock is let go. Waits on the
+  // database's lock; thread-safe. `session` outlives any wait it parks.
+  Executed execute(Session& session, const std::vector<std::string>& args, std::string& out, Wake wake = nullptr);
+
+  // Ends wait `id` at its timeout or its connection's close: the timeout
+  // reply's bytes when it was still parked; none when a write served it first
+  // (its wake has the reply). Thread-safe.
+  std::optional<std::string> cancel_wait(uint64_t id);
+  // Commands parked now.
+  size_t waiting();
 
   // Active expiry: at most `budget` keys with an expiry examined. Speculative
   // work; thread-safe.
@@ -58,12 +88,32 @@ class Database {
   uint64_t random() { return _random(); }
 
  private:
+  struct Waiter {
+    Session* session;
+    std::vector<std::string> args;
+    std::vector<std::string> keys;
+    bool null_bulk;
+    Wake wake;
+  };
+  using Woken = std::vector<std::pair<Wake, std::string>>;
+
+  // Serves parked commands whose keys now hold something, oldest first per
+  // key, until a pass serves nothing; each served one's wake and reply go to
+  // `woken`, to be called after the lock is let go.
+  void serve_ready(Woken& woken) DANNAN_REQUIRES(_mutex);
+  void forget_waiter(uint64_t id) DANNAN_REQUIRES(_mutex);
+  static std::string timeout_reply(resp::Protocol protocol, bool null_bulk);
+
   const dannan::contract::WallClock& _wall;
   const DatabaseSettings _settings;
   std::atomic<int64_t> _next_client{1};
   dannan::contract::Mutex _mutex;
   keyspace::Keyspace _keys DANNAN_GUARDED_BY(_mutex);
   std::mt19937_64 _random DANNAN_GUARDED_BY(_mutex);
+  std::map<uint64_t, Waiter> _waiters DANNAN_GUARDED_BY(_mutex);
+  // Per key, the waits parked on it in the order they parked.
+  std::unordered_map<std::string, std::deque<uint64_t>> _waiting_on DANNAN_GUARDED_BY(_mutex);
+  uint64_t _next_wait DANNAN_GUARDED_BY(_mutex) = 1;
 };
 
 }  // namespace mimir::command

@@ -25,6 +25,9 @@ std::string* string_value(keyspace::Keyspace& keys, std::string_view key);
 // relative to now or not. Throws "ERR invalid expire time in '<command>'
 // command" when it overflows, and, unless `allow_non_positive`, when value <= 0.
 uint64_t absolute_expiry(int64_t value, bool seconds, bool relative, uint64_t now_ms, std::string_view command, bool allow_non_positive);
+// A blocking command's timeout in seconds, as Valkey reads it: a non-negative
+// number, zero for ever.
+double block_timeout(std::string_view text);
 
 namespace strings {
 void get(Call&);
@@ -68,6 +71,11 @@ void lpos(Call&);
 void lmove(Call&);
 void rpoplpush(Call&);
 void lmpop(Call&);
+void blpop(Call&);
+void brpop(Call&);
+void blmove(Call&);
+void brpoplpush(Call&);
+void blmpop(Call&);
 }  // namespace lists
 
 namespace hashes {
@@ -142,6 +150,9 @@ void zunionstore(Call&);
 void zinterstore(Call&);
 void zdiffstore(Call&);
 void zintercard(Call&);
+void bzpopmin(Call&);
+void bzpopmax(Call&);
+void bzmpop(Call&);
 Class classify_zadd(const std::vector<std::string>&);
 }  // namespace zsets
 
