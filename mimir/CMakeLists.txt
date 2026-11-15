@@ -18,11 +18,13 @@ add_library(mimir SHARED
   command/sets.cpp
   command/strings.cpp
   command/table.cpp
+  command/zsets.cpp
   keyspace/glob.cpp
   keyspace/hash.cpp
   keyspace/keyspace.cpp
   keyspace/set.cpp
   keyspace/slot.cpp
+  keyspace/zset.cpp
   resp/parser.cpp
   resp/reply.cpp
   server/server.cpp

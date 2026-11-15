@@ -109,6 +109,42 @@ void sintercard(Call&);
 void sscan(Call&);
 }  // namespace sets
 
+namespace zsets {
+void zadd(Call&);
+void zincrby(Call&);
+void zscore(Call&);
+void zmscore(Call&);
+void zcard(Call&);
+void zcount(Call&);
+void zlexcount(Call&);
+void zrange(Call&);
+void zrangestore(Call&);
+void zrevrange(Call&);
+void zrangebyscore(Call&);
+void zrevrangebyscore(Call&);
+void zrangebylex(Call&);
+void zrevrangebylex(Call&);
+void zrank(Call&);
+void zrevrank(Call&);
+void zrem(Call&);
+void zremrangebyrank(Call&);
+void zremrangebyscore(Call&);
+void zremrangebylex(Call&);
+void zpopmin(Call&);
+void zpopmax(Call&);
+void zmpop(Call&);
+void zrandmember(Call&);
+void zscan(Call&);
+void zunion(Call&);
+void zinter(Call&);
+void zdiff(Call&);
+void zunionstore(Call&);
+void zinterstore(Call&);
+void zdiffstore(Call&);
+void zintercard(Call&);
+Class classify_zadd(const std::vector<std::string>&);
+}  // namespace zsets
+
 namespace generic {
 void del(Call&);
 void exists(Call&);
