@@ -78,6 +78,13 @@ void xdel(Call&);
 void xtrim(Call&);
 void xsetid(Call&);
 void xread(Call&);
+void xgroup(Call&);
+void xreadgroup(Call&);
+void xack(Call&);
+void xpending(Call&);
+void xclaim(Call&);
+void xautoclaim(Call&);
+void xinfo(Call&);
 }  // namespace streams
 
 namespace transactions {

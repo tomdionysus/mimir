@@ -738,6 +738,54 @@ TEST_F(Differential, Streams) {
   same({"XLEN", "big"});
 }
 
+TEST_F(Differential, StreamGroups) {
+  script({
+      {"XADD", "s", "1-0", "a", "1"},
+      {"XADD", "s", "2-0", "b", "2"},
+      {"XADD", "s", "3-0", "c", "3"},
+      {"XGROUP", "CREATE", "s", "g", "0"},
+      {"XGROUP", "CREATE", "s", "g", "$"},
+      {"XGROUP", "CREATE", "nosuch", "g", "$"},
+      {"XGROUP", "CREATE", "made", "g", "$", "MKSTREAM"},
+      {"XLEN", "made"},
+      {"XGROUP", "DESTROY", "made", "g"},
+      {"XGROUP", "DESTROY", "made", "g"},
+      {"XGROUP", "CREATECONSUMER", "s", "g", "alice"},
+      {"XGROUP", "CREATECONSUMER", "s", "g", "alice"},
+      {"XGROUP", "BOGUS"},
+      {"XREADGROUP", "GROUP", "g", "alice", "COUNT", "2", "STREAMS", "s", ">"},
+      {"XREADGROUP", "GROUP", "g", "bob", "STREAMS", "s", ">"},
+      {"XREADGROUP", "GROUP", "g", "bob", "STREAMS", "s", ">"},
+      {"XREADGROUP", "GROUP", "g", "alice", "STREAMS", "s", "0"},
+      {"XREADGROUP", "GROUP", "nog", "c", "STREAMS", "s", ">"},
+      {"XREADGROUP", "GROUP", "g", "c", "STREAMS", "s", "$"},
+      {"XREADGROUP", "GROUP", "g", "c", "STREAMS", "s"},
+      {"XACK", "s", "g", "1-0", "9-0"},
+      {"XACK", "s", "nog", "1-0"},
+      {"XACK", "s", "g", "x"},
+      {"XPENDING", "s", "g"},
+      {"XPENDING", "s", "nog"},
+      {"XDEL", "s", "2-0"},
+      {"XREADGROUP", "GROUP", "g", "alice", "STREAMS", "s", "0"},
+      {"XINFO", "GROUPS", "s"},
+      {"XGROUP", "SETID", "s", "g", "0"},
+      {"XINFO", "GROUPS", "s"},
+      {"XGROUP", "SETID", "s", "g", "$", "ENTRIESREAD", "3"},
+      {"XINFO", "GROUPS", "s"},
+      {"XGROUP", "SETID", "s", "nog", "0"},
+      {"XCLAIM", "s", "g", "carol", "0", "3-0", "JUSTID"},
+      {"XCLAIM", "s", "g", "x", "y", "1-0"},
+      {"XAUTOCLAIM", "s", "g", "dave", "0", "0", "JUSTID"},
+      {"XAUTOCLAIM", "s", "g", "dave", "0", "0", "COUNT", "0"},
+      {"XGROUP", "DELCONSUMER", "s", "g", "dave"},
+      {"XPENDING", "s", "g"},
+      {"XINFO", "STREAM", "nosuch"},
+      {"XINFO", "GROUPS", "nosuch"},
+      {"XINFO", "CONSUMERS", "s", "nog"},
+      {"XINFO", "BOGUS", "s"},
+  });
+}
+
 TEST_F(Differential, Transactions) {
   script({
       {"EXEC"},
