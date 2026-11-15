@@ -1268,6 +1268,67 @@ std::string bulk_of(const std::string& reply) {
   return reply.substr(end + 2, n);
 }
 
+TEST_F(Differential, Sort) {
+  script({
+      {"RPUSH", "l", "3", "10", "1", "2.5", "-4", "1e3", "  7", "", "0x10"},
+      {"RPUSH", "nums", "3", "10", "1", "2.5", "-4", "1e3", "3"},
+      {"SORT", "nums"},
+      {"SORT", "nums", "DESC"},
+      {"SORT", "nums", "ALPHA"},
+      {"SORT", "nums", "ALPHA", "DESC"},
+      {"SORT", "l"},
+      {"SORT", "nums", "LIMIT", "1", "2"},
+      {"SORT", "nums", "LIMIT", "-1", "2"},
+      {"SORT", "nums", "LIMIT", "2", "-1"},
+      {"SORT", "nums", "LIMIT", "10", "2"},
+      {"SORT", "nums", "LIMIT", "1"},
+      {"SORT", "nums", "LIMIT", "x", "1"},
+      {"SORT", "nums", "WAT"},
+      {"SORT", "nosuch"},
+      {"SORT", "nosuch", "STORE", "out"},
+      {"RPUSH", "ids", "1", "2", "3", "4"},
+      {"MSET", "w_1", "30", "w_2", "10", "w_3", "20", "name_1", "one", "name_2", "two", "w_4", "x"},
+      {"HSET", "h_1", "age", "5", "nick", "a"},
+      {"HSET", "h_2", "age", "50"},
+      {"HSET", "h_3", "age", "7", "nick", "c"},
+      {"SORT", "ids", "BY", "w_*"},
+      {"SORT", "ids", "BY", "w_*", "LIMIT", "0", "3"},
+      {"SORT", "ids", "BY", "h_*->age", "DESC"},
+      {"SORT", "ids", "BY", "h_*->age", "GET", "#", "GET", "h_*->nick", "GET", "name_*", "GET", "nopattern"},
+      {"SORT", "ids", "BY", "nosort"},
+      {"SORT", "ids", "BY", "nosort", "DESC"},
+      {"SORT", "ids", "BY", "nosort", "DESC", "LIMIT", "1", "2"},
+      {"SORT", "ids", "BY", "nosort", "LIMIT", "1", "2"},
+      // Ties (two names missing) order as Valkey's unstable sort leaves them;
+      // only the slice past them is compared.
+      {"SORT", "ids", "BY", "name_*", "ALPHA", "LIMIT", "2", "2"},
+      {"SORT", "ids", "GET", "h_*->age", "GET", "h_*->"},
+      {"SORT", "ids", "BY", "w_*", "GET", "#", "STORE", "out"},
+      {"LRANGE", "out", "0", "-1"},
+      {"SORT", "ids", "BY", "nosort", "GET", "name_*", "STORE", "out2"},
+      {"LRANGE", "out2", "0", "-1"},
+      {"ZADD", "z", "1", "c", "2", "a", "3", "b"},
+      {"SORT", "z", "ALPHA"},
+      {"SORT", "z", "BY", "nosort"},
+      {"SORT", "z", "BY", "nosort", "DESC"},
+      {"SORT", "z", "BY", "nosort", "DESC", "LIMIT", "1", "1"},
+      {"SORT", "z", "BY", "nosort", "LIMIT", "1", "5"},
+      {"SADD", "s", "c", "a", "b"},
+      {"SORT", "s", "ALPHA"},
+      {"SORT", "s", "BY", "nosort", "STORE", "out3"},
+      {"LRANGE", "out3", "0", "-1"},
+      {"EVAL", "return redis.call('SORT', KEYS[1], 'BY', 'nosort')", "1", "s"},
+      {"SADD", "si", "5", "1", "3"},
+      {"SORT", "si"},
+      {"SORT", "si", "BY", "nosort"},
+      {"SET", "str", "x"},
+      {"SORT", "str"},
+      {"SORT_RO", "ids", "BY", "w_*"},
+      {"SORT_RO", "ids", "STORE", "out"},
+      {"SORT", "ids", "STORE"},
+  });
+}
+
 TEST_F(Differential, DumpBytes) {
   const std::string fifty(50, 'a');
   const std::string text = "The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog again and again.";

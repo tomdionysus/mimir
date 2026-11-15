@@ -59,6 +59,9 @@ struct Session {
   uint64_t created_ms = 0;
   // Set by QUIT: the connection closes once this command's reply is sent.
   bool closing = false;
+  // A script's or a function's own session: what it runs must be
+  // deterministic (SORT orders a set it would otherwise leave unordered).
+  bool scripted = false;
   // How a message published to this connection reaches it, from any thread,
   // waiting on nothing; none: it cannot subscribe.
   std::function<void(std::string)> push;
