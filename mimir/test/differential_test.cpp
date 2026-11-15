@@ -623,6 +623,47 @@ TEST_F(Differential, Bitmaps) {
   });
 }
 
+TEST_F(Differential, HyperLogLog) {
+  script({
+      {"PFADD", "h", "a", "b", "c", "d", "e", "f", "g"},
+      {"PFCOUNT", "h"},
+      {"PFADD", "h", "a"},
+      {"PFADD", "empty"},
+      {"PFADD", "empty"},
+      {"PFCOUNT", "empty"},
+      {"GET", "empty"},
+      {"PFCOUNT", "nosuch"},
+      {"PFADD", "h1", "foo", "bar", "zap", "a"},
+      {"PFADD", "h2", "a", "b", "c", "foo"},
+      {"PFCOUNT", "h1", "h2"},
+      {"PFMERGE", "h3", "h1", "h2"},
+      {"PFCOUNT", "h3"},
+      {"PFMERGE", "made"},
+      {"PFCOUNT", "made"},
+      {"SET", "s", "plain"},
+      {"PFADD", "s", "x"},
+      {"PFCOUNT", "s"},
+      {"PFMERGE", "d", "s"},
+      {"RPUSH", "l", "x"},
+      {"PFADD", "l", "x"},
+  });
+  // Larger sets: the estimate, which depends only on the registers.
+  for (int round = 0; round < 3; ++round) {
+    std::vector<std::string> add{"PFADD", "big"};
+    for (int i = 0; i < 4000; ++i) add.push_back("member-" + std::to_string(round) + "-" + std::to_string(i));
+    same(add);
+    same({"PFCOUNT", "big"});
+  }
+  std::vector<std::string> other{"PFADD", "other"};
+  for (int i = 0; i < 300; ++i) other.push_back("x" + std::to_string(i * 7));
+  same(other);
+  same({"PFCOUNT", "big", "other"});
+  same({"PFMERGE", "both", "big", "other"});
+  same({"PFCOUNT", "both"});
+  // A dense value's bytes are the format's alone, so they match too.
+  same({"GET", "big"});
+}
+
 TEST_F(Differential, Connection) {
   script({
       {"PING"},

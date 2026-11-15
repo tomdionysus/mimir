@@ -59,6 +59,10 @@ const std::array specs{
     Spec{"bitop", -4, "write denyoom", 2, -1, 1, Class::agreement, bitmaps::bitop},
     Spec{"bitfield", -2, "write denyoom", 1, 1, 1, Class::configurable, bitmaps::bitfield},
     Spec{"bitfield_ro", -2, "readonly fast", 1, 1, 1, Class::read, bitmaps::bitfield_ro},
+    // HyperLogLog: registers only grow, so adds and merges are joins.
+    Spec{"pfadd", -2, "write denyoom fast", 1, 1, 1, Class::merge, hyperloglog::pfadd},
+    Spec{"pfcount", -2, "readonly may_replicate", 1, -1, 1, Class::read, hyperloglog::pfcount},
+    Spec{"pfmerge", -2, "write denyoom", 1, -1, 1, Class::merge, hyperloglog::pfmerge},
     // Lists. Pushes merge; what depends on positions or pops commits by agreement.
     Spec{"lpush", -3, "write denyoom fast", 1, 1, 1, Class::merge, lists::lpush},
     Spec{"rpush", -3, "write denyoom fast", 1, 1, 1, Class::merge, lists::rpush},

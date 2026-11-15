@@ -15,6 +15,7 @@ add_library(mimir SHARED
   command/database.cpp
   command/generic.cpp
   command/hashes.cpp
+  command/hyperloglog.cpp
   command/lists.cpp
   command/sets.cpp
   command/strings.cpp
@@ -22,6 +23,7 @@ add_library(mimir SHARED
   command/zsets.cpp
   keyspace/glob.cpp
   keyspace/hash.cpp
+  keyspace/hll.cpp
   keyspace/keyspace.cpp
   keyspace/set.cpp
   keyspace/slot.cpp

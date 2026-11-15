@@ -63,6 +63,12 @@ void bitfield(Call&);
 void bitfield_ro(Call&);
 }  // namespace bitmaps
 
+namespace hyperloglog {
+void pfadd(Call&);
+void pfcount(Call&);
+void pfmerge(Call&);
+}  // namespace hyperloglog
+
 namespace lists {
 void lpush(Call&);
 void rpush(Call&);
