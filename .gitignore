@@ -1,0 +1,6 @@
+/build/
+/build-*/
+CLAUDE.local.md
+.basemind/
+.DS_Store
+/.cache/
