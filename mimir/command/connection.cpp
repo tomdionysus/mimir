@@ -7,6 +7,7 @@
 
 // The connection and server commands, as Valkey 8 documents them.
 
+#include <algorithm>
 #include <sstream>
 
 #include "mimir/command/args.h"
@@ -28,6 +29,23 @@ bool valid_name(std::string_view name) {
 
 void unknown_subcommand(const std::string& subcommand, std::string_view command) {
   throw CommandError("ERR unknown subcommand '" + subcommand + "'. Try " + upper(command) + " HELP.");
+}
+
+// One line of CLIENT LIST, in Valkey's field order for the fields Mimir keeps.
+std::string client_line(const Session& s, uint64_t now) {
+  std::string flags;
+  if (s.subscriptions > 0 || s.shard_subscriptions > 0) flags += "P";
+  if (s.in_multi) flags += "x";
+  if (flags.empty()) flags = "N";
+  std::ostringstream line;
+  line << "id=" << s.id << " addr=" << s.address << " laddr= fd=-1 name=" << s.name << " age=" << (now - std::min(now, s.created_ms)) / 1000
+       << " idle=" << (now - std::min(now, s.last_ms)) / 1000 << " flags=" << flags << " capa= db=0 sub=" << s.subscriptions
+       << " psub=0 ssub=" << s.shard_subscriptions << " multi=" << (s.in_multi ? static_cast<int64_t>(s.queued.size()) : -1) << " watch=" << s.watched.size()
+       << " qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0"
+       << " rbs=0 rbp=0 obl=0 oll=0 omem=0 tot-mem=0 events=r cmd=" << s.last_command
+       << " user=default redir=-1 resp=" << (s.protocol == resp::Protocol::resp3 ? 3 : 2) << " lib-name=" << s.lib_name << " lib-ver=" << s.lib_version
+       << " tot-cmds=" << s.commands << "\n";
+  return line.str();
 }
 
 void wrong_arity(std::string_view name) { throw CommandError("ERR wrong number of arguments for '" + std::string(name) + "' command"); }
@@ -134,7 +152,8 @@ void auth(Call& call) {
   throw CommandError("ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?");
 }
 
-void client(Call& call) {
+// Called under the database's lock, as every handler is.
+void client(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   const std::string sub = lower(call.args[1]);
   if (sub == "id") {
     if (call.args.size() != 2) wrong_arity("client|id");
@@ -156,6 +175,78 @@ void client(Call& call) {
     if (attribute != "lib-name" && attribute != "lib-ver") throw CommandError("ERR Unrecognized option '" + call.args[2] + "'");
     if (!valid_name(call.args[3])) throw CommandError("ERR " + attribute + " cannot contain spaces, newlines or special characters.");
     (attribute == "lib-name" ? call.session.lib_name : call.session.lib_version) = call.args[3];
+    call.reply.simple("OK");
+  } else if (sub == "info") {
+    if (call.args.size() != 2) wrong_arity("client|info");
+    call.reply.verbatim("txt", client_line(call.session, call.keys.now_ms()));
+  } else if (sub == "list") {
+    std::optional<std::string> type;
+    std::vector<int64_t> ids;
+    for (size_t i = 2; i < call.args.size(); ++i) {
+      if (iequals(call.args[i], "TYPE") && i + 1 < call.args.size()) {
+        type = lower(call.args[++i]);
+        if (*type != "normal" && *type != "pubsub" && *type != "master" && *type != "replica")
+          throw CommandError("ERR Unknown client type '" + call.args[i] + "'");
+      } else if (iequals(call.args[i], "ID") && i + 1 < call.args.size()) {
+        while (i + 1 < call.args.size()) {
+          auto id = parse_integer(call.args[++i]);
+          if (!id || *id <= 0) throw CommandError("ERR Invalid client ID");
+          ids.push_back(*id);
+        }
+      } else {
+        throw CommandError(syntax_error);
+      }
+    }
+    std::string text;
+    const uint64_t now = call.keys.now_ms();
+    for (const auto& [id, session] : call.database.sessions_locked()) {
+      if (!ids.empty() && std::find(ids.begin(), ids.end(), id) == ids.end()) continue;
+      const bool pubsub = session->subscriptions > 0 || session->shard_subscriptions > 0;
+      if (type && ((*type == "pubsub") != pubsub || *type == "master" || *type == "replica")) continue;
+      text += client_line(*session, now);
+    }
+    call.reply.verbatim("txt", text);
+  } else if (sub == "kill") {
+    // The old form, CLIENT KILL addr, answers OK; the new answers how many.
+    if (call.args.size() == 3) {
+      for (const auto& [id, session] : call.database.sessions_locked()) {
+        if (session->address == call.args[2] && session->kill) {
+          session->kill();
+          call.reply.simple("OK");
+          return;
+        }
+      }
+      throw CommandError("ERR No such client");
+    }
+    std::optional<int64_t> by_id;
+    std::optional<std::string> by_addr;
+    bool skipme = true;
+    for (size_t i = 2; i + 1 < call.args.size(); i += 2) {
+      const std::string filter = lower(call.args[i]);
+      if (filter == "id") {
+        auto id = parse_integer(call.args[i + 1]);
+        if (!id || *id <= 0) throw CommandError("ERR client-id should be greater than 0");
+        by_id = *id;
+      } else if (filter == "addr") {
+        by_addr = call.args[i + 1];
+      } else if (filter == "skipme") {
+        skipme = !iequals(call.args[i + 1], "no");
+      } else {
+        throw CommandError(syntax_error);
+      }
+    }
+    if (call.args.size() % 2 != 0) throw CommandError(syntax_error);
+    int64_t killed = 0;
+    for (const auto& [id, session] : call.database.sessions_locked()) {
+      if (by_id && id != *by_id) continue;
+      if (by_addr && session->address != *by_addr) continue;
+      if (skipme && id == call.session.id) continue;
+      if (session->kill) session->kill();
+      ++killed;
+    }
+    call.reply.integer(killed);
+  } else if (sub == "no-evict" || sub == "no-touch") {
+    if (call.args.size() != 3 || (!iequals(call.args[2], "on") && !iequals(call.args[2], "off"))) throw CommandError(syntax_error);
     call.reply.simple("OK");
   } else {
     unknown_subcommand(call.args[1], "client");
@@ -199,18 +290,68 @@ void command(Call& call) {
   }
 }
 
-void info(Call& call) {
+void info(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   const DatabaseSettings& settings = call.database.settings();
+  // The sections asked for: none or "default" or "all" or "everything" is
+  // every section Mimir keeps; names are case-insensitive.
+  std::vector<std::string> asked;
+  for (size_t i = 1; i < call.args.size(); ++i) asked.push_back(lower(call.args[i]));
+  const bool every =
+      asked.empty() || std::any_of(asked.begin(), asked.end(), [](const std::string& s) { return s == "default" || s == "all" || s == "everything"; });
+  const auto wanted = [&](std::string_view section) { return every || std::find(asked.begin(), asked.end(), section) != asked.end(); };
+  const uint64_t now = call.keys.now_ms();
+  const uint64_t uptime = (now - std::min(now, call.database.started_ms())) / 1000;
   std::ostringstream text;
-  text << "# Server\r\n"
-       << "redis_version:" << settings.redis_version << "\r\n"
-       << "server_name:" << settings.server_name << "\r\n"
-       << "valkey_version:" << settings.compatible_version << "\r\n"
-       << "mimir_version:" << mimir::version << "\r\n"
-       << "server_mode:standalone\r\n"
-       << "redis_mode:standalone\r\n"
-       << "\r\n# Keyspace\r\n";
-  if (call.keys.size() > 0) text << "db0:keys=" << call.keys.size() << ",expires=" << call.keys.expiring() << ",avg_ttl=0\r\n";
+  bool first = true;
+  const auto section = [&](std::string_view title) {
+    if (!first) text << "\r\n";
+    first = false;
+    text << "# " << title << "\r\n";
+  };
+  if (wanted("server")) {
+    section("Server");
+    text << "redis_version:" << settings.redis_version << "\r\n"
+         << "server_name:" << settings.server_name << "\r\n"
+         << "valkey_version:" << settings.compatible_version << "\r\n"
+         << "mimir_version:" << mimir::version << "\r\n"
+         << "server_mode:standalone\r\n"
+         << "redis_mode:standalone\r\n"
+         << "process_id:0\r\n"
+         << "uptime_in_seconds:" << uptime << "\r\n"
+         << "uptime_in_days:" << uptime / 86400 << "\r\n"
+         << "hz:10\r\n";
+  }
+  if (wanted("clients")) {
+    section("Clients");
+    size_t pubsub = 0, watching = 0;
+    for (const auto& [id, s] : call.database.sessions_locked()) {
+      pubsub += (s->subscriptions > 0 || s->shard_subscriptions > 0) ? 1 : 0;
+      watching += s->watched.empty() ? 0 : 1;
+    }
+    text << "connected_clients:" << call.database.sessions_locked().size() << "\r\n"
+         << "blocked_clients:" << call.database.waiting_locked() << "\r\n"
+         << "pubsub_clients:" << pubsub << "\r\n"
+         << "watching_clients:" << watching << "\r\n";
+  }
+  if (wanted("memory")) {
+    section("Memory");
+    text << "maxmemory:" << call.database.config_locked()["maxmemory"] << "\r\n"
+         << "maxmemory_policy:" << call.database.config_locked()["maxmemory-policy"] << "\r\n";
+  }
+  if (wanted("persistence")) {
+    section("Persistence");
+    text << "loading:0\r\n"
+         << "aof_enabled:0\r\n";
+  }
+  if (wanted("replication")) {
+    section("Replication");
+    text << "role:master\r\n"
+         << "connected_slaves:0\r\n";
+  }
+  if (wanted("keyspace")) {
+    section("Keyspace");
+    if (call.keys.size() > 0) text << "db0:keys=" << call.keys.size() << ",expires=" << call.keys.expiring() << ",avg_ttl=0\r\n";
+  }
   call.reply.verbatim("txt", text.str());
 }
 

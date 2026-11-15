@@ -40,6 +40,10 @@ class Connection : public std::enable_shared_from_this<Connection> {
     _session.push = [stream = std::weak_ptr<dannan::listen::Stream>(_stream)](std::string bytes) {
       if (auto alive = stream.lock()) alive->send(std::move(bytes));
     };
+    // CLIENT KILL, from another connection's strand: the stream closes itself.
+    _session.kill = [stream = std::weak_ptr<dannan::listen::Stream>(_stream)] {
+      if (auto alive = stream.lock()) alive->close();
+    };
   }
 
   void start() {

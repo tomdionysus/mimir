@@ -871,6 +871,46 @@ TEST_F(Differential, PubSub) {
   both_sub({"GET", "k"}, 1);
 }
 
+TEST_F(Differential, ServerCommands) {
+  script({
+      {"CONFIG", "GET", "maxmemory"},
+      {"CONFIG", "GET", "maxmemory-policy"},
+      {"CONFIG", "GET", "notify-keyspace-events"},
+      {"CONFIG", "GET", "nosuch"},
+      {"CONFIG", "SET", "nosuch", "1"},
+      {"CONFIG", "BOGUS"},
+      {"SET", "i", "12345"},
+      {"SET", "e", "short"},
+      {"SET", "r", std::string(50, 'x')},
+      {"SADD", "is", "1", "2"},
+      {"SADD", "ls", "a"},
+      {"HSET", "h", "f", "v"},
+      {"ZADD", "z", "1", "m"},
+      {"RPUSH", "l", "x"},
+      {"XADD", "st", "1-0", "f", "v"},
+      {"OBJECT", "ENCODING", "i"},
+      {"OBJECT", "ENCODING", "e"},
+      {"OBJECT", "ENCODING", "r"},
+      {"OBJECT", "ENCODING", "is"},
+      {"OBJECT", "ENCODING", "ls"},
+      {"OBJECT", "ENCODING", "h"},
+      {"OBJECT", "ENCODING", "z"},
+      {"OBJECT", "ENCODING", "l"},
+      {"OBJECT", "ENCODING", "st"},
+      {"OBJECT", "ENCODING", "nosuch"},
+      {"OBJECT", "REFCOUNT", "i"},
+      {"OBJECT", "FREQ", "i"},
+      {"OBJECT", "BOGUS", "i"},
+      {"ROLE"},
+      {"WAIT", "0", "0"},
+      {"WAITAOF", "1", "0", "0"},
+      {"MEMORY", "USAGE", "nosuch"},
+      {"CLIENT", "KILL", "nowhere:1"},
+      {"CLIENT", "NO-EVICT", "on"},
+      {"CLIENT", "NO-TOUCH", "off"},
+  });
+}
+
 TEST_F(Differential, Connection) {
   script({
       {"PING"},

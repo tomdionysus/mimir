@@ -248,6 +248,15 @@ const std::array specs{
     Spec{"publish", 3, "pubsub loading stale fast may_replicate", 0, 0, 0, Class::connection, pubsub::publish},
     Spec{"spublish", 3, "pubsub loading stale fast may_replicate", 1, 1, 1, Class::connection, pubsub::spublish},
     Spec{"pubsub", -2, "", 0, 0, 0, Class::connection, pubsub::pubsub},
+    // The server's own: settings, introspection, replication's waits.
+    Spec{"config", -2, "admin noscript loading stale", 0, 0, 0, Class::admin, server::config},
+    Spec{"object", -2, "readonly", 2, 2, 1, Class::read, server::object},
+    Spec{"role", 1, "noscript loading stale fast", 0, 0, 0, Class::connection, server::role},
+    Spec{"wait", 3, "", 0, 0, 0, Class::connection, server::wait},
+    Spec{"waitaof", 4, "noscript", 0, 0, 0, Class::connection, server::waitaof},
+    Spec{"memory", -2, "readonly", 0, 0, 0, Class::read, server::memory},
+    Spec{"slowlog", -2, "admin loading stale", 0, 0, 0, Class::admin, server::slowlog},
+    Spec{"lastsave", 1, "loading stale fast", 0, 0, 0, Class::connection, server::lastsave},
     // Connection and server.
     Spec{"ping", -1, "fast", 0, 0, 0, Class::connection, connection::ping},
     Spec{"echo", 2, "fast", 0, 0, 0, Class::connection, connection::echo},

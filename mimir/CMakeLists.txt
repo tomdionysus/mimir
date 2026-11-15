@@ -19,6 +19,7 @@ add_library(mimir SHARED
   command/lists.cpp
   command/pubsub.cpp
   command/pubsub_commands.cpp
+  command/server_commands.cpp
   command/sets.cpp
   command/stream_groups.cpp
   command/streams.cpp

@@ -234,6 +234,17 @@ void touch(Call&);
 void copy(Call&);
 }  // namespace generic
 
+namespace server {
+void config(Call&);
+void object(Call&);
+void role(Call&);
+void wait(Call&);
+void waitaof(Call&);
+void memory(Call&);
+void slowlog(Call&);
+void lastsave(Call&);
+}  // namespace server
+
 namespace connection {
 void ping(Call&);
 void echo(Call&);

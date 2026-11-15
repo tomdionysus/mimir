@@ -35,7 +35,36 @@ bool spec_allowed_subscribed(std::string_view name) {
 }  // namespace
 
 Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings settings)
-    : _wall(wall), _settings(std::move(settings)), _keys(wall), _random(std::random_device{}()) {}
+    : _wall(wall), _settings(std::move(settings)), _started_ms(wall.unix_ms()), _keys(wall), _random(std::random_device{}()) {
+  // What CONFIG GET answers, in Valkey's names: one database, no persistence
+  // of Valkey's kind, nothing evicted (ruling 9's eviction comes later).
+  _config = {{"databases", "1"},
+             {"maxmemory", "0"},
+             {"maxmemory-policy", "noeviction"},
+             {"notify-keyspace-events", ""},
+             {"timeout", "0"},
+             {"hz", "10"},
+             {"save", ""},
+             {"appendonly", "no"},
+             {"proto-max-bulk-len", "536870912"},
+             {"cluster-enabled", "no"},
+             {"maxclients", "10000"},
+             {"set-max-intset-entries", "512"},
+             {"set-max-listpack-entries", "128"},
+             {"set-max-listpack-value", "64"},
+             {"hash-max-listpack-entries", "128"},
+             {"hash-max-listpack-value", "64"},
+             {"zset-max-listpack-entries", "128"},
+             {"zset-max-listpack-value", "64"},
+             {"list-max-listpack-size", "-2"},
+             {"hll-sparse-max-bytes", "3000"},
+             {"stream-node-max-entries", "100"},
+             {"stream-node-max-bytes", "4096"},
+             {"lua-time-limit", "5000"},
+             {"busy-reply-threshold", "5000"},
+             {"slowlog-log-slower-than", "10000"},
+             {"slowlog-max-len", "128"}};
+}
 
 std::string Database::timeout_reply(resp::Protocol protocol, bool null_bulk) {
   resp::Reply reply(protocol);
@@ -93,6 +122,10 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
   {
     dannan::contract::Lock lock(_mutex);
     _touched.clear();
+    _sessions.emplace(session.id, &session);
+    session.last_ms = _wall.unix_ms();
+    session.last_command = std::string(spec->name);
+    ++session.commands;
     Call call{session, *this, _keys, reply, args};
     try {
       spec->handler(call);
@@ -191,6 +224,7 @@ bool Database::watch_broken_locked(Session& session) {
 void Database::forget(Session& session) {
   dannan::contract::Lock lock(_mutex);
   unwatch_locked(session);
+  _sessions.erase(session.id);
 }
 
 void Database::forget_waiter(uint64_t id) {
