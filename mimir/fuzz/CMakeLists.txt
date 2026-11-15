@@ -10,7 +10,7 @@ if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   message(FATAL_ERROR "MIMIR_BUILD_FUZZING needs clang")
 endif()
 
-foreach(target resp_request)
+foreach(target resp_request rdb_restore)
   add_executable(${target}_fuzz ${target}_fuzz.cpp)
   target_compile_options(${target}_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
   target_link_options(${target}_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)

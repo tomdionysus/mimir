@@ -9,6 +9,7 @@ add_executable(mimir_tests
   command_bitmaps_test.cpp
   command_blocking_test.cpp
   command_databases_test.cpp
+  command_dump_test.cpp
   command_functions_test.cpp
   command_generic_test.cpp
   command_hashes_test.cpp
@@ -26,6 +27,7 @@ add_executable(mimir_tests
   command_zsets_test.cpp
   differential_test.cpp
   keyspace_keyspace_test.cpp
+  keyspace_rdb_test.cpp
   keyspace_slot_test.cpp
   resp_parser_test.cpp
   resp_reply_test.cpp

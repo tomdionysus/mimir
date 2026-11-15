@@ -13,6 +13,7 @@
 #include "mimir/command/database.h"
 #include "mimir/command/handlers.h"
 #include "mimir/keyspace/glob.h"
+#include "mimir/keyspace/rdb.h"
 
 namespace mimir::command::generic {
 
@@ -279,6 +280,63 @@ void move(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   call.notify('g', "move_from", call.args[1]);
   call.database.notify_locked(static_cast<size_t>(db), 'g', "move_to", call.args[1]);
   call.reply.integer(1);
+}
+
+void dump(Call& call) {
+  keyspace::Entry* entry = call.keys.find(call.args[1]);
+  if (!entry) {
+    call.reply.null();
+    return;
+  }
+  call.reply.bulk(keyspace::rdb::dump(*entry));
+}
+
+void restore(Call& call) {
+  const std::string& key = call.args[1];
+  bool replace = false;
+  bool absttl = false;
+  bool idle = false;
+  bool freq = false;
+  for (size_t j = 4; j < call.args.size(); ++j) {
+    const size_t additional = call.args.size() - j - 1;
+    if (iequals(call.args[j], "REPLACE")) {
+      replace = true;
+    } else if (iequals(call.args[j], "ABSTTL")) {
+      absttl = true;
+    } else if (iequals(call.args[j], "IDLETIME") && additional >= 1 && !freq) {
+      if (integer_argument(call.args[++j]) < 0) throw CommandError("ERR Invalid IDLETIME value, must be >= 0");
+      idle = true;
+    } else if (iequals(call.args[j], "FREQ") && additional >= 1 && !idle) {
+      const int64_t f = integer_argument(call.args[++j]);
+      if (f < 0 || f > 255) throw CommandError("ERR Invalid FREQ value, must be >= 0 and <= 255");
+      freq = true;
+    } else {
+      throw CommandError(syntax_error);
+    }
+  }
+  if (!replace && call.keys.find(key)) throw CommandError("BUSYKEY Target key name already exists.");
+  const int64_t ttl = integer_argument(call.args[2]);
+  if (ttl < 0) throw CommandError("ERR Invalid TTL value, must be >= 0");
+  auto restored = keyspace::rdb::restore(call.args[3]);
+  if (auto* refusal = std::get_if<keyspace::rdb::Refusal>(&restored)) {
+    throw CommandError(*refusal == keyspace::rdb::Refusal::checksum ? "ERR DUMP payload version or checksum are wrong" : "ERR Bad data format");
+  }
+  keyspace::Entry entry = std::move(std::get<keyspace::Entry>(restored));
+  if (ttl > 0) {
+    const uint64_t now = call.keys.now_ms();
+    const uint64_t at = absttl ? static_cast<uint64_t>(ttl) : now + static_cast<uint64_t>(ttl);
+    // Already past: nothing is made, and a key replaced is gone.
+    if (at <= now) {
+      if (replace && call.keys.erase(key)) call.notify('g', "del", key);
+      call.reply.simple("OK");
+      return;
+    }
+    entry.expires_at = at;
+  }
+  if (replace) call.keys.erase(key);
+  call.keys.put(key, std::move(entry));
+  call.notify('g', "restore", key);
+  call.reply.simple("OK");
 }
 
 void swapdb(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {

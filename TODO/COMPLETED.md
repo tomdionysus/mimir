@@ -2,6 +2,28 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-15: DUMP and RESTORE (and FUNCTION DUMP and RESTORE)
+
+- `mimir/keyspace/rdb`: Valkey's RDB encoding of one value, version 11, with
+  CRC-64 (Jones) and LZF written here (no dependency). Mimir writes each
+  value in the encoding Valkey would hold it in, byte for byte where Valkey's
+  is deterministic: integers, LZF strings, listpacks, intsets, sorted sets'
+  skiplists, quicklist nodes of 8 KB, streams' node listpacks with groups,
+  pending entries and consumers. It reads every encoding Valkey 8 reads, the
+  ziplist ones of older payloads included; what it reads is untrusted, every
+  length checked, and anything that does not parse refused ("Bad data
+  format"). A libFuzzer target (`rdb_restore_fuzz`) holds that a value read
+  dumps and reads back as itself.
+- RESTORE with REPLACE, ABSTTL, IDLETIME and FREQ, its errors in Valkey's
+  order, and the "restore" notification. FUNCTION DUMP, and FUNCTION RESTORE
+  with APPEND, REPLACE and FLUSH, loaded first into a fresh interpreter so a
+  payload that does not load or conflicts changes nothing.
+- The gate: Valkey 8.1.1's own payloads as the unit tests' expected bytes
+  (every one matched); DUMP compared byte for byte for deterministic values;
+  hash tables, skiplists, quicklists and a stream with a group each restored
+  from one server into the other and compared by reads both ways.
+- Gate on corvus-jupiter: release 246 passed; differential 28 of 28.
+
 ## 2026-11-15: keyspace notifications
 
 - notify-keyspace-events with Valkey's classes, its error for a bad one and

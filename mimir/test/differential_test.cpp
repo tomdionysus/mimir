@@ -1261,6 +1261,138 @@ TEST_F(Differential, NotificationsInScriptsAndTransactions) {
                               });
 }
 
+// The bulk string a reply holds.
+std::string bulk_of(const std::string& reply) {
+  const size_t end = reply.find("\r\n");
+  const size_t n = std::stoul(reply.substr(1, end - 1));
+  return reply.substr(end + 2, n);
+}
+
+TEST_F(Differential, DumpBytes) {
+  const std::string fifty(50, 'a');
+  const std::string text = "The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog again and again.";
+  script({
+      {"SET", "s1", "hello"},
+      {"SET", "s2", "12345"},
+      {"SET", "s3", "-7"},
+      {"SET", "s4", "123456789012"},
+      {"SET", "s5", fifty},
+      {"SET", "s6", "abcdefghijklmnopqrstuvwxyz0123456789"},
+      {"SET", "s7", text},
+      {"SET", "s8", std::string(3000, 'x') + "y" + std::string(500, 'z')},
+      {"RPUSH", "l1", "a", "1", "bcd", "300", "-5", "70000", "-70000", "2147483648", "-9000000000"},
+      {"HSET", "h1", "f", "v", "n", "7"},
+      {"SADD", "i1", "1", "2", "3"},
+      {"SADD", "i2", "1", "70000", "-5"},
+      {"SADD", "i3", "1", "5000000000"},
+      {"SADD", "p1", "a", "b"},
+      {"ZADD", "z1", "1", "a", "2.5", "b", "-3", "c", "1e20", "d"},
+      {"XADD", "x", "1-1", "f", "v"},
+      {"XADD", "x", "1-2", "f", "w"},
+      {"XADD", "x", "2-0", "g", "1", "h", "2"},
+  });
+  for (const char* key : {"s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "l1", "h1", "i1", "i2", "i3", "p1", "z1", "x", "nosuch"}) same({"DUMP", key});
+}
+
+TEST_F(Differential, DumpRestoreAcross) {
+  // Values in Valkey's larger encodings, made alike on both servers.
+  std::vector<std::string> hset{"HSET", "h"}, sadd{"SADD", "s"}, zadd{"ZADD", "z"}, rpush{"RPUSH", "l"}, ints{"SADD", "n"};
+  std::vector<std::string> fields, members;
+  for (int i = 0; i < 200; ++i) {
+    fields.push_back("field" + std::to_string(i));
+    hset.push_back(fields.back());
+    hset.push_back("value" + std::to_string(i * 3));
+    members.push_back("member" + std::to_string(i));
+    sadd.push_back(members.back());
+    zadd.push_back(std::to_string(i * 0.5 - 7));
+    zadd.push_back("z" + std::to_string(i));
+  }
+  for (int i = 0; i < 3000; ++i) rpush.push_back("element-" + std::to_string(i));
+  for (int i = 0; i < 600; ++i) ints.push_back(std::to_string(i * 11));
+  script({hset, sadd, zadd, rpush, ints});
+  for (int i = 1; i <= 250; ++i) same({"XADD", "x", std::to_string(i) + "-0", "f", std::to_string(i)});
+  script({{"XDEL", "x", "5-0"}, {"XGROUP", "CREATE", "x", "g", "0"}, {"XREADGROUP", "GROUP", "g", "alice", "COUNT", "3", "STREAMS", "x", ">"}});
+  std::vector<std::string> hmget{"HMGET", "KEY"}, smismember{"SMISMEMBER", "KEY"};
+  hmget.insert(hmget.end(), fields.begin(), fields.end());
+  smismember.insert(smismember.end(), members.begin(), members.end());
+  const std::vector<std::pair<std::string, std::vector<std::vector<std::string>>>> reads = {
+      {"h", {{"HLEN", "KEY"}, hmget}},
+      {"s", {{"SCARD", "KEY"}, smismember}},
+      {"z", {{"ZRANGE", "KEY", "0", "-1", "WITHSCORES"}}},
+      {"l", {{"LRANGE", "KEY", "0", "-1"}}},
+      {"n", {{"SCARD", "KEY"}, {"SISMEMBER", "KEY", "6589"}, {"SISMEMBER", "KEY", "6590"}}},
+      {"x", {{"XRANGE", "KEY", "-", "+"}, {"XLEN", "KEY"}, {"XINFO", "GROUPS", "KEY"}, {"XPENDING", "KEY", "g"}}},
+  };
+  for (const auto& [key, commands] : reads) {
+    const std::string from_valkey = bulk_of(_valkey->call({"DUMP", key}));
+    const std::string from_mimir = bulk_of(_mimir->call({"DUMP", key}));
+    // Each server restores the other's payload under a new name.
+    EXPECT_EQ(_mimir->call({"RESTORE", key + ":other", "0", from_valkey}), "+OK\r\n") << key;
+    EXPECT_EQ(_valkey->call({"RESTORE", key + ":other", "0", from_mimir}), "+OK\r\n") << key;
+    for (auto command : commands) {
+      std::vector<std::string> original = command, restored = command;
+      for (auto& arg : original)
+        if (arg == "KEY") arg = key;
+      for (auto& arg : restored)
+        if (arg == "KEY") arg = key + ":other";
+      EXPECT_EQ(_mimir->call(restored), _valkey->call(original)) << key << " " << command[0];
+      EXPECT_EQ(_valkey->call(restored), _mimir->call(original)) << key << " " << command[0];
+    }
+  }
+}
+
+TEST_F(Differential, RestoreErrors) {
+  script({{"SET", "k", "v"}});
+  const std::string good = bulk_of(_valkey->call({"DUMP", "k"}));
+  std::string corrupt = good;
+  corrupt[2] ^= 1;
+  script({
+      {"RESTORE", "k", "0", good},
+      {"RESTORE", "k", "-1", "x", "REPLACE"},
+      {"RESTORE", "k", "x", "x", "REPLACE"},
+      {"RESTORE", "k", "0", "x", "REPLACE"},
+      {"RESTORE", "k", "0", "x", "WAT"},
+      {"RESTORE", "k", "0", "x", "IDLETIME", "-1"},
+      {"RESTORE", "k", "0", "x", "FREQ", "300"},
+      {"RESTORE", "k", "0", "x", "IDLETIME", "1", "FREQ", "1"},
+      {"RESTORE", "other", "0", corrupt},
+      {"RESTORE", "k2", "5000", good},
+      {"PTTL", "k2"},
+      {"RESTORE", "k2", "1", good, "ABSTTL", "REPLACE"},
+      {"EXISTS", "k2"},
+      {"RESTORE", "k3", "0", good, "IDLETIME", "10"},
+      {"GET", "k3"},
+      {"RESTORE", "k4", "0", good, "FREQ", "5"},
+      {"GET", "k4"},
+  });
+}
+
+TEST_F(Differential, FunctionDumpRestore) {
+  both({"FUNCTION", "FLUSH"});
+  const std::string lib = "#!lua name=lib\nredis.register_function('f', function() return 1 end)";
+  same({"FUNCTION", "LOAD", lib});
+  same({"FUNCTION", "DUMP"});
+  const std::string dumped = bulk_of(_valkey->call({"FUNCTION", "DUMP"}));
+  script({
+      {"FUNCTION", "RESTORE", dumped},
+      {"FUNCTION", "RESTORE", dumped, "APPEND"},
+      {"FUNCTION", "RESTORE", dumped, "REPLACE"},
+      {"FUNCTION", "RESTORE", dumped, "WAT"},
+      {"FUNCTION", "RESTORE", "x"},
+      {"FUNCTION", "RESTORE"},
+      {"FUNCTION", "DELETE", "lib"},
+      {"FUNCTION", "LOAD", "#!lua name=other\nredis.register_function('f', function() return 2 end)"},
+      {"FUNCTION", "RESTORE", dumped},
+      {"FUNCTION", "RESTORE", dumped, "REPLACE"},
+      {"FCALL", "f", "0"},
+      {"FUNCTION", "RESTORE", dumped, "FLUSH"},
+      {"FCALL", "f", "0"},
+      {"FUNCTION", "FLUSH"},
+      {"FUNCTION", "DUMP"},
+  });
+  both({"FUNCTION", "FLUSH"});
+}
+
 TEST_F(Differential, Functions) {
   both({"FUNCTION", "FLUSH"});
   const std::string lib =
