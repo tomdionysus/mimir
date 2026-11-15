@@ -239,6 +239,13 @@ const std::array specs{
     Spec{"discard", 1, "noscript loading stale fast allow_busy", 0, 0, 0, Class::connection, transactions::discard},
     Spec{"watch", -2, "noscript loading stale fast allow_busy", 1, -1, 1, Class::connection, transactions::watch},
     Spec{"unwatch", 1, "noscript loading stale fast allow_busy", 0, 0, 0, Class::connection, transactions::unwatch},
+    // Scripting (ruling 20): a script runs whole under one hold of the lock; in
+    // the cluster it reads and writes its keys as one command, by agreement.
+    Spec{"eval", -3, "noscript stale skip_monitor may_replicate no_mandatory_keys", 0, 0, 0, Class::agreement, scripts::eval, nullptr, numkeys_second},
+    Spec{"evalsha", -3, "noscript stale skip_monitor may_replicate no_mandatory_keys", 0, 0, 0, Class::agreement, scripts::evalsha, nullptr, numkeys_second},
+    Spec{"eval_ro", -3, "readonly noscript stale skip_monitor no_mandatory_keys", 0, 0, 0, Class::read, scripts::eval_ro, nullptr, numkeys_second},
+    Spec{"evalsha_ro", -3, "readonly noscript stale skip_monitor no_mandatory_keys", 0, 0, 0, Class::read, scripts::evalsha_ro, nullptr, numkeys_second},
+    Spec{"script", -2, "noscript", 0, 0, 0, Class::admin, scripts::script},
     // Publish and subscribe: at most once, on this node and (in the cluster)
     // the nodes with announced interest.
     Spec{"subscribe", -2, "pubsub noscript loading stale", 0, 0, 0, Class::connection, pubsub::subscribe},

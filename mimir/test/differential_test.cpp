@@ -956,5 +956,48 @@ TEST_F(Differential, Connection) {
   both({"HELLO", "2"});
 }
 
+TEST_F(Differential, Scripting) {
+  both({"SCRIPT", "FLUSH"});
+  script({
+      {"EVAL", "return 1", "0"},
+      {"EVAL", "return 3.99", "0"},
+      {"EVAL", "return {1, 'a', {2}, nil, 5}", "0"},
+      {"EVAL", "return {ok='FINE'}", "0"},
+      {"EVAL", "return {err='MYERR bad'}", "0"},
+      {"EVAL", "return redis.error_reply('oops')", "0"},
+      {"EVAL", "return redis.error_reply('MY oops')", "0"},
+      {"EVAL", "return true", "0"},
+      {"EVAL", "return false", "0"},
+      {"EVAL", "return {KEYS[1], ARGV[1]}", "1", "a", "b"},
+      {"EVAL", "return 1", "-1"},
+      {"EVAL", "return 1", "3", "a"},
+      {"EVAL", "return 1", "x"},
+      {"EVAL", "return redis.call('SET', KEYS[1], ARGV[1])", "1", "k", "v"},
+      {"EVAL", "return redis.call('GET', 'k')", "0"},
+      {"EVAL", "return redis.call('GET', 'none')", "0"},
+      {"EVAL", "return redis.call('INCRBY', 'n', 5) + 1", "0"},
+      {"EVAL", "redis.call('LPUSH', 'k', 1)", "0"},
+      {"EVAL", "return redis.pcall('LPUSH', 'k', 1)", "0"},
+      {"EVAL", "return redis.call('NOSUCH')", "0"},
+      {"EVAL", "return redis.call('MULTI')", "0"},
+      {"EVAL", "return redis.call('GET')", "0"},
+      {"EVAL", "error('plain')", "0"},
+      {"EVAL", "error({err='CUSTOM x'})", "0"},
+      {"EVAL", "x = 1", "0"},
+      {"EVAL", "return +", "0"},
+      {"EVAL", "return redis.sha1hex('')", "0"},
+      {"EVALSHA", "e0e1f9fabfc9d4800c877a703b823ac0578ff8db", "0"},
+      {"SCRIPT", "LOAD", "return 1"},
+      {"EVALSHA", "e0e1f9fabfc9d4800c877a703b823ac0578ff8db", "0"},
+      {"SCRIPT", "EXISTS", "e0e1f9fabfc9d4800c877a703b823ac0578ff8db", "ffff"},
+      {"SCRIPT", "LOAD", "return +"},
+      {"SCRIPT", "KILL"},
+      {"EVAL_RO", "return redis.call('GET', 'k')", "1", "k"},
+      {"EVAL_RO", "return redis.call('SET', 'k', 'w')", "0"},
+      {"SCRIPT", "FLUSH"},
+      {"SCRIPT", "EXISTS", "e0e1f9fabfc9d4800c877a703b823ac0578ff8db"},
+  });
+}
+
 }  // namespace
 }  // namespace mimir

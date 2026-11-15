@@ -19,6 +19,7 @@ add_library(mimir SHARED
   command/lists.cpp
   command/pubsub.cpp
   command/pubsub_commands.cpp
+  command/scripting.cpp
   command/server_commands.cpp
   command/sets.cpp
   command/stream_groups.cpp
@@ -48,6 +49,6 @@ target_include_directories(mimir
 )
 target_link_libraries(mimir
   PUBLIC dannan::dannan Boost::headers OpenSSL::SSL OpenSSL::Crypto Threads::Threads
-  PRIVATE mimir_warnings
+  PRIVATE mimir_warnings PkgConfig::LUA51
 )
 set_target_properties(mimir PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})

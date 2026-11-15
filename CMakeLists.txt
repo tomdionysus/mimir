@@ -26,6 +26,10 @@ option(MIMIR_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 find_package(Boost 1.83 CONFIG REQUIRED COMPONENTS headers)
 find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto SSL)
 find_package(Threads REQUIRED)
+# Scripting's interpreter: Debian's Lua 5.1 (ruling 20), the version Valkey's
+# scripts are written for.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LUA51 REQUIRED IMPORTED_TARGET lua5.1)
 
 # Dannan, the network layer, at its tag, cloned from the sibling checkout into
 # the build tree, so building Mimir never touches ../dannan.
