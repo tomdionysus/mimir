@@ -53,9 +53,19 @@ struct ServerBed {
   }
   ~ServerBed() {
     listener.stop();
+    // Every connection finishes before the executor stops, or a connection
+    // and its stream, holding each other, are never freed.
+    server->close_all();
+    wait_until([&] { return server->counters().open == 0; });
     work.reset();
     io.stop();
     thread.join();
+  }
+  // Polls the server thread's progress: a socket's close is not steppable time.
+  template <typename Done>
+  static bool wait_until(Done done) {
+    for (int i = 0; i < 5000 && !done(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return done();
   }
 };
 
@@ -172,6 +182,24 @@ TEST(Server, ASubscriberHearsItsConfirmationThenEveryMessageInOrder) {
   EXPECT_EQ(publisher.read(8), ":1\r\n:1\r\n");
   const std::string messages = "*3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$3\r\none\r\n*3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$3\r\ntwo\r\n";
   EXPECT_EQ(subscriber.read(messages.size()), messages);
+}
+
+// A connection lives while its stream is unfinished; shutdown closes them all,
+// so none outlives the executor (found by LeakSanitizer in hosted CI: three
+// connections left open at a test's end were never freed).
+TEST(Server, CloseAllFinishesEveryConnection) {
+  ServerBed bed;
+  Client a(bed.listener.port());
+  Client b(bed.listener.port());
+  a.send("PING\r\n");
+  b.send("PING\r\n");
+  EXPECT_EQ(a.read(7), "+PONG\r\n");
+  EXPECT_EQ(b.read(7), "+PONG\r\n");
+  EXPECT_EQ(bed.server->counters().open, 2u);
+  bed.server->close_all();
+  EXPECT_TRUE(ServerBed::wait_until([&] { return bed.server->counters().open == 0; }));
+  EXPECT_EQ(a.read_to_end(), "");
+  EXPECT_EQ(b.read_to_end(), "");
 }
 
 TEST(Server, ConnectionsShareOneKeyspaceAndHaveTheirOwnIds) {

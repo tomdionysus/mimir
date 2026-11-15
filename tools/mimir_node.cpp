@@ -27,6 +27,7 @@
 #include <boost/asio/signal_set.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <chrono>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -135,11 +136,27 @@ int main(int argc, char** argv) {
     };
     expire_turn();
 
+    // At a stop, every open connection is closed and given two seconds to
+    // finish before the executor stops: one left open holds itself forever.
+    asio::steady_timer drain(io);
+    int drain_turns = 0;
+    std::function<void()> drained = [&] {
+      if (server->counters().open == 0 || ++drain_turns > 200) {
+        io.stop();
+        return;
+      }
+      drain.expires_after(std::chrono::milliseconds(10));
+      drain.async_wait([&](boost::system::error_code) { drained(); });
+    };
+    bool stopping = false;
     const auto stop = [&] {
+      if (stopping) return;
+      stopping = true;
       plain.stop();
       if (tls) tls->stop();
       expiry.cancel();
-      io.stop();
+      server->close_all();
+      drained();
     };
     asio::signal_set signals(io, SIGINT, SIGTERM);
     signals.async_wait([&](boost::system::error_code, int) { stop(); });

@@ -48,6 +48,10 @@ class Connection : public std::enable_shared_from_this<Connection> {
 
   void start() {
     ++_server->_open;
+    {
+      dannan::contract::Lock lock(_server->_streams_mutex);
+      _server->_streams[_session.id] = _stream;
+    }
     _stream->when_finished([self = shared_from_this()] { self->finished(); });
     read();
   }
@@ -64,6 +68,10 @@ class Connection : public std::enable_shared_from_this<Connection> {
   }
 
   void finished() {
+    {
+      dannan::contract::Lock lock(_server->_streams_mutex);
+      _server->_streams.erase(_session.id);
+    }
     --_server->_open;
     _closing = true;
     _server->_database.pubsub().drop(_session.id);
@@ -178,6 +186,18 @@ Server::Server(command::Database& database, dannan::status::ScopedLogger logger,
 void Server::serve(std::shared_ptr<dannan::listen::Stream> stream) {
   ++_accepted;
   std::make_shared<Connection>(shared_from_this(), std::move(stream))->start();
+}
+
+void Server::close_all() {
+  std::vector<std::shared_ptr<dannan::listen::Stream>> open;
+  {
+    dannan::contract::Lock lock(_streams_mutex);
+    for (const auto& [id, stream] : _streams) {
+      if (auto alive = stream.lock()) open.push_back(std::move(alive));
+    }
+  }
+  // Closed outside the lock: a stream may finish, and take it, at once.
+  for (const auto& stream : open) stream->close();
 }
 
 ServerCounters Server::counters() const noexcept { return ServerCounters{_accepted.load(), _open.load(), _commands.load(), _protocol_errors.load()}; }
