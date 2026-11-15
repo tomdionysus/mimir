@@ -27,6 +27,7 @@
 #include "mimir/command/handlers.h"
 #include "mimir/command/lua_struct.h"
 #include "mimir/keyspace/glob.h"
+#include "mimir/keyspace/rdb.h"
 
 extern "C" {
 #include <lauxlib.h>
@@ -1215,6 +1216,44 @@ void function(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
     call.reply.integer(static_cast<int64_t>(scripting.libraries().size()));
     call.reply.bulk("functions_count");
     call.reply.integer(static_cast<int64_t>(scripting.function_index().size()));
+  } else if (sub == "dump") {
+    if (call.args.size() != 2) throw CommandError("ERR wrong number of arguments for 'function|dump' command");
+    std::vector<std::string> codes;
+    for (const auto& [name, library] : scripting.libraries()) codes.push_back(library.code);
+    call.reply.bulk(keyspace::rdb::dump_functions(codes));
+  } else if (sub == "restore") {
+    if (call.args.size() < 3 || call.args.size() > 4) throw CommandError("ERR wrong number of arguments for 'function|restore' command");
+    std::string policy = "append";
+    if (call.args.size() == 4) {
+      policy = lower(call.args[3]);
+      if (policy != "flush" && policy != "append" && policy != "replace") {
+        throw CommandError("ERR Wrong restore policy given, value should be either FLUSH, APPEND or REPLACE.");
+      }
+    }
+    auto read = keyspace::rdb::restore_functions(call.args[2]);
+    if (auto* refusal = std::get_if<keyspace::rdb::Refusal>(&read)) {
+      throw CommandError(*refusal == keyspace::rdb::Refusal::checksum ? "ERR DUMP payload version or checksum are wrong" : "ERR Bad data format");
+    }
+    const auto& codes = std::get<std::vector<std::string>>(read);
+    // Every library loads into a fresh interpreter first, so a payload that
+    // does not load, or would conflict, changes nothing.
+    Scripting trial(scripting.names());
+    for (const auto& code : codes) load_library(trial, {"FUNCTION", "LOAD", code});
+    if (policy != "flush") {
+      for (const auto& [name, library] : trial.libraries()) {
+        if (policy == "append" && scripting.libraries().count(name)) throw CommandError("ERR Library " + name + " already exists");
+      }
+      for (const auto& [function, owner] : trial.function_index()) {
+        auto held = scripting.function_index().find(function);
+        // Under REPLACE a function of a library being replaced does not conflict.
+        if (held != scripting.function_index().end() && !(policy == "replace" && trial.libraries().count(held->second))) {
+          throw CommandError("ERR Function " + function + " already exists");
+        }
+      }
+    }
+    if (policy == "flush") scripting.flush_functions();
+    for (const auto& code : codes) load_library(scripting, {"FUNCTION", "LOAD", "REPLACE", code});
+    call.reply.simple("OK");
   } else if (sub == "kill") {
     throw CommandError("NOTBUSY No scripts in execution right now.");
   } else {

@@ -33,6 +33,7 @@ add_library(mimir SHARED
   keyspace/hash.cpp
   keyspace/hll.cpp
   keyspace/keyspace.cpp
+  keyspace/rdb.cpp
   keyspace/set.cpp
   keyspace/slot.cpp
   keyspace/stream.cpp

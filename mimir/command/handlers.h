@@ -244,6 +244,8 @@ void randomkey(Call&);
 void touch(Call&);
 void copy(Call&);
 void move(Call&);
+void dump(Call&);
+void restore(Call&);
 void swapdb(Call&);
 void flushdb(Call&);
 }  // namespace generic

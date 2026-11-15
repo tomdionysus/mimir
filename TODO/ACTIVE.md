@@ -15,11 +15,10 @@ classes of command, agreement in Dannan, durability, and the order.
   Valkey's libraries (ruling 25) and its read-only sandbox (proxies on
   Debian's Lua; `next`, `pairs`, `ipairs`, `rawget`, `rawset` and
   `setmetatable` see through or refuse them; `#` of a library table is 0).
-- FUNCTION and FCALL are in; FUNCTION DUMP and RESTORE come with DUMP and
-  RESTORE.
+- FUNCTION and FCALL are in.
 - Keyspace notifications are in.
-- Next, in order: DUMP and RESTORE (with FUNCTION DUMP and RESTORE), SORT,
-  the GEO commands, LCS; then
+- DUMP and RESTORE are in, FUNCTION DUMP and RESTORE with them.
+- Next, in order: SORT, the GEO commands, LCS; then
   authentication with the built-in user list (ACL).
 - Pinned to Dannan 0.8.3. Dannan's 0.9 (agreement) is on its develop
   (`dc9ede1`); its simulation harness design
@@ -60,6 +59,13 @@ group standard relayed by Kvasir).
 Asked of him when it is reached:
 - `decided` for a merging write (the design's "Durability", Proposed): a
   majority holds it in memory before the answer.
+- The shard map under Dannan's reconfiguration: open. Dannan proposed an
+  agreed map on a root set; Mimir answered with one register per shard on a
+  founding set moved by transfer() afterwards. The maintainer, relayed by Kvasir
+  (2026-11-15), challenged the premise of any root: "Dannan, and its
+  predecessor code in Macha, were explicitly written to avoid this. What went
+  wrong?" Dannan and Kvasir are answering him; nothing of a root is settled,
+  and Mimir builds nothing on it.
 
 ## Proposed, not yet put to the maintainer
 

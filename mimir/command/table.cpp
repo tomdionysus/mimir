@@ -213,6 +213,10 @@ const std::array specs{
     Spec{"flushall", -1, "write", 0, 0, 0, Class::admin, generic::flushall},
     Spec{"flushdb", -1, "write", 0, 0, 0, Class::admin, generic::flushdb},
     Spec{"move", 3, "write fast", 1, 1, 1, Class::agreement, generic::move},
+    // DUMP and RESTORE in Valkey's RDB encoding. RESTORE without REPLACE
+    // depends on the key's absence, so it commits by agreement.
+    Spec{"dump", 2, "readonly", 1, 1, 1, Class::read, generic::dump},
+    Spec{"restore", -4, "write denyoom", 1, 1, 1, Class::agreement, generic::restore},
     Spec{"swapdb", 3, "write fast", 0, 0, 0, Class::admin, generic::swapdb},
     // Streams: an append-only log. Appends are a sequence, so they commit by
     // agreement; deleting an entry merges.
