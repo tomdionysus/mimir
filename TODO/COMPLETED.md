@@ -2,6 +2,16 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-16: Dannan 0.8.4
+
+- Pin moved from 0.8.3 to 0.8.4 (Dannan: 0.8.0's ABI kept; StartTLS without
+  an answer, a stoppable change wait, a deferred-answer fix; nothing Mimir
+  needs). The tag reached the Pis' Dannan checkouts by bundle (no GitHub
+  credentials there), working trees untouched.
+- Gate on corvus-uranus (`-j1`, beside Lir's build): release 310 passed,
+  built on Dannan 0.8.4 (`_deps/dannan-src` describes 0.8.4); differential
+  33 of 33.
+
 ## 2026-11-16: hosted CI back, and its two findings
 
 - The repository public, GitHub runs the jobs again (they had stopped on a

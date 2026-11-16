@@ -44,7 +44,7 @@ find_library(MIMIR_LUA51_CMSGPACK NAMES lua5.1-cmsgpack liblua5.1-cmsgpack.so.0 
 set(MIMIR_DANNAN_REPOSITORY "${CMAKE_CURRENT_SOURCE_DIR}/../dannan" CACHE STRING "Dannan's repository: a path or a URL")
 # Not a cache variable: a moved pin must take effect in a build tree that
 # already exists.
-set(MIMIR_DANNAN_TAG "0.8.3")
+set(MIMIR_DANNAN_TAG "0.8.4")
 include(FetchContent)
 if(NOT TARGET dannan::dannan)
   FetchContent_Declare(dannan GIT_REPOSITORY "${MIMIR_DANNAN_REPOSITORY}" GIT_TAG "${MIMIR_DANNAN_TAG}")
