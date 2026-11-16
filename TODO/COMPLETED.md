@@ -2,6 +2,25 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-16: client-side caching (CLIENT TRACKING)
+
+- As Valkey 8 documents it and 8.1.1 answers it: a read-only command's keys
+  (by Valkey's key specs) are remembered for a tracking connection, and a
+  change to one (a write naming it, expiry, a flush) tells it once, then
+  forgets; its own changes after its reply. BCAST by prefix (one message a
+  prefix, prefixes in order), OPTIN and OPTOUT with CLIENT CACHING (for the
+  next command, through a transaction), NOLOOP, REDIRECT (RESP2 through a
+  subscribed connection as `__redis__:invalidate` messages), a broken
+  redirection told and flagged; TRACKINGINFO, GETREDIR, and every refusal in
+  Valkey's words. Transactions' and scripts' reads and writes count for their
+  caller; RESET ends tracking.
+- Mimir invalidates on any write command naming a key, where Valkey does on a
+  real change: a write that changes nothing (SET NX refused) tells readers
+  too. Harmless to a cache, and stated.
+- The raw-byte probe of Valkey (36 exchanges) run against mimir-node: equal
+  but for the server's name and client ids.
+- Gate on node-d: release 305 passed (7 new); differential 33 of 33.
+
 ## 2026-11-16: CLIENT PAUSE and UNPAUSE
 
 - As Valkey 8.1.1 behaves (probed by timing each command under a pause): WRITE

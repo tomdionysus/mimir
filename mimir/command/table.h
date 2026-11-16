@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -74,6 +75,23 @@ struct Session {
   bool reply_skip_next = false;
   // MONITOR: every command the node runs is pushed to it.
   bool monitoring = false;
+  // Client-side caching (CLIENT TRACKING): its mode, where its invalidations
+  // go (zero: to itself), whether that connection has gone, and BCAST's
+  // prefixes. `caching` is CLIENT CACHING's, for the next command only, and
+  // only this connection's strand touches it; the rest is read by others
+  // under the database's lock.
+  struct Tracking {
+    bool on = false;
+    bool bcast = false;
+    bool optin = false;
+    bool optout = false;
+    bool noloop = false;
+    bool caching = false;
+    bool broken = false;
+    int64_t redirect = 0;
+    std::set<std::string> prefixes;
+  };
+  Tracking tracking;
   // A script's or a function's own session: what it runs must be
   // deterministic (SORT orders a set it would otherwise leave unordered).
   bool scripted = false;

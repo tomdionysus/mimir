@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -154,6 +155,12 @@ class Database {
   // releases the held commands to run.
   void pause_locked(uint64_t until_ms, bool all) DANNAN_REQUIRES(_mutex);
   void unpause_locked() DANNAN_REQUIRES(_mutex);
+  // CLIENT TRACKING: a connection's tracking turned on (its options already
+  // checked and set on its session) or off.
+  void track_on_locked(Session& session) DANNAN_REQUIRES(_mutex);
+  void track_off_locked(Session& session) DANNAN_REQUIRES(_mutex);
+  // Whether connection `id` is known here (a REDIRECT's target).
+  bool has_session_locked(int64_t id) DANNAN_REQUIRES(_mutex) { return _sessions.count(id) > 0; }
 
   // Keyspace notifications (Valkey's "Keyspace notifications"): an event of
   // class `cls` ('g', '$', 'l', 's', 'h', 'z', 'x', 'e', 't', 'd', 'n' or
@@ -200,7 +207,8 @@ class Database {
   void serve_ready(Woken& woken) DANNAN_REQUIRES(_mutex);
   void forget_waiter(uint64_t id) DANNAN_REQUIRES(_mutex);
   // Marks the watchers of the keys a write named; every watcher for a flush.
-  void touch(const Spec& spec, const std::vector<std::string>& args, size_t db) DANNAN_REQUIRES(_mutex);
+  // `modifier` is the connection whose command it was, for NOLOOP.
+  void touch(const Spec& spec, const std::vector<std::string>& args, size_t db, const Session* modifier) DANNAN_REQUIRES(_mutex);
   // A key named within its database, for waits and watches: the database's
   // number, a NUL, then the key.
   static std::string scoped(size_t db, std::string_view key);
@@ -218,6 +226,21 @@ class Database {
   void feed_monitors(const Session& session, const Spec& spec, const std::vector<std::string>& args, size_t db) DANNAN_REQUIRES(_mutex);
   // execute() without CLIENT REPLY's suppression.
   Executed execute_one(Session& session, const std::vector<std::string>& args, std::string& out, Wake wake);
+
+  // Client-side caching, as Valkey's: the keys `tracker` read with a
+  // read-only command are remembered; a key changed (or expired, or flushed)
+  // tells each connection that read it, once, and the BCAST connections whose
+  // prefixes it has. A message to the connection running the command goes
+  // after its reply, into `out`.
+  void track_reads_locked(Session& tracker, const Spec& spec, const std::vector<std::string>& args) DANNAN_REQUIRES(_mutex);
+  void invalidate_locked(std::string_view key, const Session* modifier) DANNAN_REQUIRES(_mutex);
+  void invalidate_all_locked() DANNAN_REQUIRES(_mutex);
+  // Sends what is pending: the running connection's own invalidations into
+  // `out` (none: there is no running connection), and BCAST's.
+  void flush_tracking_locked(std::string* out) DANNAN_REQUIRES(_mutex);
+  // One invalidation for `tracker`'s keys (none: a flush), where its
+  // redirection says.
+  void deliver_locked(Session& tracker, const std::vector<std::string>* keys, std::string* out) DANNAN_REQUIRES(_mutex);
 
   struct Event {
     size_t db;
@@ -255,6 +278,16 @@ class Database {
   // every command is held or only those that write.
   uint64_t _pause_until_ms DANNAN_GUARDED_BY(_mutex) = 0;
   bool _pause_all DANNAN_GUARDED_BY(_mutex) = false;
+  // Client-side caching: per key (any database, as Valkey's), the connections
+  // that read it; per BCAST prefix, its connections, and the keys changed
+  // under it during this command with the connection that changed each (zero:
+  // none, or more than one); the running connection's own invalidations (a
+  // flush is none); and that connection.
+  std::unordered_map<std::string, std::set<int64_t>> _tracked DANNAN_GUARDED_BY(_mutex);
+  std::map<std::string, std::set<int64_t>> _prefixes DANNAN_GUARDED_BY(_mutex);
+  std::map<std::string, std::map<std::string, int64_t>> _broadcast DANNAN_GUARDED_BY(_mutex);
+  std::vector<std::optional<std::string>> _own_invalidations DANNAN_GUARDED_BY(_mutex);
+  Session* _current DANNAN_GUARDED_BY(_mutex) = nullptr;
   // The classes notify-keyspace-events takes, as bits; the events waiting to
   // be published.
   uint32_t _notify_flags DANNAN_GUARDED_BY(_mutex) = 0;
