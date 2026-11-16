@@ -63,7 +63,10 @@ durability, and the order.
   The AcceptorStore interface changed (load(slot, names, every, done),
   keep(slot, held, done), optional records()): read `agree/agreement.h` there
   before building Mimir's store.
-- Pinned to Dannan 0.8.3. Dannan's 0.9 is on its develop.
+- Pinned to Dannan 0.8.4 (ABI of 0.8.0 kept). Dannan's 0.9 is on its
+  develop. A build server's Dannan checkout without GitHub credentials takes a new tag
+  by bundle: `git bundle create <file> refs/tags/<tag> ^<previous>` in
+  ../dannan, then `git fetch <file> "refs/tags/<tag>:refs/tags/<tag>"`.
 
 ## The differential gate
 
