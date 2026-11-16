@@ -111,6 +111,16 @@ durability, and the order.
      computed from the base doesn't survive a merge (locks).
   3. DeltaChange is never run under Dannan's locks. need_whole acceptors
      are caught up by an identity change() (asked Dannan to confirm).
+  Dannan took all three (2026-11-16):
+  - `Deltas{deltas, result, decline, summaries}`; a decline ends with
+    why "declined";
+  - a name with no summary takes no fast path;
+  - DeltaChange runs on the agreement's strand with no lock held;
+  - identity change() confirmed for catch-up.
+  Mimir's stage 3 plan:
+  - agreement writes run on a node in the key's set, through change_deltas
+    when the base is local, otherwise through change();
+  - the fast path is used only with the summary.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
