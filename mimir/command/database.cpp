@@ -486,8 +486,9 @@ void Database::flush_tracking_locked(std::string* out) {
 }
 
 void Database::deliver_locked(Session& tracker, const std::vector<std::string>* keys, std::string* out) {
+  Session* const current = _current;
   const auto emit = [&](Session& target, std::string bytes) {
-    if (out && &target == _current)
+    if (out && &target == current)
       out->append(bytes);
     else if (target.push)
       target.push(std::move(bytes));
