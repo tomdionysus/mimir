@@ -46,6 +46,7 @@ add_library(mimir SHARED
   keyspace/zset.cpp
   resp/parser.cpp
   resp/reply.cpp
+  resp/reply_reader.cpp
   server/server.cpp
   version.cpp
 )

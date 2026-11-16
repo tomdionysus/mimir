@@ -233,7 +233,24 @@ const std::array specs{
     // DUMP and RESTORE in Valkey's RDB encoding. RESTORE without REPLACE
     // depends on the key's absence, so it commits by agreement.
     Spec{"dump", 2, "readonly", 1, 1, 1, Class::read, generic::dump},
-    Spec{"restore-asking", -4, "write denyoom asking", 1, 1, 1, Class::agreement, generic::restore},
+    // Its keys: the one at 3, or those after KEYS (Valkey's migrateGetKeys).
+    Spec{"migrate", -6, "write", 3, 3, 1, Class::agreement, generic::migrate, nullptr,
+         [](const std::vector<std::string>& args) {
+           std::vector<std::string_view> keys;
+           for (size_t i = 6; i < args.size(); ++i) {
+             if (iequals(args[i], "AUTH")) {
+               i += 1;
+             } else if (iequals(args[i], "AUTH2")) {
+               i += 2;
+             } else if (iequals(args[i], "KEYS")) {
+               for (size_t j = i + 1; j < args.size(); ++j) keys.push_back(args[j]);
+               return keys;
+             }
+           }
+           if (args.size() > 3) keys.push_back(args[3]);
+           return keys;
+         }},
+    Spec{"restore-asking",-4, "write denyoom asking", 1, 1, 1, Class::agreement, generic::restore},
     Spec{"restore", -4, "write denyoom", 1, 1, 1, Class::agreement, generic::restore},
     Spec{"swapdb", 3, "write fast", 0, 0, 0, Class::admin, generic::swapdb},
     // Streams: an append-only log. Appends are a sequence, so they commit by

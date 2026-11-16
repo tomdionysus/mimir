@@ -14,7 +14,7 @@ endif()
 # build servers'); there, "fuzzer,undefined".
 set(MIMIR_FUZZ_SANITIZERS "fuzzer,address,undefined" CACHE STRING "The -fsanitize= list the fuzz targets build with")
 
-foreach(target resp_request rdb_restore)
+foreach(target resp_request resp_reply rdb_restore)
   add_executable(${target}_fuzz ${target}_fuzz.cpp)
   target_compile_options(${target}_fuzz PRIVATE -fsanitize=${MIMIR_FUZZ_SANITIZERS})
   target_link_options(${target}_fuzz PRIVATE -fsanitize=${MIMIR_FUZZ_SANITIZERS})

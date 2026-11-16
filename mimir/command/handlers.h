@@ -268,6 +268,7 @@ void copy(Call&);
 void move(Call&);
 void dump(Call&);
 void restore(Call&);
+void migrate(Call&);
 void swapdb(Call&);
 void flushdb(Call&);
 }  // namespace generic

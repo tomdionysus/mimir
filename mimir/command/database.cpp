@@ -13,6 +13,7 @@
 
 #include "mimir/command/args.h"
 #include "mimir/command/handlers.h"
+#include "mimir/keyspace/rdb.h"
 
 namespace mimir::command {
 
@@ -629,6 +630,20 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
     }
     for (auto& released : _released) woken.push_back(std::move(released));
     _released.clear();
+    if (call.migrate) {
+      // MIGRATE's talk with its target is its connection's, off the lock; a
+      // caller that cannot wait for it is refused.
+      if (wake) {
+        executed.migrate = std::move(call.migrate);
+        publish_events();
+        flush_tracking_locked(&out);
+      } else {
+        reply.error("ERR MIGRATE needs a connection that can wait for its target");
+        out.append(reply.bytes());
+      }
+      for (auto& [wake_one, bytes] : woken) wake_one(std::move(bytes));
+      return executed;
+    }
     if (call.blocked) {
       if (wake) {
         const uint64_t id = _next_wait++;
@@ -676,6 +691,12 @@ void Database::run_locked(Session& session, const std::vector<std::string>& args
   // Each command's events go out as it ends, inside a transaction or a script
   // as outside, as Valkey sends them.
   publish_events();
+  // Inside a transaction or a script MIGRATE cannot wait for its target: on
+  // Mimir it would hold every other client meanwhile.
+  if (call.migrate) {
+    out.error("ERR MIGRATE cannot run inside a transaction or a script on Mimir");
+    return;
+  }
   // Inside a transaction a blocking command does not wait.
   if (call.blocked) {
     out.raw(timeout_reply(session.protocol, call.block_null_bulk));
@@ -845,6 +866,61 @@ void Database::serve_ready(Woken& woken) {
       }
     }
   }
+}
+
+std::string Database::finish_migrate(Session& session, const MigrateJob& job, const MigrateOutcome& outcome) {
+  resp::Reply reply(session.protocol);
+  if (outcome.unreachable) {
+    reply.error("IOERR error or timeout writing to target instance");
+    return reply.take();
+  }
+  dannan::contract::Lock lock(_mutex);
+  _current = &session;
+  _own_invalidations.clear();
+  // AUTH's and SELECT's replies first; an error there is the target's
+  // answer for every key, and none is removed.
+  const size_t preamble = (job.password ? 1 : 0) + 1;
+  std::optional<std::string> refused;
+  for (size_t i = 0; i < preamble && i < outcome.replies.size(); ++i)
+    if (!outcome.replies[i].empty() && outcome.replies[i][0] == '-') refused = outcome.replies[i].substr(1);
+  std::vector<std::string> changed;
+  if (job.source_db < _dbs.size()) {
+    keyspace::Keyspace& keys = *_dbs[job.source_db];
+    const Spec* del = find_spec("del");
+    for (size_t i = 0; i < job.items.size() && preamble + i < outcome.replies.size(); ++i) {
+      const std::string& answer = outcome.replies[preamble + i];
+      if (!answer.empty() && answer[0] == '-') {
+        if (!refused) refused = answer.substr(1);
+        continue;
+      }
+      if (refused || job.copy) continue;
+      const auto& item = job.items[i];
+      keyspace::Entry* entry = keys.find(item.key);
+      if (!entry) continue;
+      // Changed while it was moving: the target has what it was, and it
+      // stays here (Valkey, which stops the world to move it, cannot see this).
+      if (keyspace::rdb::dump(*entry) != item.payload) {
+        changed.push_back(item.key);
+        continue;
+      }
+      keys.erase(item.key);
+      notify_locked(job.source_db, 'g', "del", item.key);
+      touch(*del, {"DEL", item.key}, job.source_db, &session);
+    }
+  }
+  if (outcome.read_failed && !refused) {
+    reply.error("IOERR error or timeout reading to target instance");
+  } else if (refused) {
+    reply.error("ERR Target instance replied with error: " + *refused);
+  } else if (!changed.empty()) {
+    reply.error("ERR MIGRATE: key '" + changed.front() + "' changed while it was moving; the target has its earlier value and it is kept here");
+  } else {
+    reply.simple("OK");
+  }
+  std::string out = reply.take();
+  publish_events();
+  flush_tracking_locked(&out);
+  return out;
 }
 
 std::optional<std::string> Database::cancel_wait(uint64_t id) {

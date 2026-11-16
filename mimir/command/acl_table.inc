@@ -216,6 +216,7 @@
     {"memory|stats", "@slow", {}},
     {"memory|usage", "@read @slow", {{k_none, "RO", bs_index(2), fk_range(0, 1, 0)}}},
     {"mget", "@read @string @fast", {{k_R, "RO access", bs_index(1), fk_range(-1, 1, 0)}}},
+    {"migrate", "@keyspace @write @slow @dangerous", {{k_RW, "RW access delete", bs_index(3), fk_range(0, 1, 0)}, {k_RW, "RW access delete incomplete", bs_keyword("KEYS", -2), fk_range(-1, 1, 0)}}},
     {"module", "@slow", {}},
     {"module|help", "@slow", {}},
     {"module|list", "@admin @slow @dangerous", {}},

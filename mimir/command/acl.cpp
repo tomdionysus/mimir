@@ -471,6 +471,22 @@ std::vector<KeyRef> keys_of_command(size_t id, const std::vector<std::string>& a
     return {KeyRef{1, k_RW, "RW access update"}};
   }
   if (entry.name == "sort_ro") return {KeyRef{1, k_R, "RO access"}};
+  if (entry.name == "migrate") {
+    // Valkey's migrateGetKeys: the key at 3, or those after KEYS, passing
+    // over AUTH's and AUTH2's arguments.
+    for (size_t i = 6; i < args.size(); ++i) {
+      if (iequals(args[i], "AUTH")) {
+        i += 1;
+      } else if (iequals(args[i], "AUTH2")) {
+        i += 2;
+      } else if (iequals(args[i], "KEYS")) {
+        std::vector<KeyRef> keys;
+        for (size_t j = i + 1; j < args.size(); ++j) keys.push_back(KeyRef{j, k_RW, "RW access delete"});
+        return keys;
+      }
+    }
+    return {KeyRef{3, k_RW, "RW access delete"}};
+  }
   if (entry.name == "sort") {
     std::vector<KeyRef> keys{KeyRef{1, k_R, "RO access"}};
     std::optional<size_t> store;
@@ -714,7 +730,7 @@ bool Acl::has_keys(const std::vector<std::string>& args) {
   auto id = command_id(args);
   if (!id) return false;
   const Entry& entry = table().entries[*id];
-  return !entry.specs.empty() || entry.name == "set" || entry.name == "bitfield" || entry.name == "sort" || entry.name == "sort_ro";
+  return !entry.specs.empty() || entry.name == "set" || entry.name == "bitfield" || entry.name == "sort" || entry.name == "sort_ro" || entry.name == "migrate";
 }
 
 std::vector<std::pair<size_t, std::string_view>> Acl::keys_with_flags(const std::vector<std::string>& args) {

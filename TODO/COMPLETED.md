@@ -2,6 +2,29 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-16: MIGRATE (ruling 31)
+
+- As Valkey 8.1.1 answers it (probed between two Valkeys): one key or KEYS,
+  COPY, REPLACE, AUTH and AUTH2, NOKEY, the target's refusal relayed ("ERR
+  Target instance replied with error: ..."), IOERR for a target that cannot
+  be reached or does not answer in time, and Valkey's argument errors.
+- Off the database's lock, unlike Valkey's, which stops every client while it
+  talks to the target: the keys are read (DUMP and remaining life) under the
+  lock, the connection parks with its pipeline behind it while it talks to
+  the target through Dannan's StreamConnector (AUTH, SELECT, RESTORE per
+  key, one write, replies read with a bounded reader), and the database then
+  removes what the target took. A key changed meanwhile is kept and the reply
+  says so, which Valkey, stopping the world, cannot meet. In a transaction or
+  a script it is refused (it would have to hold every client).
+- `mimir/resp/reply_reader`: a bounded reader of another server's replies,
+  with its fuzz target (`resp_reply_fuzz`).
+- Server takes the io context for its outbound connections.
+- Checked live both ways with Valkey 8.1.1: Mimir to Valkey and Valkey to
+  Mimir, lists, hashes, sets, sorted sets and a life, each restored whole.
+- Gate on node-a: release 310 passed (3 new); differential 33 of 33;
+  `resp_reply_fuzz` (clang 19, fuzzer and undefined: ASan cannot start on
+  node-a's 39-bit address space) 12.5 million runs in 60 s, nothing found.
+
 ## 2026-11-16: ruling 31, Valkey's persistence and replication commands
 
 - SHUTDOWN stops the node gracefully (its options parsed as Valkey's; no

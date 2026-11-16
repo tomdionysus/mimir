@@ -15,8 +15,116 @@
 #include <vector>
 
 #include "mimir/command/args.h"
+#include "mimir/resp/reply_reader.h"
 
 namespace mimir::server {
+
+namespace {
+
+void append_command(std::string& out, std::initializer_list<std::string_view> args) {
+  out += "*" + std::to_string(args.size()) + "\r\n";
+  for (auto arg : args) {
+    out += "$" + std::to_string(arg.size()) + "\r\n";
+    out.append(arg);
+    out += "\r\n";
+  }
+}
+
+// MIGRATE's requests to its target, in Valkey's order: AUTH when given,
+// SELECT, then RESTORE for each key.
+std::string migrate_requests(const command::MigrateJob& job) {
+  std::string out;
+  if (job.password) {
+    if (job.username)
+      append_command(out, {"AUTH", *job.username, *job.password});
+    else
+      append_command(out, {"AUTH", *job.password});
+  }
+  append_command(out, {"SELECT", std::to_string(job.target_db)});
+  for (const auto& item : job.items) {
+    const std::string ttl = std::to_string(item.ttl_ms);
+    if (job.replace)
+      append_command(out, {"RESTORE", item.key, ttl, item.payload, "REPLACE"});
+    else
+      append_command(out, {"RESTORE", item.key, ttl, item.payload});
+  }
+  return out;
+}
+
+}  // namespace
+
+// MIGRATE's talk with its target, on the target stream's own strand: every
+// request in one write, then the replies read whole, each within the timeout
+// (a reply that does not come in time is a failed read, as Valkey's). Told
+// once.
+class MigrateClient : public std::enable_shared_from_this<MigrateClient> {
+ public:
+  using Done = std::function<void(command::MigrateOutcome)>;
+
+  MigrateClient(std::shared_ptr<dannan::listen::Stream> stream, size_t expected, std::chrono::milliseconds timeout, Done done)
+      : _stream(std::move(stream)), _expected(expected), _timeout(timeout), _timer(_stream->get_executor()), _done(std::move(done)), _buffer(16 * 1024) {}
+
+  void start(std::string requests) {
+    auto self = shared_from_this();
+    boost::asio::post(_stream->get_executor(), [self, requests = std::move(requests)]() mutable {
+      self->arm();
+      self->_stream->send(std::move(requests));
+      self->read();
+    });
+  }
+
+ private:
+  void arm() {
+    _timer.expires_after(_timeout);
+    _timer.async_wait([self = shared_from_this()](boost::system::error_code error) {
+      if (!error) self->finish(true);
+    });
+  }
+
+  void read() {
+    if (!_done) return;
+    _stream->async_read_some(boost::asio::buffer(_buffer), [self = shared_from_this()](boost::system::error_code error, size_t bytes) {
+      if (error) {
+        self->finish(true);
+        return;
+      }
+      try {
+        self->_reader.feed(std::string_view(self->_buffer.data(), bytes));
+        while (auto item = self->_reader.next()) {
+          self->_outcome.replies.push_back(std::string(1, item->type) + item->text);
+          if (self->_outcome.replies.size() == self->_expected) {
+            self->finish(false);
+            return;
+          }
+        }
+      } catch (const resp::ProtocolError&) {
+        self->finish(true);
+        return;
+      }
+      self->arm();
+      self->read();
+    });
+  }
+
+  void finish(bool failed) {
+    if (!_done) return;
+    _timer.cancel();
+    _outcome.read_failed = failed;
+    _stream->close();
+    auto done = std::move(_done);
+    _done = nullptr;
+    done(std::move(_outcome));
+  }
+
+  std::shared_ptr<dannan::listen::Stream> _stream;
+  const size_t _expected;
+  const std::chrono::milliseconds _timeout;
+  boost::asio::steady_timer _timer;
+  Done _done;
+  std::vector<char> _buffer;
+  resp::ReplyReader _reader;
+  command::MigrateOutcome _outcome;
+};
 
 // One client: its parser, its session, the read buffer, and a wait it may be
 // parked in. Everything here runs on the stream's strand. While parked, the
@@ -87,7 +195,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
 
   void read() {
     if (_reading || _closing) return;
-    if (_wait && _parser.buffered() > held_while_parked) return;
+    if ((_wait || _migrating) && _parser.buffered() > held_while_parked) return;
     _reading = true;
     _stream->async_read_some(boost::asio::buffer(_buffer), [self = shared_from_this()](boost::system::error_code error, size_t bytes) {
       self->_reading = false;
@@ -119,6 +227,10 @@ class Connection : public std::enable_shared_from_this<Connection> {
       out.clear();
     }
     auto executed = _server->_database.execute(_session, args, out, wake());
+    if (executed.migrate) {
+      migrate(std::move(*executed.migrate));
+      return false;
+    }
     if (executed.wait) {
       // A command CLIENT PAUSE holds is run again when its wait ends.
       if (executed.postponed) _postponed = std::move(args);
@@ -132,10 +244,47 @@ class Connection : public std::enable_shared_from_this<Connection> {
     return true;
   }
 
+  // MIGRATE: the connection waits, its pipeline behind it, while it talks to
+  // the target off the database's lock; the database then finishes it.
+  void migrate(command::MigrateJob job) {
+    _migrating = true;
+    auto self = shared_from_this();
+    auto shared = std::make_shared<command::MigrateJob>(std::move(job));
+    const auto timeout = std::chrono::milliseconds(shared->timeout_ms);
+    auto port = command::parse_integer(shared->port);
+    if (!port || *port < 1 || *port > 65535) {
+      boost::asio::post(_stream->get_executor(), [self, shared] { self->migrated(*shared, command::MigrateOutcome{{}, true, false}); });
+      return;
+    }
+    _server->connector().connect(_stream->get_executor(), shared->host, static_cast<uint16_t>(*port), std::nullopt, timeout,
+                                 [self, shared, timeout](std::shared_ptr<dannan::listen::Stream> target, std::string) {
+                                   if (!target) {
+                                     self->migrated(*shared, command::MigrateOutcome{{}, true, false});
+                                     return;
+                                   }
+                                   const size_t expected = (shared->password ? 1 : 0) + 1 + shared->items.size();
+                                   auto client = std::make_shared<MigrateClient>(target, expected, timeout, [self, shared](command::MigrateOutcome outcome) {
+                                     boost::asio::post(self->_stream->get_executor(),
+                                                       [self, shared, outcome = std::move(outcome)] { self->migrated(*shared, outcome); });
+                                   });
+                                   client->start(migrate_requests(*shared));
+                                 });
+  }
+
+  void migrated(const command::MigrateJob& job, const command::MigrateOutcome& outcome) {
+    _migrating = false;
+    // Finished whether or not the client is still here: what moved is gone.
+    std::string reply = _server->_database.finish_migrate(_session, job, outcome);
+    if (_closing) return;
+    if (!_session.reply_off) _stream->send(std::move(reply));
+    process();
+    read();
+  }
+
   // Runs every whole command buffered, in order, until one parks or the
   // connection is to close, and sends their replies together.
   void process() {
-    if (_wait || _closing) return;
+    if (_wait || _closing || _migrating) return;
     std::string out;
     try {
       for (;;) {
@@ -212,16 +361,28 @@ class Connection : public std::enable_shared_from_this<Connection> {
   std::optional<uint64_t> _wait;
   // The command CLIENT PAUSE holds, to run when its wait ends.
   std::optional<std::vector<std::string>> _postponed;
+  // MIGRATE is talking to its target.
+  bool _migrating = false;
   bool _reading = false;
   bool _closing = false;
 };
 
-Server::Server(command::Database& database, dannan::status::ScopedLogger logger, ServerSettings settings)
-    : _database(database), _logger(std::move(logger)), _settings(settings) {}
+Server::Server(boost::asio::io_context& io, command::Database& database, dannan::status::ScopedLogger logger, ServerSettings settings)
+    : _io(io), _database(database), _logger(std::move(logger)), _settings(settings) {}
 
 void Server::serve(std::shared_ptr<dannan::listen::Stream> stream) {
   ++_accepted;
   std::make_shared<Connection>(shared_from_this(), std::move(stream))->start();
+}
+
+dannan::listen::StreamConnector& Server::connector() {
+  dannan::contract::Lock lock(_streams_mutex);
+  if (!_connector) {
+    dannan::listen::ConnectorConfig config;
+    config.name = "migrate";
+    _connector = std::make_unique<dannan::listen::StreamConnector>(_io, config);
+  }
+  return *_connector;
 }
 
 void Server::close_all() {
@@ -231,6 +392,8 @@ void Server::close_all() {
     for (const auto& [id, stream] : _streams) {
       if (auto alive = stream.lock()) open.push_back(std::move(alive));
     }
+    // MIGRATE's connections to its targets too.
+    if (_connector) _connector->close_all();
   }
   // Closed outside the lock: a stream may finish, and take it, at once.
   for (const auto& stream : open) stream->close();

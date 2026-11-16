@@ -77,6 +77,18 @@ struct Executed {
   // Parked by CLIENT PAUSE, not run: when the wait ends (its wake, or
   // cancel_wait, with no bytes) the connection runs it again.
   bool postponed = false;
+  // MIGRATE's talk with its target, for the connection to have, then hand to
+  // finish_migrate. Nothing was appended to `out` for it.
+  std::optional<MigrateJob> migrate;
+};
+
+// How MIGRATE's talk with its target went: the first-level replies read, in
+// order (AUTH's if any, SELECT's, then one per key, each "+..." or "-..."),
+// and whether the connection could not be made or a reply could not be read.
+struct MigrateOutcome {
+  std::vector<std::string> replies;
+  bool unreachable = false;
+  bool read_failed = false;
 };
 
 class Database {
@@ -95,6 +107,12 @@ class Database {
   // first, and their wakes called once the lock is let go. Waits on the
   // database's lock; thread-safe. `session` outlives any wait it parks.
   Executed execute(Session& session, const std::vector<std::string>& args, std::string& out, Wake wake = nullptr);
+
+  // MIGRATE's end, once its connection has talked with the target: each key
+  // the target took is removed here (unless COPY), but only if it has not
+  // changed since it was read, and the reply's bytes are returned, as Valkey
+  // answers. Thread-safe.
+  std::string finish_migrate(Session& session, const MigrateJob& job, const MigrateOutcome& outcome);
 
   // Ends wait `id` at its timeout or its connection's close: the timeout
   // reply's bytes when it was still parked; none when a write served it first

@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -121,6 +122,30 @@ struct Session {
   bool watch_touched = false;
 };
 
+// MIGRATE's work off the database's lock (ruling 31): the target, the keys
+// read under the lock with their DUMP payloads and remaining lives, and how
+// they go. The connection talks to the target; the database then finishes
+// the command (Database::finish_migrate).
+struct MigrateJob {
+  struct Item {
+    std::string key;
+    std::string payload;
+    // Remaining life in ms; zero: none.
+    int64_t ttl_ms = 0;
+  };
+  std::string host;
+  std::string port;
+  int64_t target_db = 0;
+  int64_t timeout_ms = 1000;
+  bool copy = false;
+  bool replace = false;
+  std::optional<std::string> username;
+  std::optional<std::string> password;
+  // The database the keys were read from.
+  size_t source_db = 0;
+  std::vector<Item> items;
+};
+
 // One command's call: its arguments (its name first), the connection's
 // session, the database it runs against, and the reply it writes.
 struct Call {
@@ -154,6 +179,9 @@ struct Call {
   // The arguments the parked command is run with when woken, when they differ
   // from those it came with (XREAD's "$" made the id it stood for).
   std::optional<std::vector<std::string>> block_args;
+  // MIGRATE with keys to move writes no reply: its job goes to the
+  // connection.
+  std::optional<MigrateJob> migrate;
 };
 
 using Handler = void (*)(Call&);

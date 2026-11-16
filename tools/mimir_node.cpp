@@ -117,7 +117,7 @@ int main(int argc, char** argv) {
       throw dannan::config::ConfigError(e.what());
     }
     mimir::command::Database& database = *made;
-    auto server = std::make_shared<mimir::server::Server>(database, logger.child("server"));
+    auto server = std::make_shared<mimir::server::Server>(io, database, logger.child("server"));
     const auto accepted = [server](std::shared_ptr<dannan::listen::Stream> stream) { server->serve(std::move(stream)); };
 
     dannan::listen::ListenerConfig plain_config;
