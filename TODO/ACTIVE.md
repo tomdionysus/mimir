@@ -2,7 +2,7 @@
 
 Last updated: 2026-11-15 (ACL landed). `COMPLETED.md` is the record, with
 gate counts. The design is `TODO/2026-11-15-mimir-design.md`: The maintainer's rulings
-("Ruled", 1 to 30), the two classes of command, agreement in Dannan,
+("Ruled", 1 to 31), the two classes of command, agreement in Dannan,
 durability, and the order.
 
 ## Resume here
@@ -80,11 +80,27 @@ then the code.
   under clang's libFuzzer would not start there; g++'s ASan runs, Dannan
   reports).
 - TSan (the maintainer, 2026-11-16, relayed by Dannan): it may run on the Mac if and
-  only if hunting a specific bug, never as a gate or a routine build. It
-  cannot run on the build servers (g++ 14's TSan refuses their 47-bit address space).
+  only if hunting a specific bug, never as a gate or a routine build. g++
+  14's TSan refuses the build servers' 47-bit address space, but node-a is
+  "the TSan build server" (39-bit VA kernel, clang 19): `CC=clang-19 CXX=clang++-19`,
+  Makefiles (no ninja there). For a TSan bug hunt, node-a first.
 - Commit when a step's gate passes; push `develop`. Read the completed hosted
   CI runs, not only the newest (superseded runs are cancelled); push no more
   until a run completes when a fix awaits confirmation.
+
+## In hand: the claim board's registrar (the maintainer, 2026-11-16)
+
+- The maintainer: the claim board keeps a registrar of the build machines in Mimir, "a
+  good test for it"; mimir-node runs on all four build servers ("it gets better func,
+  you get a test"); plaintext AUTH on the lab LAN (ruling 28's
+  `auth.plaintext`, this deployment only); the registrar ships as claim-board
+  0.4.0. Spec: `../stack-coordinator/TODO/2026-11-16-claim-board-registrar.md`.
+- Mimir's part: install mimir-node from develop on each build server as a systemd
+  service on port 6390, users `default off`, `registrar` (writes `node:*`),
+  `reader` (reads), in `/etc/mimir/secrets.yaml`; the passwords handed to the
+  claim-board session in a file under `~/.claude`. Four independent
+  nodes until stage 3; each build server writes its entry to all four, readers read
+  their own first. The Mimir session upgrades them as develop moves.
 
 ## Waiting on the maintainer
 

@@ -2,6 +2,24 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-16: ruling 31, Valkey's persistence and replication commands
+
+- SHUTDOWN stops the node gracefully (its options parsed as Valkey's; no
+  reply, the connection closed; ABORT finds no shutdown in progress); SAVE,
+  BGSAVE and BGREWRITEAOF refused, persistence not available until Dagda;
+  REPLICAOF, SLAVEOF, SYNC, PSYNC, REPLCONF and FAILOVER refused, Mimir
+  replicating through its own cluster (REPLICAOF NO ONE answers OK);
+  RESTORE-ASKING is RESTORE. Commands Valkey marks no_multi are refused
+  inside MULTI. MIGRATE is owed.
+- mimir-node: `notify.keyspace_events` (Valkey's letters) at start, for the
+  registrar's readers; `tools/deploy/` holds the service unit and the
+  registrar's configuration (users stay in secrets.yaml, never here).
+- node-d hung (another session's sanitizer build); the gate ran on
+  node-a, whose build tree is now `/root/mimir-work/mimir/build-ci`.
+  The ACL table regenerated there from mimir-node's own COMMAND LIST: eleven
+  rows added, the rest unchanged.
+- Gate on node-a: release 307 passed (2 new); differential 33 of 33.
+
 ## 2026-11-16: client-side caching (CLIENT TRACKING)
 
 - As Valkey 8 documents it and 8.1.1 answers it: a read-only command's keys
