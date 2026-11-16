@@ -37,10 +37,11 @@ struct AclBed {
     return s;
   }
 
+  // Welcomed by its first command, where it then lives: the database keeps
+  // its address, so a session is never welcomed and then moved.
   command::Session make() {
     command::Session made;
     made.id = database.next_client_id();
-    database.welcome(made);
     return made;
   }
 
