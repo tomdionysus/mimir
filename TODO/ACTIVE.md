@@ -83,6 +83,20 @@ durability, and the order.
   - a delta the value can't take answers need_whole.
   Mimir's keep() checks every delta, then applies them all under the
   database lock.
+- Reviewed 2026-11-16, the final AcceptorStore (Dannan
+  `feature/valueless-prepare` `1c624d3`, `dannan/agree/agreement.h` and
+  `caspaxos.h`). The store side is accepted:
+  - load(slot, names, every, values, done);
+  - keep(slot, held, done(Kept{kept, need_whole}));
+  - value(slot, name, ballot, since, done(optional<Fetched{bytes, past}>));
+  - accepts may be ballot-only (`held`), and compact forms carry the base's
+    summary.
+  One point on cost, put to Dannan: Change takes and returns whole bytes and
+  the base is always fetched whole, so an agreement write to a large
+  collection is O(n) at the proposer. Asked for (a), a local-holder Change
+  with lazy whole values (after 0.9.0 is fine). Mimir plans (b), sending
+  agreement writes to a node in the slot's set, and asked whether a fetch
+  prefers self.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
