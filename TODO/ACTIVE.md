@@ -75,9 +75,9 @@ node-d or node-a (Valkey 8.1.1 on both, service disabled):
 
 ```
 LC_ALL=C valkey-server --port 7379 --bind 127.0.0.1 --save "" --appendonly no --daemonize yes
-./mimir-node --listen 127.0.0.1 --port 7380 --databases 16 --auth-plaintext --seconds 200 &
+./mimir-node --listen 127.0.0.1 --port 7380 --databases 16 --auth-plaintext --seconds 200 & node=$!
 MIMIR_DIFF_MIMIR_PORT=7380 MIMIR_DIFF_VALKEY_PORT=7379 ./mimir_tests --gtest_filter='Differential.*'
-valkey-cli -p 7379 shutdown nosave; pkill mimir-node
+valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the build servers run mimir.service
 ```
 
 `LC_ALL=C` because Valkey's SORT ALPHA collates by its environment's locale.
@@ -119,6 +119,11 @@ then the code.
 - To upgrade: build on a build server, package bin/mimir-node and lib/ (libmimir,
   libdannan), unpack to /opt/mimir, `systemctl restart mimir` (entries come
   back with the next refresh).
+- Every build server runs a mimir-node service now: a test node (the differential's)
+  is stopped by its own PID, never `pkill -x mimir-node`, which also stops
+  the service's (it did, on node-a at 01:17Z and node-d at 03:05Z,
+  2026-11-16). The unit is `Restart=always` since, so a node a signal stops
+  comes back; checked by SIGTERM on node-d.
 
 - The maintainer: the claim board keeps a registrar of the build machines in Mimir, "a
   good test for it"; mimir-node runs on all four build servers ("it gets better func,
