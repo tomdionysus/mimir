@@ -52,7 +52,11 @@ durability, and the order.
   0.9.0 itself 8 to 12 (Tom: 0.9.0 is cut only when the whole 0.9 plan is
   done; an early tag is his call, Dannan has asked him). Tom, 2026-11-16:
   stage 3 waits for the tag; nothing of it is built against an untagged
-  Dannan commit, on develop or a branch.
+  Dannan commit, on develop or a branch. Tom ruled the same to Dannan: no
+  pre-release tag, so the next agreement-bearing tag is 0.9.0 itself.
+  Dannan tells Mimir when it is cut, and sends the AcceptorStore interface
+  for Mimir's review once value-less prepare and deltas settle it, before
+  the tag (Mimir's store is its first real user): review it then.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
