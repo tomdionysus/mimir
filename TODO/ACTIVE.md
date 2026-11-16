@@ -105,14 +105,15 @@ then the code.
   `cmake --build build-ci/release -j2`.
 - The Lua packages (liblua5.1-0-dev, lua-cjson-dev, lua-bitop-dev,
   lua-cmsgpack) are on uranus and jupiter; clang and libFuzzer on jupiter.
-  Fuzz targets on the Pis: `-DMIMIR_FUZZ_SANITIZERS=fuzzer,undefined` (ASan
-  under clang's libFuzzer would not start there; g++'s ASan runs, Dannan
-  reports).
-- TSan (Tom, 2026-11-16): on the Mac only when hunting a specific bug. Every
-  Pi now boots the 4K-page kernel, so g++'s TSan runs on all four and
-  clang++-19's on jupiter, saturn and neptune. No sanitizer builds on uranus
-  (4 GB; it ran out of memory on 2026-11-16): use saturn or neptune (15 GB),
-  and check `free -m` first.
+  Fuzz targets build with clang 19 on jupiter, saturn or neptune, with the
+  default `fuzzer,address,undefined` now that the kernels have a 48-bit
+  address space (on a 39-bit one, `-DMIMIR_FUZZ_SANITIZERS=fuzzer,undefined`).
+- Sanitizers (2026-11-16): every Pi boots a 4K-page, 48-bit-VA kernel
+  (6.18.62-v8-va48+), so ASan, UBSan and TSan run on all four with g++, and
+  with clang 19 on jupiter, saturn and neptune (uranus has no clang). TSan
+  on the Mac only when hunting a specific bug (Tom). No sanitizer builds on
+  uranus (4 GB; it ran out of memory on 2026-11-16): saturn or neptune
+  (15 GB), `free -m` first.
 - Commit when a step's gate passes; push `develop`. Read the completed hosted
   CI runs, not only the newest (superseded runs are cancelled); push no more
   until a run completes when a fix awaits confirmation.
