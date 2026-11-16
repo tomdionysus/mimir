@@ -64,7 +64,9 @@ durability, and the order.
   prepares; summary per name, 64 bytes (a merge-frontier digest, length,
   type); apply in place, apply(slot, name, base_ballot, new_ballot, delta,
   done(applied | need_whole)), not bytes in and out; value() may stay bytes
-  (DUMP form). Dannan builds once Mimir and Kvasir have answered.
+  (DUMP form). Dannan took all five into its design (develop `930b088`,
+  "Mimir's review (2026-11-16), taken") and builds once Kvasir has answered
+  for ranges.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
