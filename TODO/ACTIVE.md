@@ -72,7 +72,17 @@ durability, and the order.
   no value; new value(slot, name, ballot, since, done) by exact ballot;
   fetches in 1 MiB pieces. Deltas (part 4) and transfer (part 5) to come.
   Asked Dannan (2026-11-16): how value() says "ops past since" versus
-  "whole" when the holder no longer knows the digest's frontier.
+  "whole" when the holder no longer knows the digest's frontier. Taken: the
+  fetch answer carries `past`; a store may always answer whole.
+- Reviewed 2026-11-16, Dannan's "Found in building part 4" (`ca7ad31`):
+  deltas go into keep() (Held carries delta and base; Kept{kept,
+  need_whole}), not a separate apply(). Mimir agreed, with four points:
+  - nothing is kept when need_whole is non-empty;
+  - a keep() already at new_ballot isn't applied again;
+  - deltas and ballots are kept in one append;
+  - a delta the value can't take answers need_whole.
+  Mimir's keep() checks every delta, then applies them all under the
+  database lock.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
