@@ -108,7 +108,7 @@ server.
 
 Debian 13, or any system with GCC 14 or Clang 19, CMake 3.24, Boost 1.83, OpenSSL 3,
 Lua 5.1 with lua-cjson, lua-bitop and lua-cmsgpack, yaml-cpp and GoogleTest. Dannan is
-fetched from `../dannan` at the pinned release (0.8.4), so clone it beside this
+fetched from `../dannan` at the pinned release (0.8.5), so clone it beside this
 repository.
 
 ```

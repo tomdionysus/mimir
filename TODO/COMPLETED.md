@@ -2,6 +2,13 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-16: Dannan 0.8.5
+
+- Pin moved from 0.8.4 to 0.8.5 (ABI kept; a shared sign-in back-off, and a
+  fix for a node destroyed after its io stopped; nothing Mimir uses).
+- Gate on node-d: release 310 passed on Dannan 0.8.5; differential
+  33 of 33, its node stopped by PID, node-d's service untouched.
+
 ## 2026-11-16: Dannan 0.8.4
 
 - Pin moved from 0.8.3 to 0.8.4 (Dannan: 0.8.0's ABI kept; StartTLS without
