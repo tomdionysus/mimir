@@ -80,21 +80,22 @@ then the code.
   Fuzz targets on the Pis: `-DMIMIR_FUZZ_SANITIZERS=fuzzer,undefined` (ASan
   under clang's libFuzzer would not start there; g++'s ASan runs, Dannan
   reports).
-- TSan (Tom, 2026-11-16, relayed by Dannan): it may run on the Mac if and
-  only if hunting a specific bug, never as a gate or a routine build. g++
-  14's TSan refuses the Pis' 47-bit address space, but corvus-jupiter is
-  "the TSan Pi" (39-bit VA kernel, clang 19): `CC=clang-19 CXX=clang++-19`,
-  Makefiles (no ninja there). For a TSan bug hunt, jupiter first.
+- TSan (Tom, 2026-11-16): on the Mac only when hunting a specific bug. Every
+  Pi now boots the 4K-page kernel, so g++'s TSan runs on all four and
+  clang++-19's on jupiter, saturn and neptune. No sanitizer builds on uranus
+  (4 GB; it ran out of memory on 2026-11-16): use saturn or neptune (15 GB),
+  and check `free -m` first.
 - Commit when a step's gate passes; push `develop`. Read the completed hosted
   CI runs, not only the newest (superseded runs are cancelled); push no more
   until a run completes when a fix awaits confirmation.
 
 ## Running: the claim board's registrar (Tom, 2026-11-16)
 
-- Deployed 2026-11-16 00:33Z: mimir.service (develop `79b62bb`) on jupiter,
-  saturn and neptune, port 6390; uranus when Tom has power-cycled it (install
-  the same way: the tarball from jupiter's build, the Lua runtime packages,
-  `tools/deploy/`, secrets.yaml streamed from the passwords file). Passwords:
+- Deployed 2026-11-16: mimir.service (develop `79b62bb`) on all four Pis,
+  port 6390 (jupiter, saturn, neptune at 00:33Z; uranus at 00:35Z after Tom
+  power-cycled it). Installed from the tarball of jupiter's build, the Lua
+  runtime packages, `tools/deploy/`, and secrets.yaml streamed from the
+  passwords file. Passwords:
   `/Users/tom/.claude/mimir-registrar.yaml`. Accepted over the LAN (NOAUTH,
   registrar writes node:* only, reader reads, notifications heard).
 - To upgrade: build on a Pi, package bin/mimir-node and lib/ (libmimir,
