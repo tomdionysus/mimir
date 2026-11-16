@@ -56,7 +56,15 @@ durability, and the order.
   pre-release tag, so the next agreement-bearing tag is 0.9.0 itself.
   Dannan tells Mimir when it is cut, and sends the AcceptorStore interface
   for Mimir's review once value-less prepare and deltas settle it, before
-  the tag (Mimir's store is its first real user): review it then.
+  the tag (Mimir's store is its first real user).
+- Reviewed 2026-11-16, Dannan's "Value-less prepare and deltas" (058a568):
+  Mimir chose (a), value-less prepares with the reduction deciding from
+  summaries and fetching only diverged names (preferably owner bytes "since
+  a summary"), not (b), which would bring every Mimir value back into
+  prepares; summary per name, 64 bytes (a merge-frontier digest, length,
+  type); apply in place, apply(slot, name, base_ballot, new_ballot, delta,
+  done(applied | need_whole)), not bytes in and out; value() may stay bytes
+  (DUMP form). Dannan builds once Mimir and Kvasir have answered.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
