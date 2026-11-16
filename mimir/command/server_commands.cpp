@@ -377,6 +377,69 @@ void commandlog(Call& call) {
   }
 }
 
+namespace {
+
+constexpr const char* no_persistence =
+    "ERR persistence is not available: Mimir persists in Dagda, which this node does not use yet, and has no RDB or AOF of Valkey's kind";
+
+[[noreturn]] void replicates_itself(std::string_view command) {
+  throw CommandError("ERR Mimir replicates through its own cluster, with no primary or replica: " + upper(command) + " is not offered");
+}
+
+}  // namespace
+
+// Ruling 31: Valkey's persistence commands wait on Dagda (as ruling 17).
+void save(Call&) { throw CommandError(no_persistence); }
+void bgsave(Call& call) {
+  if (call.args.size() > 2 || (call.args.size() == 2 && !iequals(call.args[1], "SCHEDULE") && !iequals(call.args[1], "CANCEL")))
+    throw CommandError(syntax_error);
+  throw CommandError(no_persistence);
+}
+void bgrewriteaof(Call&) { throw CommandError(no_persistence); }
+
+// SHUTDOWN [NOSAVE|SAVE] [NOW] [FORCE] [ABORT] [SAFE]: the node stops
+// gracefully, its connections closed; this one gets no reply, as Valkey's.
+// A shutdown is never in progress to abort: it happens at once.
+void shutdown(Call& call) {
+  bool nosave = false, save = false, abort = false, force = false, other = false;
+  for (size_t i = 1; i < call.args.size(); ++i) {
+    const std::string& option = call.args[i];
+    if (iequals(option, "NOSAVE")) {
+      nosave = true;
+    } else if (iequals(option, "SAVE")) {
+      save = true;
+    } else if (iequals(option, "ABORT")) {
+      abort = true;
+    } else if (iequals(option, "FORCE")) {
+      force = true;
+      other = true;
+    } else if (iequals(option, "NOW") || iequals(option, "SAFE")) {
+      other = true;
+    } else {
+      throw CommandError(syntax_error);
+    }
+  }
+  if ((abort && (nosave || save || other)) || (nosave && save)) throw CommandError(syntax_error);
+  if (abort) throw CommandError("ERR No shutdown in progress.");
+  if (save && !force) throw CommandError(no_persistence);
+  const auto& stop = call.database.settings().shutdown;
+  if (!stop) throw CommandError("ERR this node cannot be shut down by a client");
+  stop();
+  call.session.closing = true;
+}
+
+void replicaof(Call& call) {
+  // Already no one's replica: NO ONE asks for what is.
+  if (iequals(call.args[1], "NO") && iequals(call.args[2], "ONE")) {
+    call.reply.simple("OK");
+    return;
+  }
+  replicates_itself(call.args[0]);
+}
+void sync(Call& call) { replicates_itself(call.args[0]); }
+void replconf(Call& call) { replicates_itself(call.args[0]); }
+void failover(Call& call) { replicates_itself(call.args[0]); }
+
 void lolwut(Call& call) { call.reply.verbatim("txt", "Mimir ver. " + std::string(mimir::version) + "\n"); }
 
 // Called under the database's lock, as every handler is.

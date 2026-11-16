@@ -54,6 +54,13 @@ struct DatabaseSettings {
   // alice on >secret ~app:* +@read"), applied over the default user (ruling
   // 27). A line that does not parse refuses the construction.
   std::vector<std::string> users;
+  // notify-keyspace-events at start, in Valkey's letters ("Khgx"); empty:
+  // off, as Valkey's default. Refused at construction when not valid.
+  std::string notify_keyspace_events;
+  // SHUTDOWN's way to stop the node (ruling 31), called on the command's
+  // thread under the database's lock: it must only post the stop. None: a
+  // client cannot stop this node.
+  std::function<void()> shutdown;
 };
 
 // A parked command's wake: given its reply once a write has served it. Called

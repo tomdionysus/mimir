@@ -138,6 +138,8 @@ Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings set
   for (const std::string& line : _settings.users) {
     if (auto error = _acl.load_line(line)) throw std::invalid_argument("users: " + *error);
   }
+  if (!set_notify_flags_locked(_settings.notify_keyspace_events))
+    throw std::invalid_argument("notify keyspace events: not Valkey's letters: " + _settings.notify_keyspace_events);
 }
 
 void Database::welcome_locked(Session& session) {
@@ -570,7 +572,7 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
     }
     // Inside a transaction MULTI and WATCH are refused, and the refusal aborts
     // the EXEC, as Valkey 8 has it (the differential gate's finding).
-    if (session.in_multi && (spec->name == "multi" || spec->name == "watch")) {
+    if (session.in_multi && (spec->name == "multi" || spec->name == "watch" || has_flag(spec->flags, "no_multi"))) {
       session.multi_failed = true;
       reply.error("ERR Command not allowed inside a transaction");
       out.append(reply.bytes());

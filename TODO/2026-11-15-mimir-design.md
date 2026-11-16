@@ -119,6 +119,13 @@ marked:
     for a collection Valkey keeps compact (at most 128 entries), as Valkey
     answers; a larger one paged by COUNT through a per-element insertion
     sequence, so an element present for the whole scan is returned.
+31. **Valkey's persistence and replication commands take Mimir's meaning**
+    (2026-11-16): SHUTDOWN stops the node gracefully (Valkey's options
+    parsed); SAVE, BGSAVE and BGREWRITEAOF are refused, persistence not
+    being available until Dagda (as ruling 17); REPLICAOF, SLAVEOF, SYNC,
+    PSYNC, REPLCONF and FAILOVER are refused, Mimir replicating through its
+    own cluster; RESTORE-ASKING is RESTORE; MIGRATE is built later, as a
+    client of another server, so data can move from Valkey into Mimir.
 
 ## Waiting on Tom
 
