@@ -105,14 +105,15 @@ then the code.
   `cmake --build build-ci/release -j2`.
 - The Lua packages (liblua5.1-0-dev, lua-cjson-dev, lua-bitop-dev,
   lua-cmsgpack) are on node-d and node-a; clang and libFuzzer on node-a.
-  Fuzz targets on the build servers: `-DMIMIR_FUZZ_SANITIZERS=fuzzer,undefined` (ASan
-  under clang's libFuzzer would not start there; g++'s ASan runs, Dannan
-  reports).
-- TSan (the maintainer, 2026-11-16): on the Mac only when hunting a specific bug. Every
-  build server now boots the 4K-page kernel, so g++'s TSan runs on all four and
-  clang++-19's on node-a, node-b and node-c. No sanitizer builds on node-d
-  (4 GB; it ran out of memory on 2026-11-16): use node-b or node-c (15 GB),
-  and check `free -m` first.
+  Fuzz targets build with clang 19 on node-a, node-b or node-c, with the
+  default `fuzzer,address,undefined` now that the kernels have a 48-bit
+  address space (on a 39-bit one, `-DMIMIR_FUZZ_SANITIZERS=fuzzer,undefined`).
+- Sanitizers (2026-11-16): every build server boots a 4K-page, 48-bit-VA kernel
+  (6.18.62-v8-va48+), so ASan, UBSan and TSan run on all four with g++, and
+  with clang 19 on node-a, node-b and node-c (node-d has no clang). TSan
+  on the Mac only when hunting a specific bug (the maintainer). No sanitizer builds on
+  node-d (4 GB; it ran out of memory on 2026-11-16): node-b or node-c
+  (15 GB), `free -m` first.
 - Commit when a step's gate passes; push `develop`. Read the completed hosted
   CI runs, not only the newest (superseded runs are cancelled); push no more
   until a run completes when a fix awaits confirmation.

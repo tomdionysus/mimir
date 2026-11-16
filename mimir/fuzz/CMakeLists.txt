@@ -10,8 +10,8 @@ if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   message(FATAL_ERROR "MIMIR_BUILD_FUZZING needs clang")
 endif()
 
-# AddressSanitizer cannot start on a kernel with a 39-bit address space (the
-# build servers'); there, "fuzzer,undefined".
+# AddressSanitizer cannot start on a kernel with a 39-bit address space;
+# there, "fuzzer,undefined". The build servers' kernels have 48 bits.
 set(MIMIR_FUZZ_SANITIZERS "fuzzer,address,undefined" CACHE STRING "The -fsanitize= list the fuzz targets build with")
 
 foreach(target resp_request resp_reply rdb_restore)
