@@ -96,7 +96,10 @@ durability, and the order.
   collection is O(n) at the proposer. Asked for (a), a local-holder Change
   with lazy whole values (after 0.9.0 is fine). Mimir plans (b), sending
   agreement writes to a node in the slot's set, and asked whether a fetch
-  prefers self.
+  prefers self. Dannan's answer: it does (fetch_bases puts self first and
+  reads it locally), so (b) needs nothing more from Dannan. (a) is recorded
+  as Dannan's first item after 0.9.0, and its API comes to Mimir before it
+  is built.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
