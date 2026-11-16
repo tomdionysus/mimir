@@ -1,6 +1,6 @@
 # Mimir - Active Work
 
-Last updated: 2026-11-15 (ACL landed). `COMPLETED.md` is the record, with
+Last updated: 2026-11-16 (ruling 31, the registrar). `COMPLETED.md` is the record, with
 gate counts. The design is `TODO/2026-11-15-mimir-design.md`: The maintainer's rulings
 ("Ruled", 1 to 31), the two classes of command, agreement in Dannan,
 durability, and the order.
@@ -8,19 +8,20 @@ durability, and the order.
 ## Resume here
 
 - State: `develop` pushed (the remote is public since 2026-11-15). Last gate:
-  release 305 passed, differential 33 of 33.
-- Single-node work still owed (none waits on anyone): MEMORY STATS; PFDEBUG. Valkey's persistence and replication commands (SAVE,
-  BGSAVE, BGREWRITEAOF, SHUTDOWN, REPLICAOF, SLAVEOF, SYNC, PSYNC, REPLCONF,
-  FAILOVER, MIGRATE, RESTORE-ASKING) wait on the maintainer's ruling.
+  release 307 passed, differential 33 of 33 (on node-a: node-d hung
+  2026-11-16 and needs the maintainer to power-cycle it).
+- Single-node work still owed (none waits on anyone): MIGRATE (ruling 31, a
+  client of another server); MEMORY STATS; PFDEBUG.
 - The single-node stage is complete: every Valkey type and command family,
   RESP2 and RESP3, pub/sub, transactions, server commands, configurable
   databases, scripting (EVAL, FUNCTION, Valkey's Lua libraries and read-only
   sandbox), keyspace notifications, DUMP and RESTORE, SORT, GEO, LCS, and ACL
   with AUTH (rulings 12, 27, 28).
 - ACL's table (`mimir/command/acl_table.inc`) is generated from Valkey
-  8.1.1's COMMAND INFO; the generator and its input are on node-d in
-  `/root/mimir-work/acl/` (`gen.py keyspecs.json`). A new command needs its
-  row added the same way. Small gaps owed: acllog-max-len is fixed at 128;
+  8.1.1's COMMAND INFO; the generator is `build/acl-gen.py` here and in
+  `/root/mimir-work/acl/` on node-a (and node-d). A new command's row: run
+  mimir-node, `COMMAND LIST` into mimir.txt, Valkey's `-3 --json COMMAND
+  INFO` of those into keyspecs.json, then `acl-gen.py keyspecs.json`. Small gaps owed: acllog-max-len is fixed at 128;
   DRYRUN checks a subcommand against its container's arity.
 - Next: stage 3 waits on Dannan 0.9.0 (agreement primitive, simulation
   harness, hybrid clock). Its shape is settled: rulings 6, 8, 19, 22, 23, 26
@@ -88,7 +89,17 @@ then the code.
   CI runs, not only the newest (superseded runs are cancelled); push no more
   until a run completes when a fix awaits confirmation.
 
-## In hand: the claim board's registrar (the maintainer, 2026-11-16)
+## Running: the claim board's registrar (the maintainer, 2026-11-16)
+
+- Deployed 2026-11-16 00:33Z: mimir.service (develop `79b62bb`) on node-a,
+  node-b and node-c, port 6390; node-d when the maintainer has power-cycled it (install
+  the same way: the tarball from node-a's build, the Lua runtime packages,
+  `tools/deploy/`, secrets.yaml streamed from the passwords file). Passwords:
+  `~/.claude/mimir-registrar.yaml`. Accepted over the LAN (NOAUTH,
+  registrar writes node:* only, reader reads, notifications heard).
+- To upgrade: build on a build server, package bin/mimir-node and lib/ (libmimir,
+  libdannan), unpack to /opt/mimir, `systemctl restart mimir` (entries come
+  back with the next refresh).
 
 - The maintainer: the claim board keeps a registrar of the build machines in Mimir, "a
   good test for it"; mimir-node runs on all four build servers ("it gets better func,
