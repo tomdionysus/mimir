@@ -292,6 +292,14 @@ void latency(Call&);
 void commandlog(Call&);
 void lolwut(Call&);
 void monitor(Call&);
+void save(Call&);
+void bgsave(Call&);
+void bgrewriteaof(Call&);
+void shutdown(Call&);
+void replicaof(Call&);
+void sync(Call&);
+void replconf(Call&);
+void failover(Call&);
 }  // namespace server
 
 namespace help {

@@ -233,6 +233,7 @@ const std::array specs{
     // DUMP and RESTORE in Valkey's RDB encoding. RESTORE without REPLACE
     // depends on the key's absence, so it commits by agreement.
     Spec{"dump", 2, "readonly", 1, 1, 1, Class::read, generic::dump},
+    Spec{"restore-asking", -4, "write denyoom asking", 1, 1, 1, Class::agreement, generic::restore},
     Spec{"restore", -4, "write denyoom", 1, 1, 1, Class::agreement, generic::restore},
     Spec{"swapdb", 3, "write fast", 0, 0, 0, Class::admin, generic::swapdb},
     // Streams: an append-only log. Appends are a sequence, so they commit by
@@ -303,6 +304,17 @@ const std::array specs{
     Spec{"commandlog", -2, "", 0, 0, 0, Class::admin, server::commandlog},
     Spec{"lolwut", -1, "readonly fast", 0, 0, 0, Class::connection, server::lolwut},
     Spec{"monitor", 1, "admin noscript loading stale", 0, 0, 0, Class::admin, server::monitor},
+    // Valkey's persistence and replication, with Mimir's meaning (ruling 31).
+    Spec{"save", 1, "admin noscript no_async_loading no_multi", 0, 0, 0, Class::admin, server::save},
+    Spec{"bgsave", -1, "admin noscript no_async_loading", 0, 0, 0, Class::admin, server::bgsave},
+    Spec{"bgrewriteaof", 1, "admin noscript no_async_loading", 0, 0, 0, Class::admin, server::bgrewriteaof},
+    Spec{"shutdown", -1, "admin noscript loading stale no_multi allow_busy", 0, 0, 0, Class::admin, server::shutdown},
+    Spec{"replicaof", 3, "admin noscript stale no_async_loading", 0, 0, 0, Class::admin, server::replicaof},
+    Spec{"slaveof", 3, "admin noscript stale no_async_loading", 0, 0, 0, Class::admin, server::replicaof},
+    Spec{"sync", 1, "admin noscript no_async_loading no_multi", 0, 0, 0, Class::admin, server::sync},
+    Spec{"psync", -3, "admin noscript no_async_loading no_multi", 0, 0, 0, Class::admin, server::sync},
+    Spec{"replconf", -1, "admin noscript loading stale allow_busy", 0, 0, 0, Class::admin, server::replconf},
+    Spec{"failover", -1, "admin noscript stale", 0, 0, 0, Class::admin, server::failover},
     // Connection and server.
     Spec{"ping", -1, "fast", 0, 0, 0, Class::connection, connection::ping},
     Spec{"echo", 2, "fast", 0, 0, 0, Class::connection, connection::echo},

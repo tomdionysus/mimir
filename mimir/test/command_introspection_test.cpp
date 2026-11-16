@@ -231,6 +231,62 @@ TEST(CommandIntrospection, ClientPauseRefusesWhatValkeyRefuses) {
   EXPECT_EQ(bed.run({"CLIENT", "UNPAUSE"}), ok());
 }
 
+// Ruling 31: Valkey's persistence and replication commands, with Mimir's
+// meaning.
+TEST(CommandIntrospection, PersistenceAndReplicationTakeMimirsMeaning) {
+  Bed bed;
+  const std::string no_persistence =
+      "ERR persistence is not available: Mimir persists in Dagda, which this node does not use yet, and has no RDB or AOF of Valkey's kind";
+  EXPECT_EQ(bed.run({"SAVE"}), error(no_persistence));
+  EXPECT_EQ(bed.run({"BGSAVE"}), error(no_persistence));
+  EXPECT_EQ(bed.run({"BGSAVE", "SCHEDULE"}), error(no_persistence));
+  EXPECT_EQ(bed.run({"BGSAVE", "BOGUS"}), error("ERR syntax error"));
+  EXPECT_EQ(bed.run({"BGREWRITEAOF"}), error(no_persistence));
+  EXPECT_EQ(bed.run({"REPLICAOF", "NO", "ONE"}), ok());
+  EXPECT_EQ(bed.run({"REPLICAOF", "10.0.0.1", "6379"}),
+            error("ERR Mimir replicates through its own cluster, with no primary or replica: REPLICAOF is not offered"));
+  EXPECT_EQ(bed.run({"SLAVEOF", "10.0.0.1", "6379"}),
+            error("ERR Mimir replicates through its own cluster, with no primary or replica: SLAVEOF is not offered"));
+  EXPECT_EQ(bed.run({"FAILOVER"}), error("ERR Mimir replicates through its own cluster, with no primary or replica: FAILOVER is not offered"));
+  EXPECT_EQ(bed.run({"SYNC"}), error("ERR Mimir replicates through its own cluster, with no primary or replica: SYNC is not offered"));
+  // RESTORE-ASKING is RESTORE.
+  bed.run({"SET", "k", "v"});
+  const std::string dump = bed.run({"DUMP", "k"});
+  const std::string payload = dump.substr(dump.find("\r\n") + 2, dump.size() - dump.find("\r\n") - 4);
+  EXPECT_EQ(bed.run({"RESTORE-ASKING", "k2", "0", payload}), ok());
+  EXPECT_EQ(bed.run({"GET", "k2"}), bulk("v"));
+}
+
+TEST(CommandIntrospection, ShutdownStopsTheNode) {
+  dannan::test::SteppedWall wall;
+  int stopped = 0;
+  command::DatabaseSettings settings;
+  settings.shutdown = [&] { ++stopped; };
+  command::Database database(wall, settings);
+  command::Session session;
+  session.id = database.next_client_id();
+  const auto run = [&](Args args) {
+    std::string out;
+    database.execute(session, args, out);
+    return out;
+  };
+  EXPECT_EQ(run({"SHUTDOWN", "ABORT"}), error("ERR No shutdown in progress."));
+  EXPECT_EQ(run({"SHUTDOWN", "BOGUS"}), error("ERR syntax error"));
+  EXPECT_EQ(run({"SHUTDOWN", "NOW", "ABORT"}), error("ERR syntax error"));
+  EXPECT_EQ(run({"SHUTDOWN", "SAVE", "NOSAVE"}), error("ERR syntax error"));
+  EXPECT_EQ(run({"SHUTDOWN", "SAVE"}).rfind("-ERR persistence is not available", 0), 0u);
+  EXPECT_EQ(run({"MULTI"}), ok());
+  EXPECT_EQ(run({"SHUTDOWN"}), error("ERR Command not allowed inside a transaction"));
+  EXPECT_EQ(run({"EXEC"}), error("EXECABORT Transaction discarded because of previous errors."));
+  EXPECT_EQ(stopped, 0);
+  // No reply; the connection closes and the node stops.
+  EXPECT_EQ(run({"SHUTDOWN", "NOSAVE", "NOW"}), "");
+  EXPECT_TRUE(session.closing);
+  EXPECT_EQ(stopped, 1);
+  Bed without;
+  EXPECT_EQ(without.run({"SHUTDOWN"}), error("ERR this node cannot be shut down by a client"));
+}
+
 TEST(CommandIntrospection, ScriptShowAndDebug) {
   Bed bed;
   const std::string load = bed.run({"SCRIPT", "LOAD", "return 7"});
