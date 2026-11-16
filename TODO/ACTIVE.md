@@ -44,6 +44,16 @@ durability, and the order.
   writes) and noted in Dannan's plan under item 7, after the fast path, the
   harness, the file-system interface and the hybrid clock. Ruling 29: MSET
   and DEL over several slots commit through it.
+- Dannan's estimates (2026-11-16, in sessions): change(), read(), forget()
+  with the caller-named slot, transfer(), settle and the fast path merge to
+  Dannan's develop this session; value-less prepare and deltas change
+  AcceptorStore once more, about 1 session, after which the interface should
+  hold; the hybrid clock 4 to 6; cross-slot atomic commit (item 7) 7 to 10;
+  0.9.0 itself 8 to 12 (Tom: 0.9.0 is cut only when the whole 0.9 plan is
+  done; an early tag is his call, Dannan has asked him). Until then Mimir
+  could build single-slot agreement against a Dannan develop commit (Dannan
+  sends the hash), its store written to the interface after value-less
+  prepare lands.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
