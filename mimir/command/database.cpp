@@ -142,6 +142,9 @@ Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings set
 
 void Database::welcome_locked(Session& session) {
   session.welcomed = true;
+  // Known from its first moment, so it may be a REDIRECT's target before it
+  // has run a command.
+  _sessions.emplace(session.id, &session);
   session.user = "default";
   const Acl::User* user = _acl.find("default");
   session.authenticated = user && user->nopass && user->enabled;
@@ -172,7 +175,10 @@ void Call::notify(char cls, std::string_view event, std::string_view key) DANNAN
 void Database::bind_listeners() {
   for (size_t i = 0; i < _dbs.size(); ++i) {
     keyspace::Keyspace::Listener listener;
-    listener.expired = [this, i](std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS { notify_locked(i, 'x', "expired", key); };
+    listener.expired = [this, i](std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+      notify_locked(i, 'x', "expired", key);
+      invalidate_locked(key, nullptr);
+    };
     listener.created = [this, i](std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS { notify_locked(i, 'n', "new", key); };
     _dbs[i]->set_listener(std::move(listener));
   }
@@ -235,6 +241,9 @@ Executed Database::execute(Session& session, const std::vector<std::string>& arg
     session.reply_skip = true;
     session.reply_skip_next = false;
   }
+  // CLIENT CACHING is for the next command: spent by any but CLIENT's own,
+  // and kept through a transaction until its EXEC.
+  if (!session.in_multi && !args.empty() && !iequals(args[0], "client")) session.tracking.caching = false;
   return executed;
 }
 
@@ -378,6 +387,150 @@ void Database::feed_monitors(const Session& session, const Spec& spec, const std
   }
 }
 
+void Database::track_on_locked(Session& session) {
+  if (!session.tracking.bcast) return;
+  for (const auto& prefix : session.tracking.prefixes) _prefixes[prefix].insert(session.id);
+}
+
+void Database::track_off_locked(Session& session) {
+  for (const auto& prefix : session.tracking.prefixes) {
+    auto found = _prefixes.find(prefix);
+    if (found == _prefixes.end()) continue;
+    found->second.erase(session.id);
+    if (found->second.empty()) _prefixes.erase(found);
+  }
+  // The keys it read stay in the table until they change, as Valkey's do; a
+  // connection no longer tracking is passed over then.
+  session.tracking = Session::Tracking{};
+}
+
+void Database::track_reads_locked(Session& tracker, const Spec& spec, const std::vector<std::string>& args) {
+  const auto& t = tracker.tracking;
+  if (!t.on || t.bcast) return;
+  // A read-only script is not tracked itself, only the commands it runs.
+  if (!has_flag(spec.flags, "readonly") || spec.name == "eval_ro" || spec.name == "evalsha_ro" || spec.name == "fcall_ro") return;
+  if ((t.optin && !t.caching) || (t.optout && t.caching)) return;
+  for (const auto& [position, flags] : Acl::keys_with_flags(args)) _tracked[args[position]].insert(tracker.id);
+}
+
+void Database::invalidate_locked(std::string_view key, const Session* modifier) {
+  const int64_t by = modifier ? modifier->id : 0;
+  for (const auto& [prefix, ids] : _prefixes) {
+    if (key.substr(0, prefix.size()) != prefix) continue;
+    auto [it, inserted] = _broadcast[prefix].emplace(std::string(key), by);
+    // Changed by more than one connection: NOLOOP keeps it from none.
+    if (!inserted && it->second != by) it->second = 0;
+  }
+  auto found = _tracked.find(std::string(key));
+  if (found == _tracked.end()) return;
+  const std::set<int64_t> readers = std::move(found->second);
+  _tracked.erase(found);
+  for (int64_t id : readers) {
+    auto session = _sessions.find(id);
+    if (session == _sessions.end()) continue;
+    Session& target = *session->second;
+    if (!target.tracking.on || target.tracking.bcast) continue;
+    if (target.tracking.noloop && &target == modifier) continue;
+    if (&target == _current) {
+      _own_invalidations.emplace_back(std::string(key));
+    } else {
+      const std::vector<std::string> keys{std::string(key)};
+      deliver_locked(target, &keys, nullptr);
+    }
+  }
+}
+
+void Database::invalidate_all_locked() {
+  for (const auto& [id, session] : _sessions) {
+    if (!session->tracking.on) continue;
+    if (session == _current)
+      _own_invalidations.emplace_back(std::nullopt);
+    else
+      deliver_locked(*session, nullptr, nullptr);
+  }
+  _tracked.clear();
+}
+
+void Database::flush_tracking_locked(std::string* out) {
+  if (_current && out) {
+    auto own = std::move(_own_invalidations);
+    for (const auto& key : own) {
+      if (key) {
+        const std::vector<std::string> keys{*key};
+        deliver_locked(*_current, &keys, out);
+      } else {
+        deliver_locked(*_current, nullptr, out);
+      }
+    }
+  }
+  _own_invalidations.clear();
+  if (_broadcast.empty()) return;
+  auto pending = std::move(_broadcast);
+  _broadcast.clear();
+  // One message per prefix, in the prefixes' order, as Valkey sends them.
+  for (const auto& [prefix, keys] : pending) {
+    auto clients = _prefixes.find(prefix);
+    if (clients == _prefixes.end()) continue;
+    for (int64_t id : clients->second) {
+      auto session = _sessions.find(id);
+      if (session == _sessions.end() || !session->second->tracking.on) continue;
+      std::vector<std::string> list;
+      for (const auto& [key, by] : keys)
+        if (!(session->second->tracking.noloop && by == id)) list.push_back(key);
+      if (!list.empty()) deliver_locked(*session->second, &list, out);
+    }
+  }
+}
+
+void Database::deliver_locked(Session& tracker, const std::vector<std::string>* keys, std::string* out) {
+  const auto emit = [&](Session& target, std::string bytes) {
+    if (out && &target == _current)
+      out->append(bytes);
+    else if (target.push)
+      target.push(std::move(bytes));
+  };
+  Session* target = &tracker;
+  bool redirected = false;
+  if (tracker.tracking.redirect != 0) {
+    auto found = _sessions.find(tracker.tracking.redirect);
+    if (found == _sessions.end()) {
+      // The connection it redirects to has gone: told so, in RESP3.
+      tracker.tracking.broken = true;
+      if (tracker.protocol == resp::Protocol::resp3) {
+        resp::Reply reply(resp::Protocol::resp3);
+        reply.push(2);
+        reply.bulk("tracking-redir-broken");
+        reply.integer(tracker.tracking.redirect);
+        emit(tracker, reply.take());
+      }
+      return;
+    }
+    target = found->second;
+    redirected = true;
+  }
+  resp::Reply reply(target->protocol);
+  if (target->protocol == resp::Protocol::resp3) {
+    reply.push(2);
+    reply.bulk("invalidate");
+  } else if (redirected && (target->subscriptions > 0 || target->shard_subscriptions > 0)) {
+    // RESP2 has no push: a redirected connection in Pub/Sub mode is told as
+    // a message on __redis__:invalidate.
+    reply.array(3);
+    reply.bulk("message");
+    reply.bulk("__redis__:invalidate");
+  } else {
+    return;
+  }
+  if (keys) {
+    reply.array(keys->size());
+    for (const auto& key : *keys) reply.bulk(key);
+  } else {
+    // A flush: null, in the tracking connection's own protocol.
+    reply.raw(tracker.protocol == resp::Protocol::resp3 ? "_\r\n" : "$-1\r\n");
+  }
+  emit(*target, reply.take());
+}
+
 Executed Database::execute_one(Session& session, const std::vector<std::string>& args, std::string& out, Wake wake) {
   Executed executed;
   resp::Reply reply(session.protocol);
@@ -402,6 +555,8 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
     dannan::contract::Lock lock(_mutex);
     if (!session.welcomed) welcome_locked(session);
     _sessions.emplace(session.id, &session);
+    _current = &session;
+    _own_invalidations.clear();
     session.last_ms = _wall.unix_ms();
     session.last_command = Acl::full_name(args);
     // Valkey's order: authentication, then a transaction's own refusals, then
@@ -488,10 +643,13 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
       out.append(timeout_reply(session.protocol, call.block_null_bulk));
     } else {
       out.append(reply.bytes());
-      touch(*spec, args, db);
+      track_reads_locked(session, *spec, args);
+      touch(*spec, args, db, &session);
     }
     if (!_waiters.empty()) serve_ready(woken);
     publish_events();
+    // Invalidations for this connection go after its reply.
+    flush_tracking_locked(&out);
   }
   for (auto& [wake_one, bytes] : woken) wake_one(std::move(bytes));
   return executed;
@@ -522,7 +680,10 @@ void Database::run_locked(Session& session, const std::vector<std::string>& args
     return;
   }
   out.raw(reply.bytes());
-  touch(*spec, args, db);
+  // A transaction's or a script's reads are its caller's to track, as are the
+  // changes its writes make.
+  if (_current) track_reads_locked(*_current, *spec, args);
+  touch(*spec, args, db, _current);
 }
 
 std::string Database::scoped(size_t db, std::string_view key) {
@@ -539,7 +700,7 @@ std::pair<size_t, std::string_view> Database::unscoped(std::string_view scoped_k
   return {db, scoped_key.substr(nul + 1)};
 }
 
-void Database::touch(const Spec& spec, const std::vector<std::string>& args, size_t db) {
+void Database::touch(const Spec& spec, const std::vector<std::string>& args, size_t db, const Session* modifier) {
   if (spec.flags.find("write") == std::string_view::npos) return;
   if (spec.name == "flushall" || spec.name == "flushdb") {
     // FLUSHDB empties one database; its watches break, others' stand.
@@ -547,9 +708,11 @@ void Database::touch(const Spec& spec, const std::vector<std::string>& args, siz
       if (spec.name == "flushdb" && unscoped(key).first != db) continue;
       for (Session* s : sessions) s->watch_touched = true;
     }
+    invalidate_all_locked();
     return;
   }
   for (auto key : keys_of(spec, args)) {
+    invalidate_locked(key, modifier);
     std::string named = scoped(db, key);
     auto found = _watchers.find(named);
     if (found != _watchers.end())
@@ -563,6 +726,7 @@ void Database::touch(const Spec& spec, const std::vector<std::string>& args, siz
       auto target = parse_integer(args[spec.name == "move" ? 2 : i + 1]);
       if (!target || *target < 0) break;
       const std::string& key = args[spec.name == "move" ? 1 : 2];
+      invalidate_locked(key, modifier);
       std::string named = scoped(static_cast<size_t>(*target), key);
       auto found = _watchers.find(named);
       if (found != _watchers.end())
@@ -618,8 +782,10 @@ bool Database::watch_broken_locked(Session& session) {
 void Database::forget(Session& session) {
   dannan::contract::Lock lock(_mutex);
   unwatch_locked(session);
+  track_off_locked(session);
   _sessions.erase(session.id);
   _monitors.erase(session.id);
+  if (_current == &session) _current = nullptr;
 }
 
 void Database::forget_waiter(uint64_t id) {
@@ -671,8 +837,9 @@ void Database::serve_ready(Woken& woken) {
         if (call.blocked) break;
         woken.emplace_back(std::move(waiter.wake), reply.take());
         const std::vector<std::string> served_args = waiter.args;
+        const Session* served = waiter.session;
         forget_waiter(id);
-        touch(*spec, served_args, db);
+        touch(*spec, served_args, db, served);
       }
     }
   }
@@ -698,9 +865,12 @@ size_t Database::expire_step(size_t budget) {
   // While CLIENT PAUSE holds writes nothing expires, as Valkey's pause holds
   // its expiry.
   if (_pause_until_ms > _wall.unix_ms()) return 0;
+  // No connection's command runs here: every invalidation is pushed.
+  _current = nullptr;
   size_t removed = 0;
   for (auto& db : _dbs) removed += db->expire_step(budget);
   publish_events();
+  flush_tracking_locked(nullptr);
   return removed;
 }
 

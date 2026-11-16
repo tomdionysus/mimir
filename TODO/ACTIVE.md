@@ -8,9 +8,8 @@ durability, and the order.
 ## Resume here
 
 - State: `develop` pushed (the remote is public since 2026-11-15). Last gate:
-  release 298 passed, differential 33 of 33.
-- Single-node work still owed (none waits on anyone): client-side caching
-  (CLIENT TRACKING, CACHING, invalidation pushes); MEMORY STATS; PFDEBUG. Valkey's persistence and replication commands (SAVE,
+  release 305 passed, differential 33 of 33.
+- Single-node work still owed (none waits on anyone): MEMORY STATS; PFDEBUG. Valkey's persistence and replication commands (SAVE,
   BGSAVE, BGREWRITEAOF, SHUTDOWN, REPLICAOF, SLAVEOF, SYNC, PSYNC, REPLCONF,
   FAILOVER, MIGRATE, RESTORE-ASKING) wait on Tom's ruling.
 - The single-node stage is complete: every Valkey type and command family,
@@ -78,7 +77,11 @@ then the code.
 - The Lua packages (liblua5.1-0-dev, lua-cjson-dev, lua-bitop-dev,
   lua-cmsgpack) are on uranus and jupiter; clang and libFuzzer on jupiter.
   Fuzz targets on the Pis: `-DMIMIR_FUZZ_SANITIZERS=fuzzer,undefined` (ASan
-  cannot start there).
+  under clang's libFuzzer would not start there; g++'s ASan runs, Dannan
+  reports).
+- TSan (Tom, 2026-11-16, relayed by Dannan): it may run on the Mac if and
+  only if hunting a specific bug, never as a gate or a routine build. It
+  cannot run on the Pis (g++ 14's TSan refuses their 47-bit address space).
 - Commit when a step's gate passes; push `develop`. Read the completed hosted
   CI runs, not only the newest (superseded runs are cancelled); push no more
   until a run completes when a fix awaits confirmation.

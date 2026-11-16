@@ -71,6 +71,81 @@ void authenticate(Call& call, const std::string& username, const std::string& pa
   call.session.authenticated = true;
 }
 
+// Whether one prefix begins the other: BCAST's prefixes for one connection
+// must not, as Valkey requires.
+bool overlaps(std::string_view a, std::string_view b) {
+  const size_t n = std::min(a.size(), b.size());
+  return a.substr(0, n) == b.substr(0, n);
+}
+
+// CLIENT TRACKING ON|OFF and its options, checked in Valkey's order.
+void tracking(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+  int64_t redirect = 0;
+  bool bcast = false, optin = false, optout = false, noloop = false;
+  std::vector<std::string> prefixes;
+  for (size_t i = 3; i < call.args.size(); ++i) {
+    const bool more = i + 1 < call.args.size();
+    const std::string& option = call.args[i];
+    if (iequals(option, "REDIRECT") && more) {
+      if (redirect != 0) throw CommandError("ERR A client can only redirect to a single other client");
+      redirect = integer_argument(call.args[++i]);
+      if (!call.database.has_session_locked(redirect)) throw CommandError("ERR The client ID you want redirect to does not exist");
+    } else if (iequals(option, "BCAST")) {
+      bcast = true;
+    } else if (iequals(option, "OPTIN")) {
+      optin = true;
+    } else if (iequals(option, "OPTOUT")) {
+      optout = true;
+    } else if (iequals(option, "NOLOOP")) {
+      noloop = true;
+    } else if (iequals(option, "PREFIX") && more) {
+      prefixes.push_back(call.args[++i]);
+    } else {
+      throw CommandError(syntax_error);
+    }
+  }
+  auto& t = call.session.tracking;
+  if (iequals(call.args[2], "OFF")) {
+    call.database.track_off_locked(call.session);
+    call.reply.simple("OK");
+    return;
+  }
+  if (!iequals(call.args[2], "ON")) throw CommandError(syntax_error);
+  if (!bcast && !prefixes.empty()) throw CommandError("ERR PREFIX option requires BCAST mode to be enabled");
+  if (t.on && t.bcast != bcast)
+    throw CommandError("ERR You can't switch BCAST mode on/off before disabling tracking for this client, and then re-enabling it with a different mode.");
+  if (bcast && (optin || optout)) throw CommandError("ERR OPTIN and OPTOUT are not compatible with BCAST");
+  if (optin && optout) throw CommandError("ERR You can't specify both OPTIN mode and OPTOUT mode");
+  if ((optin && t.optout) || (optout && t.optin))
+    throw CommandError("ERR You can't switch OPTIN/OPTOUT mode before disabling tracking for this client, and then re-enabling it with a different mode.");
+  if (bcast) {
+    for (size_t i = 0; i < prefixes.size(); ++i) {
+      for (const auto& existing : t.prefixes)
+        if (overlaps(existing, prefixes[i]))
+          throw CommandError("ERR Prefix '" + prefixes[i] + "' overlaps with an existing prefix '" + existing +
+                             "'. Prefixes for a single client must not overlap.");
+      for (size_t j = i + 1; j < prefixes.size(); ++j)
+        if (overlaps(prefixes[i], prefixes[j]))
+          throw CommandError("ERR Prefix '" + prefixes[i] + "' overlaps with another provided prefix '" + prefixes[j] +
+                             "'. Prefixes for a single client must not overlap.");
+    }
+  }
+  t.on = true;
+  t.broken = false;
+  t.redirect = redirect;
+  t.bcast = bcast;
+  t.optin = optin;
+  t.optout = optout;
+  t.noloop = noloop;
+  if (bcast) {
+    // BCAST with no prefix hears of every key.
+    if (prefixes.empty()) prefixes.emplace_back();
+    for (auto& prefix : prefixes) t.prefixes.insert(std::move(prefix));
+    call.database.track_on_locked(call.session);
+  }
+  call.reply.simple("OK");
+}
+
 }  // namespace
 
 // One line of CLIENT LIST, in Valkey's field order for the fields Mimir keeps.
@@ -336,18 +411,48 @@ void client(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
     call.reply.simple("OK");
   } else if (sub == "getredir") {
     if (call.args.size() != 2) wrong_arity("client|getredir");
-    // No tracking, so no redirection.
-    call.reply.integer(-1);
+    call.reply.integer(call.session.tracking.on ? call.session.tracking.redirect : -1);
   } else if (sub == "trackinginfo") {
     if (call.args.size() != 2) wrong_arity("client|trackinginfo");
+    const auto& t = call.session.tracking;
+    std::vector<std::string_view> flags;
+    if (!t.on) {
+      flags.push_back("off");
+    } else {
+      flags.push_back("on");
+      if (t.bcast) flags.push_back("bcast");
+      if (t.optin) flags.push_back("optin");
+      if (t.optin && t.caching) flags.push_back("caching-yes");
+      if (t.optout) flags.push_back("optout");
+      if (t.optout && t.caching) flags.push_back("caching-no");
+      if (t.noloop) flags.push_back("noloop");
+      if (t.broken) flags.push_back("broken_redirect");
+    }
     call.reply.map(3);
     call.reply.bulk("flags");
-    call.reply.set(1);
-    call.reply.bulk("off");
+    call.reply.set(flags.size());
+    for (auto flag : flags) call.reply.bulk(flag);
     call.reply.bulk("redirect");
-    call.reply.integer(-1);
+    call.reply.integer(t.on ? t.redirect : -1);
     call.reply.bulk("prefixes");
-    call.reply.array(0);
+    call.reply.array(t.prefixes.size());
+    for (const auto& prefix : t.prefixes) call.reply.bulk(prefix);
+  } else if (sub == "tracking") {
+    if (call.args.size() < 3) wrong_arity("client|tracking");
+    tracking(call);
+  } else if (sub == "caching") {
+    if (call.args.size() != 3) wrong_arity("client|caching");
+    auto& t = call.session.tracking;
+    if (!t.on) throw CommandError("ERR CLIENT CACHING can be called only when the client is in tracking mode with OPTIN or OPTOUT mode enabled");
+    if (iequals(call.args[2], "YES")) {
+      if (!t.optin) throw CommandError("ERR CLIENT CACHING YES is only valid when tracking is enabled in OPTIN mode.");
+    } else if (iequals(call.args[2], "NO")) {
+      if (!t.optout) throw CommandError("ERR CLIENT CACHING NO is only valid when tracking is enabled in OPTOUT mode.");
+    } else {
+      throw CommandError(syntax_error);
+    }
+    t.caching = true;
+    call.reply.simple("OK");
   } else if (sub == "import-source") {
     if (call.args.size() != 3) wrong_arity("client|import-source");
     throw CommandError("ERR Server is not in import mode");
@@ -507,8 +612,9 @@ void time(Call& call) {
 
 void reset(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   // The connection is the default user again, authenticated only if that
-  // user needs no password.
+  // user needs no password, and tracks nothing.
   call.database.welcome_locked(call.session);
+  call.database.track_off_locked(call.session);
   call.database.pubsub().drop(call.session.id);
   call.session.subscriptions = 0;
   call.session.shard_subscriptions = 0;

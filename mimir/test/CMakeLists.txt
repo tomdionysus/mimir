@@ -28,6 +28,7 @@ add_executable(mimir_tests
   command_sort_test.cpp
   command_stream_groups_test.cpp
   command_streams_test.cpp
+  command_tracking_test.cpp
   command_strings_test.cpp
   command_transactions_test.cpp
   command_zsets_test.cpp
