@@ -1,0 +1,30 @@
+#
+# Mimir - The Distributed Database
+#
+# Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+# Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+#
+
+# The build cluster's registrar node (Tom, 2026-11-16): one per Pi, on the
+# lab LAN, plaintext AUTH allowed there by Tom's word. The users are in
+# secrets.yaml beside this file, never here:
+#
+#   acl:
+#     users:
+#       - user default off
+#       - user registrar on >... ~node:* +hset +hdel +expire +pexpire +del +ping +hello +client|setname
+#       - user reader on >... ~node:* resetchannels &__keyspace@0__:node:* +@read +scan +ping +hello +psubscribe +punsubscribe
+#
+# Keyspace notifications are on, so a scheduler hears a node register, change
+# or expire: PSUBSCRIBE __keyspace@0__:node:*.
+
+notify:
+  keyspace_events: Khgx
+listen:
+  host: 0.0.0.0
+  port: 6390
+auth:
+  plaintext: true
+log:
+  level: INFO
+  format: json

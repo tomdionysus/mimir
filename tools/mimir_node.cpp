@@ -29,6 +29,7 @@
 //   mimir-node --version
 
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/signal_set.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <chrono>
@@ -67,6 +68,8 @@ dannan::config::Reader reader() {
       Setting{"databases", Setting::Kind::value, "--databases", "MIMIR_DATABASES", "a count of databases, 1 to 1024"},
       Setting{"auth.plaintext", Setting::Kind::toggle, "--auth-plaintext", "MIMIR_AUTH_PLAINTEXT", "whether AUTH is taken without TLS"},
       Setting{"acl.users", Setting::Kind::list, "--user", "", "lines of a Valkey ACL file: \"user <name> <rules>...\""},
+      Setting{"notify.keyspace_events", Setting::Kind::value, "--notify-keyspace-events", "MIMIR_NOTIFY_KEYSPACE_EVENTS",
+              "Valkey's notify-keyspace-events letters, as \"Khgx\""},
       Setting{"seconds", Setting::Kind::value, "--seconds", "", "seconds to run, 0 for ever"},
       Setting{"log.level", Setting::Kind::value, "--log-level", "MIMIR_LOG_LEVEL", "ALL, DEBUG, INFO, WARN or ERROR"},
       Setting{"log.format", Setting::Kind::value, "--log-format", "MIMIR_LOG_FORMAT", "text or json"},
@@ -102,6 +105,11 @@ int main(int argc, char** argv) {
     database_settings.databases = static_cast<size_t>(settings.number("databases", 1, 1024).value_or(1));
     database_settings.auth_plaintext = settings.toggle("auth.plaintext").value_or(false);
     database_settings.users = settings.list("acl.users");
+    database_settings.notify_keyspace_events = settings.text("notify.keyspace_events").value_or("");
+    // SHUTDOWN (ruling 31): the stop is posted, never run on the command's
+    // thread under the database's lock.
+    std::function<void()> stop_node;
+    database_settings.shutdown = [&io, &stop_node] { asio::post(io, [&stop_node] { stop_node(); }); };
     std::unique_ptr<mimir::command::Database> made;
     try {
       made = std::make_unique<mimir::command::Database>(dannan::contract::system_wall_clock(), database_settings);
@@ -173,6 +181,10 @@ int main(int argc, char** argv) {
       expiry.cancel();
       server->close_all();
       drained();
+    };
+    stop_node = [&] {
+      logger.info("SHUTDOWN from a client: stopping");
+      stop();
     };
     asio::signal_set signals(io, SIGINT, SIGTERM);
     signals.async_wait([&](boost::system::error_code, int) { stop(); });

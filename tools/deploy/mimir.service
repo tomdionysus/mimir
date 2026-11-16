@@ -1,0 +1,30 @@
+#
+# Mimir - The Distributed Database
+#
+# Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+# Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+#
+
+# One mimir-node as a systemd service. Its settings are
+# /etc/mimir/config.yaml and, beside it, secrets.yaml (mode 600: the users).
+# The node keeps nothing across a restart until it persists in Dagda.
+
+[Unit]
+Description=Mimir node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/mimir/bin/mimir-node --config /etc/mimir/config.yaml
+Environment=LD_LIBRARY_PATH=/opt/mimir/lib
+Restart=on-failure
+RestartSec=2
+Nice=5
+MemoryMax=512M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
