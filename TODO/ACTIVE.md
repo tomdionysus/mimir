@@ -99,7 +99,18 @@ durability, and the order.
   prefers self. Dannan's answer: it does (fetch_bases puts self first and
   reads it locally), so (b) needs nothing more from Dannan. (a) is recorded
   as Dannan's first item after 0.9.0, and its API comes to Mimir before it
-  is built.
+  is built. Tom then moved it into 0.9.0 as part 6 (Kvasir asked for the
+  same thing).
+- Reviewed 2026-11-16, change_deltas(..., DeltaChange(span<const Base{ballot,
+  summary, has_value, local}>) -> Deltas{deltas, result}): it fits, with
+  three asks:
+  1. Deltas can decline: the base isn't local, or Mimir's live state moved
+     off it. No accept is sent, and Mimir retries on change().
+  2. Deltas carries the summary each delta yields, and the fast path checks
+     ballot and summary. Commutation isn't relied on, since a reply
+     computed from the base doesn't survive a merge (locks).
+  3. DeltaChange is never run under Dannan's locks. need_whole acceptors
+     are caught up by an identity change() (asked Dannan to confirm).
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
