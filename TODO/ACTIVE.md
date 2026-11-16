@@ -9,7 +9,10 @@ durability, and the order.
 
 - State: `develop` pushed (the remote is public since 2026-11-15). Last gate:
   release 310 passed, differential 33 of 33 (corvus-jupiter, whose build tree
-  is `/root/mimir-work/mimir/build-ci`; uranus is back but 4 GB).
+  is `/root/mimir-work/mimir/build-ci`; uranus is back but 4 GB). Hosted CI
+  green on all seven jobs at `eb17618` (it runs again since the repository
+  went public; its clang and ASan jobs catch what the Pis' GCC gate cannot:
+  read every completed run).
 - Single-node work still owed (none waits on anyone): MEMORY STATS; PFDEBUG.
 - The single-node stage is complete: every Valkey type and command family,
   RESP2 and RESP3, pub/sub, transactions, server commands, configurable
@@ -115,10 +118,6 @@ then the code.
 
 ## Waiting on Tom
 
-- Hosted CI starts no job (since 2026-11-15 22:25Z): GitHub answers "recent
-  account payments have failed or your spending limit needs to be
-  increased". Every run since `d0766f5` is red for that alone; the Pi gates
-  stand meanwhile. Read the first run after billing is fixed.
 
 - The shard count's cap of 8192 (Dannan's advert is at most 1 KiB):
   recommended to accept as the upper bound of "configurable" (ruling 15).

@@ -2,6 +2,16 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-16: hosted CI back, and its two findings
+
+- The repository public, GitHub runs the jobs again (they had stopped on a
+  billing hold). The first runs found two faults the Pis' GCC gate cannot:
+  clang's thread-safety analysis, a tracking lambda reading `_current`
+  without the lock in view; ASan, the ACL test fixture welcoming a session
+  then returning it by copy, so the database held a dead frame's address
+  (production unaffected: a connection's session never moves). Fixed in
+  `eb17618`; hosted CI green on all seven jobs there.
+
 ## 2026-11-16: MIGRATE (ruling 31)
 
 - As Valkey 8.1.1 answers it (probed between two Valkeys): one key or KEYS,
