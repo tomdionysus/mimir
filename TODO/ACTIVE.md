@@ -66,7 +66,13 @@ durability, and the order.
   done(applied | need_whole)), not bytes in and out; value() may stay bytes
   (DUMP form). Dannan took all five into its design (develop `930b088`,
   "Mimir's review (2026-11-16), taken") and builds once Kvasir has answered
-  for ranges.
+  for ranges. Built on Dannan's `feature/valueless-prepare` (`5a09792`, not
+  on develop): Reduce returns Reduced{value, need}, Need{answer, since};
+  load() takes `values`; keep() leaves value and summary when has_value and
+  no value; new value(slot, name, ballot, since, done) by exact ballot;
+  fetches in 1 MiB pieces. Deltas (part 4) and transfer (part 5) to come.
+  Asked Dannan (2026-11-16): how value() says "ops past since" versus
+  "whole" when the holder no longer knows the digest's frontier.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
