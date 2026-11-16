@@ -8,10 +8,9 @@ durability, and the order.
 ## Resume here
 
 - State: `develop` pushed (the remote is public since 2026-11-15). Last gate:
-  release 307 passed, differential 33 of 33 (on corvus-jupiter: uranus hung
-  2026-11-16 and needs Tom to power-cycle it).
-- Single-node work still owed (none waits on anyone): MIGRATE (ruling 31, a
-  client of another server); MEMORY STATS; PFDEBUG.
+  release 310 passed, differential 33 of 33 (corvus-jupiter, whose build tree
+  is `/root/mimir-work/mimir/build-ci`; uranus is back but 4 GB).
+- Single-node work still owed (none waits on anyone): MEMORY STATS; PFDEBUG.
 - The single-node stage is complete: every Valkey type and command family,
   RESP2 and RESP3, pub/sub, transactions, server commands, configurable
   databases, scripting (EVAL, FUNCTION, Valkey's Lua libraries and read-only

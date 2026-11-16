@@ -14,6 +14,7 @@
 #include <memory>
 
 #include "dannan/contract/thread_safety.h"
+#include "dannan/listen/connector.h"
 #include "dannan/listen/stream.h"
 #include "dannan/status/log.h"
 #include "mimir/command/database.h"
@@ -43,7 +44,8 @@ struct ServerCounters {
 
 class Server : public std::enable_shared_from_this<Server> {
  public:
-  Server(command::Database& database, dannan::status::ScopedLogger logger, ServerSettings settings = {});
+  // `io` is the context MIGRATE's outbound connections run on.
+  Server(boost::asio::io_context& io, command::Database& database, dannan::status::ScopedLogger logger, ServerSettings settings = {});
 
   // Serves `stream` until it closes; called on the stream's executor, as a
   // listener's Accepted. Returns at once.
@@ -61,12 +63,18 @@ class Server : public std::enable_shared_from_this<Server> {
  private:
   friend class Connection;
 
+  // The connector MIGRATE reaches its targets through, made on first use.
+  // Thread-safe.
+  dannan::listen::StreamConnector& connector();
+
+  boost::asio::io_context& _io;
   command::Database& _database;
   dannan::status::ScopedLogger _logger;
   const ServerSettings _settings;
   dannan::contract::Mutex _streams_mutex;
   // The open connections' streams, by client id.
   std::map<int64_t, std::weak_ptr<dannan::listen::Stream>> _streams DANNAN_GUARDED_BY(_streams_mutex);
+  std::unique_ptr<dannan::listen::StreamConnector> _connector DANNAN_GUARDED_BY(_streams_mutex);
   std::atomic<uint64_t> _accepted{0};
   std::atomic<uint64_t> _open{0};
   std::atomic<uint64_t> _commands{0};

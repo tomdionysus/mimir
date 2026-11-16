@@ -36,7 +36,7 @@ struct ServerBed {
   command::Database database{wall};
   asio::io_context io;
   asio::executor_work_guard<asio::io_context::executor_type> work{io.get_executor()};
-  std::shared_ptr<Server> server = std::make_shared<Server>(database, dannan::status::ScopedLogger(dannan::status::null_sink(), "server"));
+  std::shared_ptr<Server> server = std::make_shared<Server>(io, database, dannan::status::ScopedLogger(dannan::status::null_sink(), "server"));
   dannan::listen::StreamListener listener{io, loopback()};
 
   static dannan::listen::ListenerConfig loopback() {
@@ -212,6 +212,59 @@ TEST(Server, ConnectionsShareOneKeyspaceAndHaveTheirOwnIds) {
   const std::string second = b.read(7 + 4);
   EXPECT_EQ(second.substr(0, 7), "$1\r\n1\r\n");
   EXPECT_NE(first.substr(5), second.substr(7));
+}
+
+// MIGRATE between two nodes, as Valkey 8.1.1 answers it (probed): the key
+// moves with its life, a target's refusal is relayed, the connection waits
+// with its pipeline behind it, and the source is held by none of it.
+TEST(Server, MigrateMovesKeysToAnotherServer) {
+  ServerBed source;
+  ServerBed target;
+  const std::string port = std::to_string(target.listener.port());
+  Client s(source.listener.port());
+  Client t(target.listener.port());
+  const auto ask = [](Client& c, const std::string& line, const std::string& reply) {
+    c.send(line + "\r\n");
+    EXPECT_EQ(c.read(reply.size()), reply) << line;
+  };
+  ask(s, "SET k v PX 100000", "+OK\r\n");
+  // The pipeline after MIGRATE waits for it, and is answered after it.
+  ask(s, "MIGRATE 127.0.0.1 " + port + " k 0 1000\r\nEXISTS k", "+OK\r\n:0\r\n");
+  ask(t, "GET k", "$1\r\nv\r\n");
+  // Its whole life: both nodes' clocks are stepped, and have not moved.
+  ask(t, "PTTL k", ":100000\r\n");
+  ask(s, "MIGRATE 127.0.0.1 " + port + " k 0 1000", "+NOKEY\r\n");
+  ask(s, "SET k w", "+OK\r\n");
+  ask(s, "MIGRATE 127.0.0.1 " + port + " k 0 1000", "-ERR Target instance replied with error: BUSYKEY Target key name already exists.\r\n");
+  ask(s, "EXISTS k", ":1\r\n");
+  ask(s, "MIGRATE 127.0.0.1 " + port + " k 0 1000 COPY REPLACE", "+OK\r\n");
+  ask(s, "EXISTS k", ":1\r\n");
+  ask(t, "GET k", "$1\r\nw\r\n");
+  ask(s, "RPUSH l a b", ":2\r\n");
+  ask(s, "MIGRATE 127.0.0.1 " + port + " \"\" 0 1000 REPLACE KEYS l k nosuch", "+OK\r\n");
+  ask(s, "EXISTS l k", ":0\r\n");
+  ask(t, "LRANGE l 0 -1", "*2\r\n$1\r\na\r\n$1\r\nb\r\n");
+  ask(s, "SET k x", "+OK\r\n");
+  ask(s, "MIGRATE 127.0.0.1 " + port + " k 9 1000", "-ERR Target instance replied with error: ERR DB index is out of range\r\n");
+  ask(s, "EXISTS k", ":1\r\n");
+}
+
+TEST(Server, MigrateToNoServerIsAnIoError) {
+  ServerBed source;
+  Client s(source.listener.port());
+  s.send("SET k v\r\n");
+  EXPECT_EQ(s.read(5), "+OK\r\n");
+  // Port 1 on loopback refuses.
+  s.send("MIGRATE 127.0.0.1 1 k 0 500\r\nEXISTS k\r\n");
+  const std::string expected = "-IOERR error or timeout writing to target instance\r\n:1\r\n";
+  EXPECT_EQ(s.read(expected.size()), expected);
+  s.send("MIGRATE 127.0.0.1 notaport k 0 500\r\n");
+  const std::string bad = "-IOERR error or timeout writing to target instance\r\n";
+  EXPECT_EQ(s.read(bad.size()), bad);
+  // In a transaction it cannot wait for its target.
+  s.send("MULTI\r\nMIGRATE 127.0.0.1 1 k 0 500\r\nEXEC\r\n");
+  const std::string transaction = "+OK\r\n+QUEUED\r\n*1\r\n-ERR MIGRATE cannot run inside a transaction or a script on Mimir\r\n";
+  EXPECT_EQ(s.read(transaction.size()), transaction);
 }
 
 }  // namespace

@@ -257,6 +257,21 @@ TEST(CommandIntrospection, PersistenceAndReplicationTakeMimirsMeaning) {
   EXPECT_EQ(bed.run({"GET", "k2"}), bulk("v"));
 }
 
+TEST(CommandIntrospection, MigrateRefusesWhatValkeyRefuses) {
+  Bed bed;
+  bed.run({"SET", "k", "v"});
+  EXPECT_EQ(bed.run({"MIGRATE", "127.0.0.1", "7382", "nosuch", "0", "1000"}), "+NOKEY\r\n");
+  EXPECT_EQ(bed.run({"MIGRATE", "127.0.0.1", "7382", "k", "0", "1000", "KEYS", "k2"}),
+            error("ERR When using MIGRATE KEYS option, the key argument must be set to the empty string"));
+  EXPECT_EQ(bed.run({"MIGRATE", "127.0.0.1", "7382", "k", "0", "1000", "BOGUS"}), error("ERR syntax error"));
+  EXPECT_EQ(bed.run({"MIGRATE", "127.0.0.1", "7382", "k", "0", "1000", "AUTH"}), error("ERR syntax error"));
+  EXPECT_EQ(bed.run({"MIGRATE", "127.0.0.1", "7382", "k", "x", "1000"}), error("ERR value is not an integer or out of range"));
+  EXPECT_EQ(bed.run({"MIGRATE", "127.0.0.1", "7382", "k", "0", "x"}), error("ERR value is not an integer or out of range"));
+  // Nothing can wait here for a target.
+  EXPECT_EQ(bed.run({"MIGRATE", "127.0.0.1", "7382", "k", "0", "1000"}), error("ERR MIGRATE needs a connection that can wait for its target"));
+  EXPECT_EQ(bed.run({"COMMAND", "GETKEYS", "MIGRATE", "h", "1", "", "0", "10", "AUTH", "KEYS", "KEYS", "a", "b"}), array({bulk("a"), bulk("b")}));
+}
+
 TEST(CommandIntrospection, ShutdownStopsTheNode) {
   dannan::test::SteppedWall wall;
   int stopped = 0;

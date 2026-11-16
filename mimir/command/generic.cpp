@@ -339,6 +339,60 @@ void restore(Call& call) {
   call.reply.simple("OK");
 }
 
+// MIGRATE host port key|"" destination-db timeout [COPY] [REPLACE]
+// [AUTH password | AUTH2 username password] [KEYS key...], checked as
+// Valkey checks it. The keys are read here, under the lock; the talk with
+// the target is the connection's, off the lock (ruling 31), and the command
+// ends in Database::finish_migrate.
+void migrate(Call& call) {
+  MigrateJob job;
+  job.host = call.args[1];
+  job.port = call.args[2];
+  size_t first_key = 3;
+  size_t keys = 1;
+  for (size_t j = 6; j < call.args.size(); ++j) {
+    const size_t more = call.args.size() - 1 - j;
+    if (iequals(call.args[j], "COPY")) {
+      job.copy = true;
+    } else if (iequals(call.args[j], "REPLACE")) {
+      job.replace = true;
+    } else if (iequals(call.args[j], "AUTH")) {
+      if (more < 1) throw CommandError(syntax_error);
+      job.password = call.args[++j];
+    } else if (iequals(call.args[j], "AUTH2")) {
+      if (more < 2) throw CommandError(syntax_error);
+      job.username = call.args[++j];
+      job.password = call.args[++j];
+    } else if (iequals(call.args[j], "KEYS")) {
+      if (!call.args[3].empty()) throw CommandError("ERR When using MIGRATE KEYS option, the key argument must be set to the empty string");
+      first_key = j + 1;
+      keys = call.args.size() - j - 1;
+      break;
+    } else {
+      throw CommandError(syntax_error);
+    }
+  }
+  job.timeout_ms = integer_argument(call.args[5]);
+  job.target_db = integer_argument(call.args[4]);
+  if (job.timeout_ms <= 0) job.timeout_ms = 1000;
+  job.source_db = call.db;
+  const uint64_t now = call.keys.now_ms();
+  for (size_t i = first_key; i < first_key + keys; ++i) {
+    keyspace::Entry* entry = call.keys.find(call.args[i]);
+    if (!entry) continue;
+    MigrateJob::Item item{call.args[i], keyspace::rdb::dump(*entry), 0};
+    // A life that ends now still goes, with one millisecond, as Valkey's.
+    if (entry->expires_at) item.ttl_ms = std::max<int64_t>(1, static_cast<int64_t>(*entry->expires_at) - static_cast<int64_t>(now));
+    job.items.push_back(std::move(item));
+  }
+  // None of them here: nothing to move, which is no error.
+  if (job.items.empty()) {
+    call.reply.simple("NOKEY");
+    return;
+  }
+  call.migrate = std::move(job);
+}
+
 void swapdb(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   auto a = parse_integer(call.args[1]);
   if (!a) throw CommandError("ERR invalid first DB index");
