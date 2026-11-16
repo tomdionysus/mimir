@@ -17,7 +17,9 @@ Wants=network-online.target
 [Service]
 ExecStart=/opt/mimir/bin/mimir-node --config /etc/mimir/config.yaml
 Environment=LD_LIBRARY_PATH=/opt/mimir/lib
-Restart=on-failure
+# Always: a node told to stop by a signal exits cleanly, and is still wanted
+# (an operator's `systemctl stop` is not restarted).
+Restart=always
 RestartSec=2
 Nice=5
 MemoryMax=512M
