@@ -2,6 +2,14 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-17: Dannan 0.9.1
+
+- Pin moved from 0.9.0 to 0.9.1: an advert change is now stamped above
+  every copy of the node record already handed out (Lir's finding). Mimir's
+  `mimir` capability advert relies on that.
+- Gate on node-d (-j1): release 337 passed on 0.9.1. No command path
+  changed, so the differential was not rerun.
+
 ## 2026-11-17: Stage 3, step 3: writes by agreement
 
 - `mimir/command/agreements.h` is the Agreements interface the database
