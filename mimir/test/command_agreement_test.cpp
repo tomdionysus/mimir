@@ -208,19 +208,33 @@ TEST(CommandAgreement, WritesOfSeveralKeysAreRefusedUntilAtomicCommit) {
   EXPECT_EQ(bed.run({"MGET", "a", "b"}), "*2\r\n$-1\r\n$-1\r\n");
 }
 
-TEST(CommandAgreement, WritingScriptsWaitForStepEight) {
+TEST(CommandAgreement, AScriptCommitsByAgreementOnItsOneDeclaredKey) {
   AgreementBed bed;
-  const std::string later = "-ERR Mimir does not yet run blocking commands, or transactions and scripts that write, by agreement\r\n";
-  EXPECT_EQ(bed.run({"EVAL", "return 1", "0"}), later);
+  EXPECT_EQ(bed.run({"EVAL", "redis.call('incr', KEYS[1]); return redis.call('incr', KEYS[1])", "1", "n"}), ":2\r\n");
+  EXPECT_EQ(bed.registers->proposals, 1);
+  EXPECT_EQ(bed.run({"GET", "n"}), "$1\r\n2\r\n");
+  // Another key, read or written, is refused inside it.
+  const auto other = bed.run({"EVAL", "return redis.call('set', 'other', 1)", "1", "n"});
+  EXPECT_NE(other.find("names another: 'other'"), std::string::npos) << other;
+  EXPECT_FALSE(bed.registers->record(0, "other").payload);
+  // Several keys are several keys.
+  EXPECT_EQ(bed.run({"EVAL", "return 1", "2", "a", "b"}),
+            "-ERR this command writes more than one key, which Mimir refuses until Dannan 0.10.0's atomic commit (ruling 35)\r\n");
+}
+
+TEST(CommandAgreement, AScriptThatDeclaresNoKeyRunsHereAndOnlyReads) {
+  AgreementBed bed;
+  EXPECT_EQ(bed.run({"SET", "x", "v"}), "+OK\r\n");
+  const int proposals = bed.registers->proposals;
+  EXPECT_EQ(bed.run({"EVAL", "return redis.call('get', 'x')", "0"}), "$1\r\nv\r\n");
+  const auto wrote = bed.run({"EVAL", "return redis.call('set', 'x', 'w')", "0"});
+  EXPECT_NE(wrote.find("must declare it"), std::string::npos) << wrote;
+  EXPECT_EQ(bed.registers->proposals, proposals);
+  EXPECT_EQ(bed.run({"GET", "x"}), "$1\r\nv\r\n");
+  // A transaction that only reads runs here too.
   EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
-  EXPECT_EQ(bed.run({"EVAL", "return 1", "0"}), "+QUEUED\r\n");
-  EXPECT_EQ(bed.run({"EXEC"}), later);
-  // The transaction is gone: a later command runs at once.
-  EXPECT_EQ(bed.run({"GET", "k"}), "$-1\r\n");
-  // A transaction that only reads runs.
-  EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
-  EXPECT_EQ(bed.run({"GET", "k"}), "+QUEUED\r\n");
-  EXPECT_EQ(bed.run({"EXEC"}), "*1\r\n$-1\r\n");
+  EXPECT_EQ(bed.run({"GET", "x"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"EXEC"}), "*1\r\n$1\r\nv\r\n");
 }
 
 TEST(CommandAgreement, ABlockingPopWithSomethingToTakeIsServedAtOnce) {

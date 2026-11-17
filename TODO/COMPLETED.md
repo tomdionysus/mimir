@@ -2,6 +2,34 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-17: Stage 3, step 8c: scripts by agreement
+
+- EVAL, EVALSHA and FCALL that declare one key (or the same key more than
+  once) are proposed whole. The script runs speculatively against that key
+  alone; a command inside it naming another key or database is refused
+  ("names another").
+- A script that declares no key runs here, on this node's committed view,
+  and may only read. A keyed write inside it is refused ("must declare
+  it").
+- A script declaring several keys is refused (ruling 35).
+- Known gaps:
+  - a script that writes a key it did not declare is refused, where Valkey
+    on one server runs it (Valkey's documentation asks scripts to declare
+    every key);
+  - a script that only reads, but declares its key, still counts as a write
+    for WATCH;
+  - SCRIPT LOAD and FUNCTION LOAD stay node-local, so an EVALSHA on another
+    node may answer NOSCRIPT.
+- Tests: CommandAgreement covers a script committed on its one key,
+  another key refused inside it, several keys refused, and a script with no
+  key reading here and refused a write.
+- Gate on corvus-jupiter (-j2): release 351 passed. The per-case
+  differential shows 234 differences (from 347).
+  - 143 are ruling 35 refusals.
+  - 4 are undeclared-key script writes, as above.
+  - The rest are knock-ons of those: a case's setup MSET, STORE, RENAME or
+    BITOP was refused.
+
 ## 2026-11-17: Stage 3, step 8b: blocking pops by agreement
 
 - A blocking write on one key is proposed like any write: BLPOP, BRPOP,
