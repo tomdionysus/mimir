@@ -67,6 +67,7 @@
 #include "dannan/listen/listener.h"
 #include "dannan/node.h"
 #include "dannan/status/log.h"
+#include "mimir/cluster/agreements.h"
 #include "mimir/cluster/space.h"
 #include "mimir/command/database.h"
 #include "mimir/server/server.h"
@@ -262,6 +263,8 @@ int main(int argc, char** argv) {
     // thread under the database's lock.
     std::function<void()> stop_node;
     database_settings.shutdown = [&io, &stop_node] { asio::post(io, [&stop_node] { stop_node(); }); };
+    // Every write commits by agreement (ruling 34), a lone node's included.
+    database_settings.agreements = std::make_shared<mimir::cluster::Agreements>(*space);
     std::unique_ptr<mimir::command::Database> made;
     try {
       made = std::make_unique<mimir::command::Database>(dannan::contract::system_wall_clock(), database_settings);
@@ -349,9 +352,10 @@ int main(int argc, char** argv) {
       });
     }
     finished.get_future().wait();
-    // The cluster goes after the clients, while the io still runs.
-    space.reset();
+    // The cluster goes after the clients, while the io still runs: the node
+    // first, so no write in flight is proposed again, then the space.
     node->stop();
+    space.reset();
     node.reset();
     threads.join();
     say("{\"event\":\"stopped\"}");

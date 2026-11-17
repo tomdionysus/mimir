@@ -9,6 +9,7 @@
 # "mimir/x.h"; everything else is included from the repository root as
 # "mimir/<subsystem>/x.h".
 add_library(mimir SHARED
+  cluster/agreements.cpp
   cluster/register.cpp
   cluster/space.cpp
   cluster/store.cpp
