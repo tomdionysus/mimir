@@ -156,6 +156,11 @@ durability, and the order.
     Database::execute directly.
   - Asked for: per-node clock offset and drift; restart with the store
     kept or wiped; matrix partitions with a heal at a chosen tick.
+  Built on Dannan's develop (`d50bb67`, `dannan/test/fixtures/sim/nodes.h`):
+  - SimNodes(world, n, faults, skew_ms, drift_ppm) and restart(i, wipe);
+  - SimNetwork::partition and heal().
+  A wipe takes a new identity. Asked for a wipe that keeps the id with a
+  new epoch, for the restart rule.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
