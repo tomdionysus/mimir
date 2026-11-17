@@ -136,9 +136,11 @@ struct Result {
   std::string reply;
   std::vector<Raised> raised;
   bool wrote = false;
+  // A blocking command that found nothing: it waits for its key to be written.
+  bool blocked = false;
 };
 
-std::string encode_result(std::string_view reply, const std::vector<Raised>& raised, bool wrote = false) {
+std::string encode_result(std::string_view reply, const std::vector<Raised>& raised, bool wrote = false, bool blocked = false) {
   dannan::net::Writer out;
   out.bytes({reinterpret_cast<const uint8_t*>(reply.data()), reply.size()});
   out.u32(static_cast<uint32_t>(raised.size()));
@@ -147,7 +149,7 @@ std::string encode_result(std::string_view reply, const std::vector<Raised>& rai
     out.string(event);
     out.string(key);
   }
-  out.u8(wrote ? 1 : 0);
+  out.u8(static_cast<uint8_t>((wrote ? 1 : 0) | (blocked ? 2 : 0)));
   const auto bytes = out.take();
   return std::string(bytes.begin(), bytes.end());
 }
@@ -167,7 +169,9 @@ std::optional<Result> decode_result(std::string_view bytes) {
       auto key = in.string(512ull * 1024 * 1024);
       out.raised.emplace_back(static_cast<size_t>(db), std::move(event), std::move(key));
     }
-    out.wrote = in.u8() != 0;
+    const uint8_t flags = in.u8();
+    out.wrote = (flags & 1) != 0;
+    out.blocked = (flags & 2) != 0;
     in.finish();
     return out;
   } catch (const dannan::net::DecodeError&) {
@@ -390,7 +394,7 @@ bool Database::unblock_locked(int64_t client, bool error) {
   for (auto& [id, waiter] : _waiters) {
     // A write waiting for its agreement is not blocked: it is answered by its
     // commit.
-    if (waiter.session->id != client || waiter.postponed || waiter.proposal) continue;
+    if (waiter.proposal || !waiter.session || waiter.session->id != client || waiter.postponed) continue;
     std::string bytes;
     if (error) {
       resp::Reply reply(waiter.session->protocol);
@@ -778,9 +782,26 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         proposal->operation = _settings.agreements->operation_id();
         proposal->issued_ms = _wall.unix_ms();
         proposal->deadline_ms = proposal->issued_ms + proposal_deadline_ms;
-        _waiters.emplace(proposal->wait, Waiter{&session, args, {}, false, std::move(wake), false, true});
-        executed.wait = proposal->wait;
+        Waiter waiter{&session, args, {}, false, std::move(wake), false, true};
         executed.wait_seconds = 0;
+        if (exec_key.empty() && has_flag(spec->flags, "blocking")) {
+          // A blocking pop waits on its key with its own timeout; while an
+          // attempt is proposed a timeout waits for it.
+          const auto blocking = blocking_locked(*spec, args, session, db);
+          if (!blocking.error.empty()) {
+            reply.error(blocking.error);
+            out.append(reply.bytes());
+            return executed;
+          }
+          waiter.keys = {scoped(db, key)};
+          waiter.null_bulk = blocking.null_bulk;
+          waiter.blocked = proposal;
+          waiter.in_flight = true;
+          _waiting_on[waiter.keys.front()].push_back(proposal->wait);
+          executed.wait_seconds = blocking.seconds;
+        }
+        _waiters.emplace(proposal->wait, std::move(waiter));
+        executed.wait = proposal->wait;
         after.fn = [this, proposal] { propose(proposal); };
         return executed;
       }
@@ -838,7 +859,57 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
     flush_tracking_locked(&out);
   }
   for (auto& [wake_one, bytes] : woken) wake_one(std::move(bytes));
+  start_pending();
   return executed;
+}
+
+void Database::repropose_locked(const std::shared_ptr<Proposal>& proposal) {
+  // A new attempt is a new operation: the last one found nothing and changed
+  // nothing.
+  proposal->operation = _settings.agreements->operation_id();
+  proposal->issued_ms = _wall.unix_ms();
+  proposal->deadline_ms = proposal->issued_ms + proposal_deadline_ms;
+  _pending.push_back(proposal);
+}
+
+void Database::start_pending() {
+  std::vector<std::shared_ptr<Proposal>> pending;
+  {
+    dannan::contract::Lock lock(_mutex);
+    pending = std::move(_pending);
+    _pending.clear();
+  }
+  for (auto& proposal : pending) propose(std::move(proposal));
+}
+
+Database::Blocking Database::blocking_locked(const Spec& spec, const std::vector<std::string>& args, Session& session, size_t db) {
+  (void)session;
+  (void)db;
+  // A blocking write's timeout, read from its arguments as its handler reads
+  // it: the last argument, BLMPOP's and BZMPOP's first, XREADGROUP's BLOCK
+  // (milliseconds; without it the command never waits).
+  Blocking out;
+  const std::string_view name = spec.name;
+  out.null_bulk = name == "blmove" || name == "brpoplpush";
+  try {
+    if (name == "xreadgroup") {
+      for (size_t i = 1; i + 1 < args.size(); ++i) {
+        if (iequals(args[i], "STREAMS")) break;
+        if (!iequals(args[i], "BLOCK")) continue;
+        const auto ms = parse_integer(args[i + 1]);
+        // The handler refuses a bad one; it answers through the agreement.
+        if (ms && *ms > 0) out.seconds = static_cast<double>(*ms) / 1000.0;
+        break;
+      }
+    } else if (name == "blmpop" || name == "bzmpop") {
+      out.seconds = block_timeout(args.at(1));
+    } else {
+      out.seconds = block_timeout(args.back());
+    }
+  } catch (const CommandError& e) {
+    out.error = e.what();
+  }
+  return out;
 }
 
 std::optional<std::string> Database::cluster_refusal_locked(const Spec& spec, const std::vector<std::string>& args, const Session& session) {
@@ -850,9 +921,10 @@ std::optional<std::string> Database::cluster_refusal_locked(const Spec& spec, co
   if (name == "eval" || name == "evalsha" || name == "fcall") return later;
   if (name == "exec") {
     if (!session.in_multi || session.multi_failed) return std::nullopt;
+    // Inside a transaction a blocking command does not wait, as Valkey has it.
     for (const auto& queued : session.queued) {
       const Spec* inner = find_spec(queued[0]);
-      if (inner && (has_flag(inner->flags, "blocking") || inner->name == "eval" || inner->name == "evalsha" || inner->name == "fcall")) return later;
+      if (inner && (inner->name == "eval" || inner->name == "evalsha" || inner->name == "fcall")) return later;
     }
     if (exec_key_locked(session).several) return several;
     return std::nullopt;
@@ -860,7 +932,6 @@ std::optional<std::string> Database::cluster_refusal_locked(const Spec& spec, co
   if (!has_flag(spec.flags, "write")) return std::nullopt;
   // These name keys in two databases, or every key there is.
   if (name == "flushall" || name == "flushdb" || name == "swapdb" || name == "move" || name == "copy" || name == "migrate") return several;
-  if (has_flag(spec.flags, "blocking")) return later;
   const auto keys = spec.find_keys ? spec.find_keys(args) : keys_of(spec, args);
   if (keys.size() > 1) return several;
   return std::nullopt;
@@ -908,6 +979,11 @@ Agreements::Changed Database::speculate(const Proposal& proposal, const cluster:
   _speculating = false;
   _scratch = nullptr;
   _random = saved;
+  // A blocking pop that found nothing changes nothing: it waits for its key.
+  if (call.blocked) {
+    _events.erase(_events.begin() + static_cast<std::ptrdiff_t>(before), _events.end());
+    return {base, encode_result(timeout_reply(session.protocol, call.block_null_bulk), {}, false, true)};
+  }
   // A write that ran counts against WATCH; an error or an aborted EXEC does not.
   const std::string& bytes = reply.bytes();
   const bool exec = proposal.spec->name == "exec";
@@ -922,7 +998,7 @@ Agreements::Changed Database::speculate(const Proposal& proposal, const cluster:
   std::vector<Raised> raised;
   for (size_t i = before; i < _events.size(); ++i) raised.emplace_back(_events[i].db, _events[i].event, _events[i].key);
   _events.erase(_events.begin() + static_cast<std::ptrdiff_t>(before), _events.end());
-  std::string result = encode_result(call.blocked ? timeout_reply(session.protocol, call.block_null_bulk) : bytes, raised, wrote);
+  std::string result = encode_result(bytes, raised, wrote);
   if (!cluster::note_applied(out, {proposal.operation, proposal.issued_ms, result}))
     return {base, encode_result("-ERR too many writes to this key are in flight; try again\r\n", {})};
   return {std::move(out), std::move(result)};
@@ -946,7 +1022,17 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
     const auto found = _waiters.find(proposal->wait);
     Session* session = found != _waiters.end() ? found->second.session : nullptr;
     const auto result = outcome.committed ? decode_result(outcome.result) : std::nullopt;
-    if (result) {
+    if (result && result->blocked && found != _waiters.end() && found->second.blocked && !found->second.timed_out) {
+      // A blocking pop that found nothing waits for its key again; if the key
+      // was written meanwhile, its turn comes round at once.
+      found->second.in_flight = false;
+      _touched.clear();
+      if (_dbs[proposal->db]->contains(proposal->key)) _touched.push_back(scoped(proposal->db, proposal->key));
+      serve_ready(woken);
+    } else if (result && result->blocked) {
+      // Its time ran out while it was proposed: the timeout's reply.
+      bytes = result->reply;
+    } else if (result) {
       // A newer commit's notice may have come first: the view keeps it.
       install_locked(proposal->db, proposal->key, outcome.version, outcome.record);
       for (const auto& [db, event, key] : result->raised) _events.push_back(Event{db, event, key});
@@ -965,13 +1051,15 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
     } else {
       bytes = "-CLUSTERDOWN " + one_line(outcome.why.empty() ? "the write could not be agreed" : outcome.why) + "\r\n";
     }
-    if (found != _waiters.end()) {
+    const bool waits_on = result && result->blocked && found != _waiters.end() && found->second.blocked && !found->second.timed_out;
+    if (found != _waiters.end() && !waits_on) {
       wake = std::move(found->second.wake);
       forget_waiter(proposal->wait);
     }
   }
   for (auto& [wake_one, reply] : woken) wake_one(std::move(reply));
   if (wake) wake(std::move(bytes));
+  start_pending();
 }
 
 void Database::install_committed(size_t db, const std::string& key, const std::string& version, const cluster::Record& record) {
@@ -989,6 +1077,7 @@ void Database::install_committed(size_t db, const std::string& key, const std::s
     _current = previous;
   }
   for (auto& [wake_one, reply] : woken) wake_one(std::move(reply));
+  start_pending();
 }
 
 void Database::touch_key_locked(size_t db, const std::string& key, const Session* modifier) {
@@ -1227,6 +1316,21 @@ void Database::forget(Session& session) {
   _sessions.erase(session.id);
   _monitors.erase(session.id);
   if (_current == &session) _current = nullptr;
+  // Its waits end with it; one whose agreement is in flight is left for its
+  // outcome to finish, answering nobody (an element it pops is gone with the
+  // connection, as Valkey's is when a client leaves with a reply unread).
+  std::vector<uint64_t> gone;
+  for (auto& [id, waiter] : _waiters) {
+    if (waiter.session != &session) continue;
+    if (waiter.blocked && waiter.in_flight) {
+      waiter.session = nullptr;
+      waiter.wake = nullptr;
+      waiter.timed_out = true;
+    } else {
+      gone.push_back(id);
+    }
+  }
+  for (const uint64_t id : gone) forget_waiter(id);
 }
 
 void Database::forget_waiter(uint64_t id) {
@@ -1260,6 +1364,15 @@ void Database::serve_ready(Woken& woken) {
         if (queue == _waiting_on.end() || queue->second.empty() || !_dbs[db]->contains(key)) break;
         const uint64_t id = queue->second.front();
         Waiter& waiter = _waiters.at(id);
+        // A blocking pop by agreement is proposed again, not run here: the
+        // oldest waiter's attempt, one at a time, so the order holds.
+        if (waiter.blocked) {
+          if (!waiter.in_flight) {
+            waiter.in_flight = true;
+            repropose_locked(waiter.blocked);
+          }
+          break;
+        }
         const Spec* spec = find_spec(waiter.args[0]);
         resp::Reply reply(waiter.session->protocol);
         Call call{*waiter.session, *this, *_dbs[db], reply, waiter.args};
@@ -1345,6 +1458,12 @@ std::optional<std::string> Database::cancel_wait(uint64_t id) {
   dannan::contract::Lock lock(_mutex);
   auto found = _waiters.find(id);
   if (found == _waiters.end()) return std::nullopt;
+  // A blocking pop being proposed may yet pop: its outcome answers, the
+  // timeout's reply if it found nothing.
+  if (found->second.blocked && found->second.in_flight) {
+    found->second.timed_out = true;
+    return std::nullopt;
+  }
   // A command CLIENT PAUSE held has no reply yet: no bytes, to be run again.
   std::string bytes = found->second.postponed ? std::string() : timeout_reply(found->second.session->protocol, found->second.null_bulk);
   forget_waiter(id);
