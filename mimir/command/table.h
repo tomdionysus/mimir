@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <set>
 #include <span>
@@ -120,6 +121,9 @@ struct Session {
   std::vector<std::vector<std::string>> queued;
   std::vector<std::pair<std::string, bool>> watched;
   bool watch_touched = false;
+  // In a cluster (stage 3): each watched key's write count as a majority held
+  // it at WATCH, which the EXEC's agreement checks.
+  std::map<std::string, uint64_t> watched_serials;
 };
 
 // MIGRATE's work off the database's lock (ruling 31): the target, the keys

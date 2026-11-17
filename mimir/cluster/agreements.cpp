@@ -138,6 +138,28 @@ void Agreements::change(size_t db, const std::string& key, Change change, std::f
       });
 }
 
+void Agreements::read(size_t db, const std::string& key, std::function<void(Outcome)> done) {
+  auto& agreement = _space.context().agreement();
+  const auto& genesis = agreement.table().genesis;
+  agreement.read(std::string(space), shard_of(key, _space.shards()), {name_of(static_cast<uint16_t>(db), key)}, genesis.nodes, genesis.version, {}, _deadline,
+                 _space.context().time().executor(), [done = std::move(done)](agree::Outcome outcome) {
+                   Outcome out;
+                   out.committed = outcome.committed;
+                   out.why = outcome.why;
+                   if (outcome.committed) {
+                     const auto record = decode_value(outcome.values.empty() ? std::nullopt : outcome.values[0]);
+                     if (record) {
+                       out.record = *record;
+                     } else {
+                       out.committed = false;
+                       out.why = "the key's stored record cannot be read";
+                     }
+                     out.version = version_of(outcome.ballot);
+                   }
+                   done(std::move(out));
+                 });
+}
+
 void Agreements::notify(size_t db, const std::string& key, const std::string& version, const Record& record) {
   auto& context = _space.context();
   const auto& replicas = context.agreement().table().genesis.nodes;

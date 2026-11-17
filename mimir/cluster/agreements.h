@@ -45,6 +45,7 @@ class Agreements final : public command::Agreements {
 
   std::string operation_id() override;
   void change(size_t db, const std::string& key, Change change, std::function<void(Outcome)> done) override;
+  void read(size_t db, const std::string& key, std::function<void(Outcome)> done) override;
   void on_committed(Committed committed) override;
 
  private:

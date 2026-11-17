@@ -9,7 +9,10 @@
 
 #include <algorithm>
 #include <functional>
+#include <map>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <tuple>
 #include <variant>
@@ -126,9 +129,16 @@ constexpr uint64_t proposal_deadline_ms = 15'000;
 // A notification a write raises: its database, event and key.
 using Raised = std::tuple<size_t, std::string, std::string>;
 
-// A write's result as the attempt that committed carries it: its reply, then
-// the notifications it raises once committed.
-std::string encode_result(std::string_view reply, const std::vector<Raised>& raised) {
+// A write's result as the attempt that committed carries it: its reply, the
+// notifications it raises once committed, and whether it wrote (its watchers
+// and trackers are told).
+struct Result {
+  std::string reply;
+  std::vector<Raised> raised;
+  bool wrote = false;
+};
+
+std::string encode_result(std::string_view reply, const std::vector<Raised>& raised, bool wrote = false) {
   dannan::net::Writer out;
   out.bytes({reinterpret_cast<const uint8_t*>(reply.data()), reply.size()});
   out.u32(static_cast<uint32_t>(raised.size()));
@@ -137,24 +147,27 @@ std::string encode_result(std::string_view reply, const std::vector<Raised>& rai
     out.string(event);
     out.string(key);
   }
+  out.u8(wrote ? 1 : 0);
   const auto bytes = out.take();
   return std::string(bytes.begin(), bytes.end());
 }
 
-// The reply and notifications a result holds; none for bytes that are not one.
-std::optional<std::pair<std::string, std::vector<Raised>>> decode_result(std::string_view bytes) {
+// What a result holds; none for bytes that are not one.
+std::optional<Result> decode_result(std::string_view bytes) {
   try {
     dannan::net::Reader in({reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()});
     const auto reply = in.view_bytes(512ull * 1024 * 1024);
-    std::pair<std::string, std::vector<Raised>> out{std::string(reinterpret_cast<const char*>(reply.data()), reply.size()), {}};
+    Result out;
+    out.reply.assign(reinterpret_cast<const char*>(reply.data()), reply.size());
     const uint32_t count = in.u32();
     if (count > 1u << 20) return std::nullopt;
     for (uint32_t i = 0; i < count; ++i) {
       const auto db = in.u64();
       auto event = in.string();
       auto key = in.string(512ull * 1024 * 1024);
-      out.second.emplace_back(static_cast<size_t>(db), std::move(event), std::move(key));
+      out.raised.emplace_back(static_cast<size_t>(db), std::move(event), std::move(key));
     }
+    out.wrote = in.u8() != 0;
     in.finish();
     return out;
   } catch (const dannan::net::DecodeError&) {
@@ -283,13 +296,15 @@ void Database::notify_locked(size_t db, char cls, std::string_view event, std::s
 
 void Database::look_up_keys(const Spec& spec, const std::vector<std::string>& args, size_t db) {
   if (!(_notify_flags & (notify_keyspace | notify_keyevent)) || !reads_its_keys(spec)) return;
+  keyspace::Keyspace& keys = _speculating && db == _scratch_db ? *_scratch : *_dbs[db];
   for (auto key : keys_of(spec, args)) {
-    if (!_dbs[db]->find(key)) notify_locked(db, 'm', "keymiss", key);
+    if (!keys.find(key)) notify_locked(db, 'm', "keymiss", key);
   }
 }
 
 void Database::publish_events() {
-  if (_events.empty()) return;
+  // A speculative run's events are its result's, published at its commit.
+  if (_events.empty() || _speculating) return;
   // Taken first: a subscriber's push may not reach back here, but a
   // publication made now must not see events queued during it.
   std::vector<Event> events = std::move(_events);
@@ -447,7 +462,7 @@ bool redacted(const std::vector<std::string>& args, size_t i) {
 }  // namespace
 
 void Database::feed_monitors(const Session& session, const Spec& spec, const std::vector<std::string>& args, size_t db) {
-  if (_monitors.empty()) return;
+  if (_monitors.empty() || _speculating) return;
   // Valkey shows neither administrative commands nor those that ask not to be.
   if (spec.flags.find("admin") != std::string_view::npos || spec.flags.find("skip_monitor") != std::string_view::npos) return;
   const uint64_t now = _wall.unix_ms();
@@ -489,7 +504,7 @@ void Database::track_off_locked(Session& session) {
 
 void Database::track_reads_locked(Session& tracker, const Spec& spec, const std::vector<std::string>& args) {
   const auto& t = tracker.tracking;
-  if (!t.on || t.bcast) return;
+  if (!t.on || t.bcast || _speculating) return;
   // A read-only script is not tracked itself, only the commands it runs.
   if (!has_flag(spec.flags, "readonly") || spec.name == "eval_ro" || spec.name == "evalsha_ro" || spec.name == "fcall_ro") return;
   if ((t.optin && !t.caching) || (t.optout && t.caching)) return;
@@ -715,18 +730,36 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         out.append(reply.bytes());
         return executed;
       }
-      const auto keys = spec->find_keys ? spec->find_keys(args) : keys_of(*spec, args);
-      if (has_flag(spec->flags, "write") && keys.size() == 1) {
+      auto keys = spec->find_keys ? spec->find_keys(args) : keys_of(*spec, args);
+      // WATCH reads each key's write count from a majority (ruling 5's strict
+      // read), so the EXEC's agreement can tell whether anything wrote it.
+      if (spec->name == "watch" && !session.in_multi && wake) {
+        const uint64_t wait = _next_wait++;
+        _waiters.emplace(wait, Waiter{&session, args, {}, false, std::move(wake), false, true});
+        executed.wait = wait;
+        std::vector<std::string> named(args.begin() + 1, args.end());
+        after.fn = [this, wait, db, named = std::move(named)]() mutable { watch_strictly(wait, db, std::move(named)); };
+        return executed;
+      }
+      // An EXEC whose writes and watches all name one key commits whole by
+      // agreement; one that only reads runs here.
+      std::string exec_key;
+      if (spec->name == "exec" && session.in_multi && !session.multi_failed) {
+        const auto named = exec_key_locked(session);
+        if (named.writes) exec_key = named.key;
+      }
+      if ((has_flag(spec->flags, "write") && keys.size() == 1) || !exec_key.empty()) {
         if (!wake) {
           reply.error("ERR this write needs a connection that can wait for its agreement");
           out.append(reply.bytes());
           return executed;
         }
+        const std::string key = exec_key.empty() ? std::string(keys[0]) : exec_key;
         look_up_keys(*spec, args, db);
         feed_monitors(session, *spec, args, db);
         // An expired key is found here, as Valkey's write finds it: its
         // "expired" is this node's to announce, once, before the write's own.
-        _dbs[db]->find(keys[0]);
+        _dbs[db]->find(key);
         publish_events();
         auto proposal = std::make_shared<Proposal>();
         proposal->wait = _next_wait++;
@@ -734,7 +767,14 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         proposal->spec = spec;
         proposal->args = args;
         proposal->db = db;
-        proposal->key = std::string(keys[0]);
+        proposal->key = key;
+        if (!exec_key.empty()) {
+          // The transaction is the agreement's now: this connection's ends.
+          session.in_multi = false;
+          session.multi_failed = false;
+          session.queued.clear();
+          unwatch_locked(session);
+        }
         proposal->operation = _settings.agreements->operation_id();
         proposal->issued_ms = _wall.unix_ms();
         proposal->deadline_ms = proposal->issued_ms + proposal_deadline_ms;
@@ -809,10 +849,12 @@ std::optional<std::string> Database::cluster_refusal_locked(const Spec& spec, co
   // the read-only forms.
   if (name == "eval" || name == "evalsha" || name == "fcall") return later;
   if (name == "exec") {
+    if (!session.in_multi || session.multi_failed) return std::nullopt;
     for (const auto& queued : session.queued) {
       const Spec* inner = find_spec(queued[0]);
-      if (inner && has_flag(inner->flags, "write")) return later;
+      if (inner && (has_flag(inner->flags, "blocking") || inner->name == "eval" || inner->name == "evalsha" || inner->name == "fcall")) return later;
     }
+    if (exec_key_locked(session).several) return several;
     return std::nullopt;
   }
   if (!has_flag(spec.flags, "write")) return std::nullopt;
@@ -844,10 +886,15 @@ Agreements::Changed Database::speculate(const Proposal& proposal, const cluster:
   listener.created = [this, db = proposal.db](std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS { notify_locked(db, 'n', "new", key); };
   scratch.set_listener(std::move(listener));
   // This attempt's own session, clock and random choices: every attempt of
-  // one operation chooses alike.
+  // one operation chooses alike. An EXEC's queued commands run against the
+  // scratch keyspace too, and nothing they do leaves it but by the result.
   Session session = proposal.session;
   const auto saved = _random;
   _random.seed(std::hash<std::string>{}(proposal.operation));
+  _speculating = true;
+  _scratch = &scratch;
+  _scratch_db = proposal.db;
+  _scratch_serial = base.serial;
   resp::Reply reply(session.protocol);
   Call call{session, *this, scratch, reply, proposal.args};
   call.db = proposal.db;
@@ -858,9 +905,16 @@ Agreements::Changed Database::speculate(const Proposal& proposal, const cluster:
     reply = resp::Reply(session.protocol);
     reply.error(e.what());
   }
+  _speculating = false;
+  _scratch = nullptr;
   _random = saved;
+  // A write that ran counts against WATCH; an error or an aborted EXEC does not.
+  const std::string& bytes = reply.bytes();
+  const bool exec = proposal.spec->name == "exec";
+  const bool wrote = !bytes.empty() && bytes[0] != '-' && !(exec && (bytes == "*-1\r\n" || bytes == "_\r\n"));
   cluster::Record out;
   out.applied = base.applied;
+  out.serial = base.serial + (wrote ? 1 : 0);
   if (const keyspace::Entry* entry = scratch.find(proposal.key)) {
     out.payload = keyspace::rdb::dump(*entry);
     out.expires_at = entry->expires_at;
@@ -868,7 +922,7 @@ Agreements::Changed Database::speculate(const Proposal& proposal, const cluster:
   std::vector<Raised> raised;
   for (size_t i = before; i < _events.size(); ++i) raised.emplace_back(_events[i].db, _events[i].event, _events[i].key);
   _events.erase(_events.begin() + static_cast<std::ptrdiff_t>(before), _events.end());
-  std::string result = encode_result(call.blocked ? timeout_reply(session.protocol, call.block_null_bulk) : reply.bytes(), raised);
+  std::string result = encode_result(call.blocked ? timeout_reply(session.protocol, call.block_null_bulk) : bytes, raised, wrote);
   if (!cluster::note_applied(out, {proposal.operation, proposal.issued_ms, result}))
     return {base, encode_result("-ERR too many writes to this key are in flight; try again\r\n", {})};
   return {std::move(out), std::move(result)};
@@ -895,13 +949,13 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
     if (result) {
       // A newer commit's notice may have come first: the view keeps it.
       install_locked(proposal->db, proposal->key, outcome.version, outcome.record);
-      for (const auto& [db, event, key] : result->second) _events.push_back(Event{db, event, key});
+      for (const auto& [db, event, key] : result->raised) _events.push_back(Event{db, event, key});
       Session* const previous = _current;
       _current = session;
       _own_invalidations.clear();
       _touched.clear();
-      touch(*proposal->spec, proposal->args, proposal->db, session);
-      bytes = result->first;
+      if (result->wrote) touch_key_locked(proposal->db, proposal->key, session);
+      bytes = result->reply;
       if (!_waiters.empty()) serve_ready(woken);
       publish_events();
       flush_tracking_locked(session ? &bytes : nullptr);
@@ -929,16 +983,82 @@ void Database::install_committed(size_t db, const std::string& key, const std::s
     Session* const previous = _current;
     _current = nullptr;
     _touched.clear();
-    invalidate_locked(key, nullptr);
-    std::string named = scoped(db, key);
-    if (const auto found = _watchers.find(named); found != _watchers.end())
-      for (Session* s : found->second) s->watch_touched = true;
-    if (!_waiting_on.empty()) _touched.push_back(std::move(named));
+    touch_key_locked(db, key, nullptr);
     if (!_waiters.empty()) serve_ready(woken);
     flush_tracking_locked(nullptr);
     _current = previous;
   }
   for (auto& [wake_one, reply] : woken) wake_one(std::move(reply));
+}
+
+void Database::touch_key_locked(size_t db, const std::string& key, const Session* modifier) {
+  invalidate_locked(key, modifier);
+  std::string named = scoped(db, key);
+  if (const auto found = _watchers.find(named); found != _watchers.end())
+    for (Session* s : found->second) s->watch_touched = true;
+  if (!_waiting_on.empty()) _touched.push_back(std::move(named));
+}
+
+Database::ExecKey Database::exec_key_locked(const Session& session) {
+  ExecKey out;
+  std::set<std::string> named;
+  for (const auto& queued : session.queued) {
+    const Spec* spec = find_spec(queued[0]);
+    if (!spec) continue;
+    if (has_flag(spec->flags, "write")) out.writes = true;
+    // These name keys in two databases, or every key there is.
+    if (spec->name == "flushall" || spec->name == "flushdb" || spec->name == "swapdb" || spec->name == "move" || spec->name == "copy" || spec->name == "select")
+      out.several = true;
+    for (const auto key : spec->find_keys ? spec->find_keys(queued) : keys_of(*spec, queued)) named.emplace(key);
+  }
+  if (!out.writes) return out;
+  for (const auto& [scoped_key, existed] : session.watched) named.emplace(unscoped(scoped_key).second);
+  if (named.size() > 1) out.several = true;
+  if (named.size() == 1) out.key = *named.begin();
+  // A transaction that writes no key it names (keyless writes) runs here.
+  if (named.empty()) out.writes = false;
+  return out;
+}
+
+void Database::watch_strictly(uint64_t wait, size_t db, std::vector<std::string> keys) {
+  struct Gathered {
+    std::mutex mutex;
+    size_t left = 0;
+    std::map<std::string, uint64_t> serials;
+    std::string failure;
+  };
+  auto gathered = std::make_shared<Gathered>();
+  gathered->left = keys.size();
+  for (const auto& key : keys) {
+    _settings.agreements->read(db, key, [this, wait, db, keys, key, gathered](Agreements::Outcome outcome) {
+      {
+        std::lock_guard guard(gathered->mutex);
+        if (outcome.committed)
+          gathered->serials[scoped(db, key)] = outcome.record.serial;
+        else if (gathered->failure.empty())
+          gathered->failure = outcome.why.empty() ? "the watched key could not be read" : outcome.why;
+        if (--gathered->left > 0) return;
+      }
+      Wake wake;
+      std::string bytes;
+      {
+        dannan::contract::Lock lock(_mutex);
+        const auto found = _waiters.find(wait);
+        if (found == _waiters.end()) return;
+        Session& session = *found->second.session;
+        if (gathered->failure.empty()) {
+          for (const auto& watched : keys) watch_locked(session, watched);
+          for (const auto& [named, serial] : gathered->serials) session.watched_serials[named] = serial;
+          bytes = "+OK\r\n";
+        } else {
+          bytes = "-CLUSTERDOWN " + one_line(gathered->failure) + "\r\n";
+        }
+        wake = std::move(found->second.wake);
+        forget_waiter(wait);
+      }
+      if (wake) wake(std::move(bytes));
+    });
+  }
 }
 
 bool Database::install_locked(size_t db, const std::string& key, const std::string& version, const cluster::Record& record) {
@@ -965,7 +1085,8 @@ void Database::run_locked(Session& session, const std::vector<std::string>& args
   const Spec* spec = find_spec(args[0]);
   resp::Reply reply(session.protocol);
   const size_t db = session.db;
-  Call call{session, *this, *_dbs[db], reply, args};
+  // An EXEC by agreement runs its queue against its own keyspace.
+  Call call{session, *this, _speculating && db == _scratch_db ? *_scratch : *_dbs[db], reply, args};
   call.db = db;
   look_up_keys(*spec, args, db);
   feed_monitors(session, *spec, args, db);
@@ -1012,7 +1133,8 @@ std::pair<size_t, std::string_view> Database::unscoped(std::string_view scoped_k
 }
 
 void Database::touch(const Spec& spec, const std::vector<std::string>& args, size_t db, const Session* modifier) {
-  if (spec.flags.find("write") == std::string_view::npos) return;
+  // A speculative run's writes are told at its commit.
+  if (_speculating || spec.flags.find("write") == std::string_view::npos) return;
   if (spec.name == "flushall" || spec.name == "flushdb") {
     // FLUSHDB empties one database; its watches break, others' stand.
     for (auto& [key, sessions] : _watchers) {
@@ -1076,9 +1198,17 @@ void Database::unwatch_locked(Session& session) {
   }
   session.watched.clear();
   session.watch_touched = false;
+  session.watched_serials.clear();
 }
 
 bool Database::watch_broken_locked(Session& session) {
+  // An EXEC by agreement: a watched key is broken when its write count, as
+  // the agreement found it, is not the one read at WATCH.
+  if (_speculating) {
+    for (const auto& [named, serial] : session.watched_serials)
+      if (serial != _scratch_serial) return true;
+    return false;
+  }
   if (session.watch_touched) return true;
   // A key that held a value when watched and is gone with no write naming it
   // has expired meanwhile: that too breaks the watch, as Valkey has it since

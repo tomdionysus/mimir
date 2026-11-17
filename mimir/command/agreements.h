@@ -56,6 +56,10 @@ class Agreements {
   // inline. Thread-safe; waits on nothing.
   virtual void change(size_t db, const std::string& key, Change change, std::function<void(Outcome)> done) = 0;
 
+  // A strict read of `key`'s record (ruling 5): committed with the record a
+  // majority holds, or not committed and why. `done` is posted once.
+  virtual void read(size_t db, const std::string& key, std::function<void(Outcome)> done) = 0;
+
   // A commit another node made (ruling 32's commit notice): the key, the
   // commit's version, and the record committed.
   using Committed = std::function<void(size_t db, const std::string& key, const std::string& version, const cluster::Record& record)>;

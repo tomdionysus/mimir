@@ -258,6 +258,21 @@ class Database {
   // than the commit this node holds for it (ruling 32: never a value undone,
   // nor an older one over a newer). Whether it was.
   bool install_locked(size_t db, const std::string& key, const std::string& version, const cluster::Record& record) DANNAN_REQUIRES(_mutex);
+  // A committed key's watchers, trackers (but `modifier`, for NOLOOP) and
+  // waiters told of it, as a write's touch does.
+  void touch_key_locked(size_t db, const std::string& key, const Session* modifier) DANNAN_REQUIRES(_mutex);
+  // In a cluster: the one key an EXEC writes and watches, if it writes and
+  // names no other; none for an EXEC that only reads. Refused (`several`)
+  // when it names more than one.
+  struct ExecKey {
+    bool writes = false;
+    bool several = false;
+    std::string key;
+  };
+  ExecKey exec_key_locked(const Session& session) DANNAN_REQUIRES(_mutex);
+  // WATCH in a cluster: each key's write count read from a majority, then the
+  // watch taken; the connection waits for it.
+  void watch_strictly(uint64_t wait, size_t db, std::vector<std::string> keys) DANNAN_EXCLUDES(_mutex);
   // Another node's commit, from its notice: installed, and its watchers,
   // trackers and waiters told as a local write's are.
   void install_committed(size_t db, const std::string& key, const std::string& version, const cluster::Record& record) DANNAN_EXCLUDES(_mutex);
@@ -361,6 +376,13 @@ class Database {
   bool _installing DANNAN_GUARDED_BY(_mutex) = false;
   // Per key (scoped), the version of the commit this node's view holds.
   std::unordered_map<std::string, std::string> _versions DANNAN_GUARDED_BY(_mutex);
+  // A write by agreement running speculatively: its own keyspace for its
+  // database (an EXEC's queued commands run against it too), the key's write
+  // count as the agreement found it, and no side effect leaves it.
+  bool _speculating DANNAN_GUARDED_BY(_mutex) = false;
+  keyspace::Keyspace* _scratch DANNAN_GUARDED_BY(_mutex) = nullptr;
+  size_t _scratch_db DANNAN_GUARDED_BY(_mutex) = 0;
+  uint64_t _scratch_serial DANNAN_GUARDED_BY(_mutex) = 0;
 };
 
 }  // namespace mimir::command

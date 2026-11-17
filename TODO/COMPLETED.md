@@ -2,6 +2,33 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-17: Stage 3, step 8a: transactions and WATCH over one key
+
+- The record carries `serial`, the count of writes committed to the key.
+  An error or an aborted EXEC does not count.
+- WATCH in a cluster reads each key's record strictly (Agreements::read, a
+  majority) and keeps its serial on the session (`watched_serials`);
+  the connection waits for it.
+- An EXEC whose writes and watches all name one key is proposed whole.
+  - Its speculation runs the queue against the scratch keyspace: run_locked
+    and look_up_keys use it, and publish_events, touch, track_reads and
+    feed_monitors hold back.
+  - The watch check compares the serials inside the agreed change, so an
+    EXEC never commits over a write it did not see.
+  - The connection's transaction ends when it is proposed.
+- An EXEC that only reads runs locally.
+- An EXEC naming several keys (or watching another), or one queuing a
+  blocking command or a writing script, is refused.
+- A result now says whether the write ran: a commit touches its key's
+  watchers, trackers and waiters only if it did.
+- Tests: CommandAgreement covers a transaction over one key committed whole
+  (one proposal), a WATCH aborting after a write elsewhere, a WATCH letting
+  the EXEC commit, and several keys refused.
+- Gate on corvus-jupiter (-j2; uranus went down at 22:37Z): release 346
+  passed. The per-case differential shows 376 differences (from 380): 136
+  ruling 35, 137 step 8 (blocking pops, scripts), and the rest their
+  knock-ons.
+
 ## 2026-11-17: Stage 3, step 4: commit notices (ruling 32)
 
 - cluster::Agreements sends a commit notice after each commit to the set's
