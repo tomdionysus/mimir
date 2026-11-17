@@ -218,18 +218,6 @@ class Database {
   uint64_t random() DANNAN_NO_THREAD_SAFETY_ANALYSIS { return _random(); }
 
  private:
-  struct Waiter {
-    Session* session;
-    std::vector<std::string> args;
-    std::vector<std::string> keys;
-    bool null_bulk;
-    Wake wake;
-    // Held by CLIENT PAUSE: released with no bytes, to be run again.
-    bool postponed = false;
-    // A write waiting for its agreement: answered by its commit, never served
-    // by serve_ready.
-    bool proposal = false;
-  };
   // A write by agreement (stage 3): what it is, carried through its retries.
   struct Proposal {
     uint64_t wait = 0;
@@ -244,6 +232,47 @@ class Database {
     uint64_t issued_ms = 0;
     uint64_t deadline_ms = 0;
   };
+  struct Waiter {
+    Waiter(Session* session_, std::vector<std::string> args_, std::vector<std::string> keys_, bool null_bulk_, Wake wake_, bool postponed_ = false,
+           bool proposal_ = false)
+        : session(session_),
+          args(std::move(args_)),
+          keys(std::move(keys_)),
+          null_bulk(null_bulk_),
+          wake(std::move(wake_)),
+          postponed(postponed_),
+          proposal(proposal_) {}
+
+    Session* session;
+    std::vector<std::string> args;
+    std::vector<std::string> keys;
+    bool null_bulk;
+    Wake wake;
+    // Held by CLIENT PAUSE: released with no bytes, to be run again.
+    bool postponed = false;
+    // A write waiting for its agreement: answered by its commit.
+    bool proposal = false;
+    // A blocking pop by agreement (stage 3): proposed again when its key is
+    // written, never run here. `in_flight` while an attempt is proposed; a
+    // timeout then waits for it (an element it popped is delivered), and
+    // `timed_out` ends the wait if it found nothing.
+    std::shared_ptr<Proposal> blocked;
+    bool in_flight = false;
+    bool timed_out = false;
+  };
+  // A blocking pop's next attempt, under a new operation id, to start once
+  // the lock is let go.
+  void repropose_locked(const std::shared_ptr<Proposal>& proposal) DANNAN_REQUIRES(_mutex);
+  // Starts the attempts repropose_locked queued.
+  void start_pending() DANNAN_EXCLUDES(_mutex);
+  // A blocking write's timeout and timeout reply, read from its arguments:
+  // the error when its timeout is refused.
+  struct Blocking {
+    double seconds = 0;
+    bool null_bulk = false;
+    std::string error;
+  };
+  Blocking blocking_locked(const Spec& spec, const std::vector<std::string>& args, Session& session, size_t db) DANNAN_REQUIRES(_mutex);
   // Whether this write must be refused in a cluster, and why (ruling 35, and
   // what step 8 brings).
   std::optional<std::string> cluster_refusal_locked(const Spec& spec, const std::vector<std::string>& args, const Session& session) DANNAN_REQUIRES(_mutex);
@@ -380,6 +409,8 @@ class Database {
   // database (an EXEC's queued commands run against it too), the key's write
   // count as the agreement found it, and no side effect leaves it.
   bool _speculating DANNAN_GUARDED_BY(_mutex) = false;
+  // Blocking pops' attempts to propose once the lock is let go.
+  std::vector<std::shared_ptr<Proposal>> _pending DANNAN_GUARDED_BY(_mutex);
   keyspace::Keyspace* _scratch DANNAN_GUARDED_BY(_mutex) = nullptr;
   size_t _scratch_db DANNAN_GUARDED_BY(_mutex) = 0;
   uint64_t _scratch_serial DANNAN_GUARDED_BY(_mutex) = 0;

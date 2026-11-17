@@ -208,13 +208,12 @@ TEST(CommandAgreement, WritesOfSeveralKeysAreRefusedUntilAtomicCommit) {
   EXPECT_EQ(bed.run({"MGET", "a", "b"}), "*2\r\n$-1\r\n$-1\r\n");
 }
 
-TEST(CommandAgreement, BlockingCommandsAndWritingTransactionsWaitForStepEight) {
+TEST(CommandAgreement, WritingScriptsWaitForStepEight) {
   AgreementBed bed;
   const std::string later = "-ERR Mimir does not yet run blocking commands, or transactions and scripts that write, by agreement\r\n";
-  EXPECT_EQ(bed.run({"BLPOP", "l", "1"}), later);
   EXPECT_EQ(bed.run({"EVAL", "return 1", "0"}), later);
   EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
-  EXPECT_EQ(bed.run({"BLPOP", "k", "1"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"EVAL", "return 1", "0"}), "+QUEUED\r\n");
   EXPECT_EQ(bed.run({"EXEC"}), later);
   // The transaction is gone: a later command runs at once.
   EXPECT_EQ(bed.run({"GET", "k"}), "$-1\r\n");
@@ -222,6 +221,73 @@ TEST(CommandAgreement, BlockingCommandsAndWritingTransactionsWaitForStepEight) {
   EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
   EXPECT_EQ(bed.run({"GET", "k"}), "+QUEUED\r\n");
   EXPECT_EQ(bed.run({"EXEC"}), "*1\r\n$-1\r\n");
+}
+
+TEST(CommandAgreement, ABlockingPopWithSomethingToTakeIsServedAtOnce) {
+  AgreementBed bed;
+  EXPECT_EQ(bed.run({"RPUSH", "l", "a", "b"}), ":2\r\n");
+  EXPECT_EQ(bed.run({"BLPOP", "l", "1"}), "*2\r\n$1\r\nl\r\n$1\r\na\r\n");
+  EXPECT_EQ(bed.run({"LRANGE", "l", "0", "-1"}), "*1\r\n$1\r\nb\r\n");
+  // Inside a transaction it does not wait.
+  EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
+  EXPECT_EQ(bed.run({"BLPOP", "empty", "1"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"EXEC"}), "*1\r\n*-1\r\n");
+}
+
+TEST(CommandAgreement, ABlockingPopWaitsForAWriteToItsKey) {
+  AgreementBed bed;
+  Session waiting;
+  waiting.id = bed.database->next_client_id();
+  std::string out;
+  std::optional<std::string> woken;
+  const auto executed = bed.database->execute(waiting, {"BLPOP", "q", "0"}, out, [&woken](std::string reply) { woken = std::move(reply); });
+  ASSERT_TRUE(executed.wait);
+  EXPECT_EQ(executed.wait_seconds, 0);
+  bed.io.restart();
+  bed.io.run();
+  // Its attempt found nothing, changed nothing, and it waits.
+  EXPECT_FALSE(woken);
+  EXPECT_FALSE(bed.registers->record(0, "q").payload);
+  // Another connection's push: the pop is proposed again and takes it.
+  EXPECT_EQ(bed.run({"RPUSH", "q", "job"}), ":1\r\n");
+  bed.io.restart();
+  bed.io.run();
+  ASSERT_TRUE(woken);
+  EXPECT_EQ(*woken, "*2\r\n$1\r\nq\r\n$3\r\njob\r\n");
+  EXPECT_EQ(bed.run({"EXISTS", "q"}), ":0\r\n");
+}
+
+TEST(CommandAgreement, ABlockingPopTimesOutWithItsReply) {
+  AgreementBed bed;
+  Session waiting;
+  waiting.id = bed.database->next_client_id();
+  std::string out;
+  std::optional<std::string> woken;
+  const auto executed = bed.database->execute(waiting, {"BLPOP", "q", "2.5"}, out, [&woken](std::string reply) { woken = std::move(reply); });
+  ASSERT_TRUE(executed.wait);
+  EXPECT_EQ(executed.wait_seconds, 2.5);
+  // While its attempt is proposed, a timeout waits for the outcome.
+  EXPECT_FALSE(bed.database->cancel_wait(*executed.wait));
+  bed.io.restart();
+  bed.io.run();
+  ASSERT_TRUE(woken);
+  EXPECT_EQ(*woken, "*-1\r\n");
+  // Parked, it times out at once.
+  woken.reset();
+  const auto again = bed.database->execute(waiting, {"BLPOP", "q", "1"}, out, [&woken](std::string reply) { woken = std::move(reply); });
+  bed.io.restart();
+  bed.io.run();
+  EXPECT_EQ(bed.database->cancel_wait(*again.wait), "*-1\r\n");
+  // A bad timeout is refused before anything is proposed.
+  const int proposals = bed.registers->proposals;
+  EXPECT_EQ(bed.run({"BLPOP", "q", "soon"}), "-ERR timeout is not a float or out of range\r\n");
+  EXPECT_EQ(bed.registers->proposals, proposals);
+}
+
+TEST(CommandAgreement, ABlockingPopOverSeveralKeysIsRefused) {
+  AgreementBed bed;
+  EXPECT_EQ(bed.run({"BLPOP", "a", "b", "1"}),
+            "-ERR this command writes more than one key, which Mimir refuses until Dannan 0.10.0's atomic commit (ruling 35)\r\n");
 }
 
 cluster::Record string_record(const std::string& value) {

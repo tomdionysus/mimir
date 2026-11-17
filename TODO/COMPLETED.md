@@ -2,6 +2,35 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-17: Stage 3, step 8b: blocking pops by agreement
+
+- A blocking write on one key is proposed like any write: BLPOP, BRPOP,
+  BZPOPMIN/MAX, BLMPOP and BZMPOP with one key, and XREADGROUP on one
+  stream.
+- If its attempt finds nothing, the record is left as it was (nothing is
+  noted), and the connection parks on the key with the command's own
+  timeout. The timeout is read from its arguments; a bad one is refused
+  before anything is proposed.
+- A commit or notice that writes the key proposes the oldest parked pop
+  again, under a fresh operation id, one at a time per key, so the order
+  holds. A pop that finds nothing again goes back to waiting.
+- A timeout during an attempt waits for its outcome: a popped element is
+  delivered, and nothing found answers the timeout's reply.
+- A connection that closes mid-attempt leaves the attempt to finish,
+  answering nobody.
+- CLIENT UNBLOCK leaves agreement waits alone.
+- Inside MULTI a blocking command does not wait, as in Valkey.
+- Blocking pops over several keys stay refused (ruling 35).
+- Found by the differential: the first cut read the timeout from a run
+  against an empty keyspace, where XREADGROUP fails with NOGROUP. It is now
+  parsed from the arguments.
+- Tests: CommandAgreement covers a pop served at once, a pop waiting for
+  another connection's write, a timeout during an attempt waiting for the
+  outcome, a parked pop timing out, and several keys refused.
+- Gate on corvus-jupiter (-j2): release 350 passed. The per-case
+  differential shows 347 differences (from 376): 142 ruling 35, 112 step 8
+  (scripts), and the rest their knock-ons.
+
 ## 2026-11-17: Stage 3, step 8a: transactions and WATCH over one key
 
 - The record carries `serial`, the count of writes committed to the key.
