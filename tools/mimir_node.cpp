@@ -247,6 +247,7 @@ int main(int argc, char** argv) {
     // stopped never returns.
     std::optional<dannan::Node> node;
     node.emplace(io, node_config);
+    mimir::cluster::Agreements::register_types(node->context());
     node->start();
     auto space = std::make_unique<mimir::cluster::Space>(node->context(), fresh || alone);
     if (founder)

@@ -51,12 +51,30 @@ class Registers final : public Agreements {
         outcome.committed = true;
         outcome.record = changed.record;
         outcome.result = changed.result;
+        outcome.version = version(++_commits);
       }
       boost::asio::post(_io, [done, outcome] { done(outcome); });
     });
   }
 
+  void on_committed(Committed told) override { committed = std::move(told); }
+
+  // Versions order as commits do: a fixed-width count.
+  static std::string version(uint64_t n) {
+    std::string out(8, '\0');
+    for (int i = 7; i >= 0; --i, n >>= 8) out[static_cast<size_t>(i)] = static_cast<char>(n & 0xff);
+    return out;
+  }
+  // Another node's commit, told as its notice would.
+  void commit_elsewhere(size_t db, const std::string& key, cluster::Record committed_record) {
+    auto& held = records[{db, key}];
+    held = committed_record;
+    committed(db, key, version(++_commits), committed_record);
+  }
+  uint64_t commits() const { return _commits; }
+
   cluster::Record& record(size_t db, const std::string& key) { return records[std::make_pair(db, key)]; }
+  Committed committed;
 
   std::map<std::pair<size_t, std::string>, cluster::Record> records;
   int lose_next = 0;
@@ -66,6 +84,7 @@ class Registers final : public Agreements {
  private:
   boost::asio::io_context& _io;
   uint64_t _next = 1;
+  uint64_t _commits = 0;
 };
 
 class AgreementBed {
@@ -191,6 +210,47 @@ TEST(CommandAgreement, BlockingCommandsAndWritingTransactionsWaitForStepEight) {
   EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
   EXPECT_EQ(bed.run({"GET", "k"}), "+QUEUED\r\n");
   EXPECT_EQ(bed.run({"EXEC"}), "*1\r\n$-1\r\n");
+}
+
+cluster::Record string_record(const std::string& value) {
+  // A string's DUMP payload, made by a database of its own.
+  Database scratch(dannan::contract::system_wall_clock());
+  Session session;
+  std::string out;
+  scratch.execute(session, {"SET", "x", value}, out);
+  out.clear();
+  scratch.execute(session, {"DUMP", "x"}, out);
+  const auto start = out.find("\r\n") + 2;
+  cluster::Record record;
+  record.payload = out.substr(start, out.size() - start - 2);
+  return record;
+}
+
+TEST(CommandAgreement, AnotherNodesCommitIsServedOnceItsNoticeComes) {
+  AgreementBed bed;
+  ASSERT_TRUE(bed.registers->committed);
+  bed.registers->commit_elsewhere(0, "k", string_record("from-afar"));
+  EXPECT_EQ(bed.run({"GET", "k"}), "$9\r\nfrom-afar\r\n");
+  // A deletion is a commit too.
+  bed.registers->commit_elsewhere(0, "k", cluster::Record{});
+  EXPECT_EQ(bed.run({"EXISTS", "k"}), ":0\r\n");
+}
+
+TEST(CommandAgreement, AnOlderNoticeNeverUndoesANewerCommit) {
+  AgreementBed bed;
+  EXPECT_EQ(bed.run({"SET", "k", "new"}), "+OK\r\n");
+  // A notice for a commit before it, arriving late.
+  bed.registers->committed(0, "k", Registers::version(0), string_record("old"));
+  EXPECT_EQ(bed.run({"GET", "k"}), "$3\r\nnew\r\n");
+}
+
+TEST(CommandAgreement, ANoticeBreaksAWatchOnItsKey) {
+  AgreementBed bed;
+  EXPECT_EQ(bed.run({"WATCH", "k"}), "+OK\r\n");
+  bed.registers->commit_elsewhere(0, "k", string_record("v"));
+  EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
+  EXPECT_EQ(bed.run({"GET", "k"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"EXEC"}), "*-1\r\n");
 }
 
 }  // namespace

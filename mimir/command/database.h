@@ -254,8 +254,13 @@ class Database {
   // Proposes it, and answers its connection once it is decided.
   void propose(std::shared_ptr<Proposal> proposal) DANNAN_EXCLUDES(_mutex);
   void decided(const std::shared_ptr<Proposal>& proposal, Agreements::Outcome outcome) DANNAN_EXCLUDES(_mutex);
-  // A committed record made this node's view of its key.
-  void install_locked(size_t db, const std::string& key, const cluster::Record& record) DANNAN_REQUIRES(_mutex);
+  // A committed record made this node's view of its key, if `version` is newer
+  // than the commit this node holds for it (ruling 32: never a value undone,
+  // nor an older one over a newer). Whether it was.
+  bool install_locked(size_t db, const std::string& key, const std::string& version, const cluster::Record& record) DANNAN_REQUIRES(_mutex);
+  // Another node's commit, from its notice: installed, and its watchers,
+  // trackers and waiters told as a local write's are.
+  void install_committed(size_t db, const std::string& key, const std::string& version, const cluster::Record& record) DANNAN_EXCLUDES(_mutex);
   // Whether CLIENT PAUSE holds this command now.
   bool paused_locked(const Spec& spec, const Session& session) DANNAN_REQUIRES(_mutex);
   using Woken = std::vector<std::pair<Wake, std::string>>;
@@ -354,6 +359,8 @@ class Database {
   // A committed record being installed: its keyspace's "new" is the commit's
   // to announce, from the result it carries.
   bool _installing DANNAN_GUARDED_BY(_mutex) = false;
+  // Per key (scoped), the version of the commit this node's view holds.
+  std::unordered_map<std::string, std::string> _versions DANNAN_GUARDED_BY(_mutex);
 };
 
 }  // namespace mimir::command

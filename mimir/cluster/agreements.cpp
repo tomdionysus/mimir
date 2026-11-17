@@ -7,16 +7,84 @@
 
 #include "mimir/cluster/agreements.h"
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
+#include "dannan/net/codec.h"
 #include "mimir/cluster/register.h"
 
 namespace mimir::cluster {
 
 namespace agree = dannan::agree;
 
-Agreements::Agreements(Space& served, std::chrono::milliseconds deadline) : _space(served), _deadline(deadline) {}
+namespace {
+
+std::span<const uint8_t> bytes_of(std::string_view text) { return {reinterpret_cast<const uint8_t*>(text.data()), text.size()}; }
+std::string text_of(std::span<const uint8_t> bytes) { return {reinterpret_cast<const char*>(bytes.data()), bytes.size()}; }
+
+// A ballot as bytes that order as ballots do: the counter big-endian, then the
+// node and the epoch.
+std::string version_of(const agree::Ballot& ballot) {
+  std::string out;
+  for (int shift = 56; shift >= 0; shift -= 8) out.push_back(static_cast<char>(ballot.counter >> shift));
+  out.append(ballot.node.bytes.begin(), ballot.node.bytes.end());
+  out.append(ballot.epoch.bytes.begin(), ballot.epoch.bytes.end());
+  return out;
+}
+
+inline constexpr size_t version_size = 8 + 16 + 16;
+// Valkey's proto-max-bulk-len bounds a key.
+inline constexpr size_t max_key = 512ull * 1024 * 1024;
+
+}  // namespace
+
+void Agreements::register_types(dannan::Context& context) {
+  dannan::net::Registration registration;
+  registration.name = "mimir.commit_notice";
+  context.routes().add(commit_notice, registration);
+}
+
+Agreements::Agreements(Space& served, std::chrono::milliseconds deadline) : _space(served), _deadline(deadline) {
+  _space.context().routes().bind(commit_notice,
+                                 [hook = _hook](const dannan::membership::NodeRecord&, dannan::sched::FrameType, const dannan::net::Message& request) {
+                                   // Untrusted bytes: every length is bounded before anything is kept.
+                                   try {
+                                     dannan::net::Reader in(request.payload);
+                                     const auto db = in.u16();
+                                     const auto key = text_of(in.view_bytes(max_key));
+                                     const auto version = text_of(in.view_bytes(version_size));
+                                     const bool carried = in.u8() != 0;
+                                     std::optional<Record> record;
+                                     if (carried)
+                                       record = decode_value(in.remaining() ? std::optional<agree::Bytes>(in.bytes(notice_record_limit)) : std::nullopt);
+                                     in.finish();
+                                     if (version.size() != version_size) return dannan::net::Handled::failed(400, "bad_notice", "a version is 40 bytes");
+                                     if (!carried) return dannan::net::Handled::processed();
+                                     if (!record) return dannan::net::Handled::failed(400, "bad_notice", "the record cannot be read");
+                                     Committed committed;
+                                     {
+                                       dannan::contract::Lock lock(hook->mutex);
+                                       committed = hook->committed;
+                                     }
+                                     if (committed) committed(db, key, version, *record);
+                                     return dannan::net::Handled::processed();
+                                   } catch (const dannan::net::DecodeError&) {
+                                     return dannan::net::Handled::failed(400, "bad_notice", "the notice cannot be read");
+                                   }
+                                 });
+}
+
+Agreements::~Agreements() {
+  _space.context().routes().unbind(commit_notice);
+  dannan::contract::Lock lock(_hook->mutex);
+  _hook->committed = nullptr;
+}
+
+void Agreements::on_committed(Committed committed) {
+  dannan::contract::Lock lock(_hook->mutex);
+  _hook->committed = std::move(committed);
+}
 
 std::string Agreements::operation_id() {
   // The node, this process's durability epoch, and a count: never the same
@@ -54,7 +122,7 @@ void Agreements::change(size_t db, const std::string& key, Change change, std::f
         return out;
       },
       {}, _deadline, _space.context().time().executor(),
-      [done = std::move(done)](agree::Outcome outcome) {
+      [this, db, key, done = std::move(done)](agree::Outcome outcome) {
         Outcome out;
         out.committed = outcome.committed;
         out.unknown = outcome.unknown;
@@ -63,9 +131,32 @@ void Agreements::change(size_t db, const std::string& key, Change change, std::f
           const auto record = decode_value(outcome.values.empty() ? std::nullopt : outcome.values[0]);
           if (record) out.record = *record;
           out.result.assign(outcome.result.begin(), outcome.result.end());
+          out.version = version_of(outcome.ballot);
+          notify(db, key, out.version, out.record);
         }
         done(std::move(out));
       });
+}
+
+void Agreements::notify(size_t db, const std::string& key, const std::string& version, const Record& record) {
+  auto& context = _space.context();
+  const auto& replicas = context.agreement().table().genesis.nodes;
+  const auto self = context.identity().id();
+  const auto bytes = encode(record);
+  const bool carried = !bytes || bytes->size() <= notice_record_limit;
+  dannan::net::Writer out;
+  out.u16(static_cast<uint16_t>(db));
+  out.bytes(bytes_of(key));
+  out.bytes(bytes_of(version));
+  out.u8(carried ? 1 : 0);
+  if (carried && bytes) out.bytes(*bytes);
+  const auto payload = out.take();
+  for (const auto& peer : context.nodes().active()) {
+    if (peer.id == self || std::find(replicas.begin(), replicas.end(), peer.id) == replicas.end()) continue;
+    // Best effort: a notice lost leaves that replica's view stale (ruling 5).
+    (void)context.routes().call(peer, commit_notice, payload, dannan::sched::FrameType::control, std::chrono::seconds(2), context.time().executor(),
+                                [](dannan::net::CallOutcome) {});
+  }
 }
 
 }  // namespace mimir::cluster

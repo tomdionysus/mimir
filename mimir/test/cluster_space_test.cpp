@@ -10,10 +10,12 @@
 #include <array>
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
 #include <chrono>
 #include <future>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -22,8 +24,10 @@
 #include "dannan/identity/node_identity.h"
 #include "dannan/node.h"
 #include "dannan/test/fixtures/temp_dir.h"
+#include "mimir/cluster/agreements.h"
 #include "mimir/cluster/register.h"
 #include "mimir/cluster/space.h"
+#include "mimir/command/database.h"
 
 namespace mimir::cluster {
 namespace {
@@ -66,17 +70,50 @@ class Cluster {
       config.agreement_genesis = genesis;
       config.log = dannan::status::console_sink(dannan::status::LogFormat::text, dannan::status::LogLevel::error);
       nodes.push_back(std::make_unique<dannan::Node>(_io, config));
+      Agreements::register_types(nodes.back()->context());
       nodes.back()->start();
       spaces.push_back(std::make_unique<Space>(nodes.back()->context(), true));
+      command::DatabaseSettings settings;
+      settings.agreements = std::make_shared<Agreements>(*spaces.back());
+      databases.push_back(std::make_unique<command::Database>(dannan::contract::system_wall_clock(), settings));
+      sessions.emplace_back();
+      sessions.back().id = databases.back()->next_client_id();
     }
   }
   ~Cluster() {
-    spaces.clear();
     for (auto& node : nodes) node->stop();
+    // What the stop posted runs before the databases go.
+    std::promise<void> drained;
+    boost::asio::post(_io, [&drained] { drained.set_value(); });
+    drained.get_future().wait();
+    databases.clear();
+    spaces.clear();
     nodes.clear();
     _work.reset();
     _io.stop();
     for (auto& thread : _threads) thread.join();
+  }
+
+  // A command run on node `at`'s database, its reply once decided.
+  std::string run(size_t at, std::vector<std::string> args) {
+    auto woken = std::make_shared<std::promise<std::string>>();
+    auto reply = woken->get_future();
+    std::string out;
+    const auto executed = databases.at(at)->execute(sessions.at(at), args, out, [woken](std::string bytes) { woken->set_value(std::move(bytes)); });
+    if (!executed.wait) return out;
+    if (reply.wait_for(10s) != std::future_status::ready) return "<no reply>";
+    return reply.get();
+  }
+
+  // Whether node `at` answers `args` with `expected` within five seconds:
+  // another node's commit reaches it by its notice.
+  bool eventually(size_t at, std::vector<std::string> args, const std::string& expected) {
+    const auto until = std::chrono::steady_clock::now() + 5s;
+    while (std::chrono::steady_clock::now() < until) {
+      if (run(at, args) == expected) return true;
+      std::this_thread::sleep_for(20ms);
+    }
+    return false;
   }
 
   // Whether every node sees every other advertising `mimir` within ten seconds.
@@ -128,6 +165,8 @@ class Cluster {
   std::vector<dannan::identity::NodeId> ids;
   std::vector<std::unique_ptr<dannan::Node>> nodes;
   std::vector<std::unique_ptr<Space>> spaces;
+  std::vector<std::unique_ptr<command::Database>> databases;
+  std::vector<command::Session> sessions;
 
  private:
   static agree::Outcome wait(std::future<agree::Outcome>& got) {
@@ -183,6 +222,43 @@ TEST(ClusterSpace, ThreeNodesFoundTheirShardsAndAgreeFromAnyNode) {
   const auto read = cluster.read(1, "{user}.name");
   ASSERT_TRUE(read.committed) << read.why;
   EXPECT_EQ(decode_value(read.values.at(0))->payload, "ada");
+}
+
+TEST(ClusterDatabase, AWriteOnOneNodeIsReadOnTheOthers) {
+  Cluster cluster(3);
+  ASSERT_TRUE(cluster.converged());
+  ASSERT_TRUE(cluster.found(0).committed);
+  EXPECT_EQ(cluster.run(0, {"SET", "greeting", "hello"}), "+OK\r\n");
+  // The committing node reads its own write at once; the others once its
+  // notice comes.
+  EXPECT_EQ(cluster.run(0, {"GET", "greeting"}), "$5\r\nhello\r\n");
+  EXPECT_TRUE(cluster.eventually(1, {"GET", "greeting"}, "$5\r\nhello\r\n"));
+  EXPECT_TRUE(cluster.eventually(2, {"GET", "greeting"}, "$5\r\nhello\r\n"));
+  EXPECT_EQ(cluster.run(2, {"DEL", "greeting"}), ":1\r\n");
+  EXPECT_TRUE(cluster.eventually(0, {"EXISTS", "greeting"}, ":0\r\n"));
+}
+
+TEST(ClusterDatabase, IncrementsFromEveryNodeAtOnceEachApplyOnce) {
+  Cluster cluster(3);
+  ASSERT_TRUE(cluster.converged());
+  ASSERT_TRUE(cluster.found(0).committed);
+  // Three clients, one per node, racing on one key: every INCR is applied
+  // once, and each answers a different count.
+  std::vector<std::future<std::vector<std::string>>> clients;
+  for (size_t at = 0; at < 3; ++at)
+    clients.push_back(std::async(std::launch::async, [&cluster, at] {
+      std::vector<std::string> replies;
+      for (int i = 0; i < 10; ++i) replies.push_back(cluster.run(at, {"INCR", "counter"}));
+      return replies;
+    }));
+  std::set<std::string> seen;
+  for (auto& client : clients)
+    for (const auto& reply : client.get()) {
+      EXPECT_EQ(reply.front(), ':') << reply;
+      EXPECT_TRUE(seen.insert(reply).second) << "two clients were given " << reply;
+    }
+  EXPECT_EQ(seen.size(), 30u);
+  for (size_t at = 0; at < 3; ++at) EXPECT_TRUE(cluster.eventually(at, {"GET", "counter"}, "$2\r\n30\r\n")) << at;
 }
 
 }  // namespace
