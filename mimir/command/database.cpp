@@ -752,7 +752,11 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         const auto named = exec_key_locked(session);
         if (named.writes) exec_key = named.key;
       }
-      if ((has_flag(spec->flags, "write") && keys.size() == 1) || !exec_key.empty()) {
+      // A script that declares one key (perhaps more than once) commits whole
+      // by agreement on it.
+      const bool script = spec->name == "eval" || spec->name == "evalsha" || spec->name == "fcall";
+      if (script && keys.size() > 1) keys.resize(1);
+      if (((has_flag(spec->flags, "write") || script) && keys.size() == 1) || !exec_key.empty()) {
         if (!wake) {
           reply.error("ERR this write needs a connection that can wait for its agreement");
           out.append(reply.bytes());
@@ -914,18 +918,16 @@ Database::Blocking Database::blocking_locked(const Spec& spec, const std::vector
 
 std::optional<std::string> Database::cluster_refusal_locked(const Spec& spec, const std::vector<std::string>& args, const Session& session) {
   static const std::string several = "ERR this command writes more than one key, which Mimir refuses until Dannan 0.10.0's atomic commit (ruling 35)";
-  static const std::string later = "ERR Mimir does not yet run blocking commands, or transactions and scripts that write, by agreement";
   const std::string_view name = spec.name;
-  // A script may write any key it is given: refused until step 8, but for
-  // the read-only forms.
-  if (name == "eval" || name == "evalsha" || name == "fcall") return later;
+  // A script runs by agreement on the one key it declares (none: it runs
+  // here, reading only).
+  if (name == "eval" || name == "evalsha" || name == "fcall") {
+    const auto keys = spec.find_keys ? spec.find_keys(args) : keys_of(spec, args);
+    if (std::set<std::string_view>(keys.begin(), keys.end()).size() > 1) return several;
+    return std::nullopt;
+  }
   if (name == "exec") {
     if (!session.in_multi || session.multi_failed) return std::nullopt;
-    // Inside a transaction a blocking command does not wait, as Valkey has it.
-    for (const auto& queued : session.queued) {
-      const Spec* inner = find_spec(queued[0]);
-      if (inner && (inner->name == "eval" || inner->name == "evalsha" || inner->name == "fcall")) return later;
-    }
     if (exec_key_locked(session).several) return several;
     return std::nullopt;
   }
@@ -966,6 +968,7 @@ Agreements::Changed Database::speculate(const Proposal& proposal, const cluster:
   _scratch = &scratch;
   _scratch_db = proposal.db;
   _scratch_serial = base.serial;
+  _scratch_key = proposal.key;
   resp::Reply reply(session.protocol);
   Call call{session, *this, scratch, reply, proposal.args};
   call.db = proposal.db;
@@ -1174,6 +1177,27 @@ void Database::run_locked(Session& session, const std::vector<std::string>& args
   const Spec* spec = find_spec(args[0]);
   resp::Reply reply(session.protocol);
   const size_t db = session.db;
+  if (_settings.agreements) {
+    const auto keys = spec->find_keys ? spec->find_keys(args) : keys_of(*spec, args);
+    if (_speculating) {
+      // A script or an EXEC by agreement touches its one key, in its one
+      // database, and nothing else.
+      for (const auto key : keys)
+        if (key != _scratch_key || db != _scratch_db) {
+          out.error("ERR Mimir runs a script or a transaction by agreement on its one key, and this command names another: '" + std::string(key) + "'");
+          return;
+        }
+      if (db != _scratch_db && has_flag(spec->flags, "write")) {
+        out.error("ERR Mimir runs a script or a transaction by agreement in its one database");
+        return;
+      }
+    } else if (has_flag(spec->flags, "write") && !keys.empty()) {
+      // A script that declared no key runs here, on this node's view: it
+      // reads, and a write must be made by agreement on a declared key.
+      out.error("ERR a script that writes a key must declare it: Mimir commits the write by agreement on that key");
+      return;
+    }
+  }
   // An EXEC by agreement runs its queue against its own keyspace.
   Call call{session, *this, _speculating && db == _scratch_db ? *_scratch : *_dbs[db], reply, args};
   call.db = db;

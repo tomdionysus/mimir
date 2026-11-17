@@ -414,6 +414,9 @@ class Database {
   keyspace::Keyspace* _scratch DANNAN_GUARDED_BY(_mutex) = nullptr;
   size_t _scratch_db DANNAN_GUARDED_BY(_mutex) = 0;
   uint64_t _scratch_serial DANNAN_GUARDED_BY(_mutex) = 0;
+  // The one key a speculative run may touch: a script's or an EXEC's command
+  // naming another is refused.
+  std::string _scratch_key DANNAN_GUARDED_BY(_mutex);
 };
 
 }  // namespace mimir::command
