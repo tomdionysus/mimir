@@ -2,6 +2,29 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-17: Stage 3, step 1: the register and the acceptor store
+
+- `mimir/cluster/register.{h,cpp}`:
+  - a register's name is the database (two bytes) then the key;
+  - a key's shard is its Valkey slot mapped onto the shard count in
+    contiguous ranges, so a hash tag shares a shard;
+  - the record (the DUMP payload, absolute expiry, and recent applied
+    operations with their replies) is encoded with Dannan's codec and
+    decoded as untrusted input;
+  - an applied operation ages out at 120 s past a later one's issue time,
+    and a write is refused rather than evict a live id (at most 1024);
+  - the summary is SHA-256.
+- `mimir/cluster/store.{h,cpp}`: Store, Dannan's AcceptorStore in memory.
+  - Every completion is posted. load() can leave values out, and keep() is
+    all or nothing.
+  - Deltas are asked for whole until step 7, and value() answers by exact
+    ballot.
+  - Not ready until caught up, unless built ready.
+- Tests: ClusterRegister (9) and ClusterStore (7, against real Dannan
+  Agreements wired in process).
+- Gate on corvus-uranus (-j1): release 326 passed (310 plus 16). No command
+  path changed, so the differential was not rerun.
+
 ## 2026-11-17: Dannan 0.9.0
 
 - Pin moved from 0.8.5 to 0.9.0: agreement (CASPaxos per slot,

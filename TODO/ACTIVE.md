@@ -306,7 +306,7 @@ then the code.
    until 0.10.0's atomic commit. Rulings 32 to 34 (2026-11-17): plain reads
    serve the last value known committed, keyspace-wide commands are
    cluster-wide, and a lone node is a cluster of one. Steps:
-   1. **The register and the acceptor store** (`mimir/cluster/`):
+   1. Done 2026-11-17 (release 326). **The register and the acceptor store** (`mimir/cluster/`):
       - a key's register is named by its database and key, and slotted by
         Valkey's slot (CRC16 of the hash tag) mapped onto the shard count
         in contiguous ranges;
