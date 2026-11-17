@@ -232,6 +232,11 @@ then the code.
   Fuzz targets build with clang 19 on jupiter, saturn or neptune, with the
   default `fuzzer,address,undefined` now that the kernels have a 48-bit
   address space (on a 39-bit one, `-DMIMIR_FUZZ_SANITIZERS=fuzzer,undefined`).
+- Sanitizer runs (ASan, UBSan, TSan) only before a release, or to hunt a
+  named bug that cannot be pinned any other way. Never as a step's gate or
+  a routine check (Tom; restated to every session 2026-11-17). Name the
+  release or the bug before starting one. Mimir's gate is release plus
+  differential.
 - Sanitizers (2026-11-16): every Pi boots a 4K-page, 48-bit-VA kernel
   (6.18.62-v8-va48+), so ASan, UBSan and TSan run on all four with g++, and
   with clang 19 on jupiter, saturn and neptune (uranus has no clang). TSan
