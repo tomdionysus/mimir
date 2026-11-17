@@ -121,6 +121,23 @@ durability, and the order.
   - agreement writes run on a node in the key's set, through change_deltas
     when the base is local, otherwise through change();
   - the fast path is used only with the summary.
+- Reviewed 2026-11-17, Dannan's `TODO/2026-11-17-agreement-review.md`
+  (`feature/attempt-timeout`, `0702313`), which found that a change can be
+  applied twice and a multi-name change can be half taken. Mimir's answer:
+  - Every Mimir change is repeatable, through its own operation id (the
+    connection's dot) and the recorded result kept in the value. A change
+    finding its id applies nothing and answers the recorded reply. Unknown
+    outcomes are resolved by rerunning the same tagged change.
+  - The id list is bounded by count until the hybrid clock; a write is
+    refused rather than evicting a live id.
+  - Asked that ancestry (16 ballots per key, persisted) be optional per
+    space, or compactly encoded.
+  - The reduction takes only merge ops, never another answer's agreement
+    change.
+  - Multi-name changes: option 2, plan item 7's atomic commit, in a slot
+    as across slots. About one extra round trip for multi-key MULTI, MSET,
+    RENAME, LMOVE and the like; single-key commands stay one round.
+  - Asked Dannan to refuse change() of several names until item 7 lands.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
