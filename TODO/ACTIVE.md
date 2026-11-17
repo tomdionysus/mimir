@@ -322,12 +322,47 @@ then the code.
       (identity, state directory, peers). It advertises `mimir`, serves the
       space `mimir` from MimirStore, and founds its slots on the genesis set,
       a set of one for a lone node.
-   3. **Writes by agreement**: a single-key write runs as a Change on the
-      key's record. The command runs against a scratch keyspace restored
-      from the record, then is answered from the committed attempt's
-      result. Each write carries its operation id, so a retry applies it
-      once. The committing node updates its committed view, and sends a
-      commit notice to the key's replicas.
+   3. **Writes by agreement** (ruling 35: multi-key writes are refused
+      until Dannan 0.10.0, a lone node included). The design:
+      - The Database is given the cluster: proposals go through
+        `context.agreement().change(space, shard, {name}, replicas,
+        version, ...)`. For now the replicas are the genesis set at version
+        0; they come from the slot's record from step 6.
+      - In execute_one, after the existing checks:
+        - a write (`write` flag) that names one key is proposed, and the
+          connection is parked (`Executed::wait`) with its wake;
+        - one naming more than one key is refused with an error naming
+          ruling 35;
+        - a keyless write that holds node-local state (CONFIG, SCRIPT, and
+          FUNCTION for now) runs locally as today;
+        - reads run on the live keyspace, which is the committed view.
+      - The Change is repeatable. A record already holding this
+        operation's id returns itself unchanged, with the recorded reply.
+        Otherwise the command runs speculatively under the database's lock:
+        - the live keyspace of its database is swapped for a scratch one,
+          holding only the key, restored from the record (DUMP payload and
+          expiry);
+        - the clock is fixed at the operation's issue time, and the random
+          source is seeded from the operation id;
+        - every side effect is suppressed: notifications, touch,
+          invalidations, monitors, serve_ready and the keyspace listener.
+        Then the new record is made (DUMP of the scratch entry, its
+        expiry, and note_applied), and the scratch keyspace is swapped out
+        again. Changed::result carries the reply, plus the notifications it
+        would have raised.
+      - On commit, under the lock: the record is installed into the live
+        keyspace (put or erase, with its expiry). Then the side effects run
+        as a local write's do (touch, the notifications from the result,
+        invalidations, serve_ready), and the wake gets the reply.
+      - Not committed: an `unknown` outcome is proposed again with the same
+        id (repeatable) until the deadline. A refusal answers
+        "-CLUSTERDOWN ..." with Dannan's reason.
+      - The operation id is the node id, the durability epoch, and a
+        per-node counter.
+      - MULTI/EXEC and scripts over one key, and blocking pops, follow in
+        step 8. Until then, in a cluster, they are refused as multi-key
+        writes are.
+      - Commit notices to the other replicas are step 4.
    4. **Reads** (ruling 32): served from the committed view, with
       read-your-writes per connection; strict reads through read().
    5. **Routing**: a node outside a key's set forwards the command to a
