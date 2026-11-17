@@ -1,0 +1,49 @@
+//
+// Mimir - The Distributed Database
+//
+// Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+// Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+//
+
+#pragma once
+
+#include <chrono>
+#include <cstdint>
+#include <functional>
+#include <memory>
+
+#include "dannan/context.h"
+#include "mimir/cluster/store.h"
+
+// Mimir's agreement space on one node (stage 3, ruling 26): this node's
+// acceptors, served from its Store to proposers that advertise `mimir`, and
+// the founding of every shard on the genesis set. The shard count is the
+// agreement table's slot count (NodeConfig::agreement_slots), one value for
+// the cluster's life.
+namespace mimir::cluster {
+
+class Space {
+ public:
+  // Advertises `mimir` and serves the space. `ready`: whether this node's
+  // acceptors may vote at once (a node that never voted, or a genesis set of
+  // one); otherwise not until caught up.
+  Space(dannan::Context& context, bool ready);
+  ~Space();
+  Space(const Space&) = delete;
+  Space& operator=(const Space&) = delete;
+
+  // Records every shard as served by the genesis set (Dannan's found(), one
+  // change per shard). Repeatable; a node outside the genesis set has nothing
+  // to found. `done` is posted once.
+  void found(std::chrono::milliseconds deadline, std::function<void(dannan::agree::Outcome)> done);
+
+  uint32_t shards() const;
+  Store& store() noexcept { return *_store; }
+  dannan::Context& context() noexcept { return _context; }
+
+ private:
+  dannan::Context& _context;
+  std::shared_ptr<Store> _store;
+};
+
+}  // namespace mimir::cluster

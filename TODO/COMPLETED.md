@@ -2,6 +2,32 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-17: Stage 3, step 2: the node
+
+- `mimir/cluster/space.{h,cpp}`: Space advertises `mimir`, serves the space
+  from Store on Dannan's agreement, and founds every shard on the genesis set
+  (found()). The shard count is the agreement table's slot count.
+- `mimir-node` is a dannan::Node (ruling 34). Its settings are
+  `cluster.{key,state,listen,port,advertise,bootstrap,genesis,shards,name,domain}`;
+  the cluster port defaults to 16379 and the shard count to 256.
+  - Without a state directory, the node is a throwaway cluster of one: a
+    fresh key, a temporary state directory removed at exit, and the cluster
+    port on loopback.
+  - Without `genesis` or bootstrap peers, the node founds alone.
+  - Its acceptors vote at once when its state is new, or when it is alone.
+    A restarted member of a larger cluster waits for catch-up (step 6), and
+    warns.
+  - The io runs on two threads, and the node is stopped and destroyed while
+    they still run.
+  - The "listening" event now carries the node's id and cluster port, and
+    "founded" is reported.
+- Tests: ClusterSpace, one real node and three on loopback: they found, and
+  agree from any node.
+- Gate on corvus-uranus (-j1): release 328 passed; differential 33 of 33
+  through the new node, which founded and stopped cleanly, leaving no
+  temporary state. The registrar service was untouched. Hosted CI green at
+  step 1 (`742bfe6`).
+
 ## 2026-11-17: Stage 3, step 1: the register and the acceptor store
 
 - `mimir/cluster/register.{h,cpp}`:
