@@ -318,7 +318,7 @@ then the code.
         whole (no deltas until step 7); value() answers whole; ready() is
         false after a restart until caught up.
       - Tested against Dannan's rules and real Agreements in process.
-   2. **The node**: mimir-node runs a dannan::Node from its YAML
+   2. Done 2026-11-17 (release 328, differential 33). **The node**: mimir-node runs a dannan::Node from its YAML
       (identity, state directory, peers). It advertises `mimir`, serves the
       space `mimir` from MimirStore, and founds its slots on the genesis set,
       a set of one for a lone node.

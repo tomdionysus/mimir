@@ -5,14 +5,22 @@
 // Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
 //
 
-// mimir-node: one Mimir node. At the single-node stage it serves RESP on its
-// own port (6379 by default, and optionally a TLS port) from one in-memory
-// keyspace. It reports what it does as one JSON object per line on stdout:
+// mimir-node: one Mimir node. It serves RESP on its own port (6379 by
+// default, and optionally a TLS port), and is a Dannan node holding its share
+// of Mimir's agreement space (stage 3; ruling 34: a lone node is a cluster of
+// one). It reports what it does as one JSON object per line on stdout:
 //
-//   {"event":"listening","port":N,"tls_port":T}        (zero: that listener is off)
+//   {"event":"listening","port":N,"tls_port":T,"id":"...","cluster_port":C}
+//   {"event":"founded","committed":true|false}
 //   {"event":"stopped"}
 //
 // It runs for --seconds (0: until SIGTERM or SIGINT).
+//
+// The cluster: `cluster: {key: FILE, state: DIR, port: 16379, bootstrap:
+// [HOST:PORT...], genesis: [NODE-ID...], shards: 256}`. Without a state
+// directory the node is a throwaway cluster of one: a fresh key and a
+// temporary state directory, its cluster port on loopback, removed at exit.
+// Without `genesis`, a node with no bootstrap peers founds the cluster alone.
 //
 // Every setting is also a key in a YAML file (--config PATH, $MIMIR_CONFIG, or
 // /usr/local/etc/mimir/config.yaml when it exists), in secrets.yaml beside
@@ -28,22 +36,38 @@
 //              [--log-format text|json]
 //   mimir-node --version
 
+#include <signal.h>
+#include <stdlib.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/signal_set.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <chrono>
+#include <filesystem>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "dannan/config/config.h"
+#include "dannan/identity/cluster_key.h"
+#include "dannan/identity/crypto.h"
+#include "dannan/identity/node_identity.h"
 #include "dannan/listen/listener.h"
+#include "dannan/node.h"
 #include "dannan/status/log.h"
+#include "mimir/cluster/space.h"
 #include "mimir/command/database.h"
 #include "mimir/server/server.h"
 #include "mimir/version.h"
@@ -70,6 +94,16 @@ dannan::config::Reader reader() {
       Setting{"acl.users", Setting::Kind::list, "--user", "", "lines of a Valkey ACL file: \"user <name> <rules>...\""},
       Setting{"notify.keyspace_events", Setting::Kind::value, "--notify-keyspace-events", "MIMIR_NOTIFY_KEYSPACE_EVENTS",
               "Valkey's notify-keyspace-events letters, as \"Khgx\""},
+      Setting{"cluster.key", Setting::Kind::value, "--cluster-key", "MIMIR_CLUSTER_KEY", "the cluster key file"},
+      Setting{"cluster.state", Setting::Kind::value, "--cluster-state", "MIMIR_CLUSTER_STATE", "the node's state directory"},
+      Setting{"cluster.listen", Setting::Kind::value, "--cluster-listen", "MIMIR_CLUSTER_LISTEN", "an address for the cluster port"},
+      Setting{"cluster.port", Setting::Kind::value, "--cluster-port", "MIMIR_CLUSTER_PORT", "the cluster port, 0 to 65535"},
+      Setting{"cluster.advertise", Setting::Kind::value, "--cluster-advertise", "MIMIR_CLUSTER_ADVERTISE", "the host peers dial"},
+      Setting{"cluster.bootstrap", Setting::Kind::list, "--bootstrap", "", "a peer's cluster port, HOST:PORT"},
+      Setting{"cluster.genesis", Setting::Kind::list, "--genesis", "", "a founding node's id, 32 hex digits"},
+      Setting{"cluster.shards", Setting::Kind::value, "--shards", "MIMIR_SHARDS", "the shard count, 1 to 8192, fixed for the cluster's life"},
+      Setting{"cluster.name", Setting::Kind::value, "--cluster-name", "MIMIR_CLUSTER_NAME", "this node's name"},
+      Setting{"cluster.domain", Setting::Kind::value, "--cluster-domain", "MIMIR_CLUSTER_DOMAIN", "this node's failure domain"},
       Setting{"seconds", Setting::Kind::value, "--seconds", "", "seconds to run, 0 for ever"},
       Setting{"log.level", Setting::Kind::value, "--log-level", "MIMIR_LOG_LEVEL", "ALL, DEBUG, INFO, WARN or ERROR"},
       Setting{"log.format", Setting::Kind::value, "--log-format", "MIMIR_LOG_FORMAT", "text or json"},
@@ -78,7 +112,63 @@ dannan::config::Reader reader() {
   return r;
 }
 
-void say(const std::string& line) { std::cout << line << std::endl; }
+std::mutex output;
+
+void say(const std::string& line) {
+  std::lock_guard lock(output);
+  std::cout << line << std::endl;
+}
+
+// The io context's threads: joined when the node is done, or when a start
+// fails part way, so none is left running.
+class IoThreads {
+ public:
+  IoThreads(asio::io_context& io, int count) : _io(io), _work(asio::make_work_guard(io)) {
+    for (int i = 0; i < count; ++i) _threads.emplace_back([this] { _io.run(); });
+  }
+  ~IoThreads() { join(); }
+  IoThreads(const IoThreads&) = delete;
+  IoThreads& operator=(const IoThreads&) = delete;
+  void join() {
+    _work.reset();
+    _io.stop();
+    for (auto& thread : _threads)
+      if (thread.joinable()) thread.join();
+  }
+
+ private:
+  asio::io_context& _io;
+  asio::executor_work_guard<asio::io_context::executor_type> _work;
+  std::vector<std::thread> _threads;
+};
+
+dannan::net::Endpoint endpoint(const std::string& text) {
+  const auto colon = text.rfind(':');
+  if (colon == std::string::npos || colon == 0 || colon + 1 == text.size()) throw dannan::config::ConfigError("expected HOST:PORT, got " + text);
+  const auto port = std::stoul(text.substr(colon + 1));
+  if (port > 65535) throw dannan::config::ConfigError("a port is 0 to 65535: " + text);
+  return {text.substr(0, colon), static_cast<uint16_t>(port)};
+}
+
+// A throwaway node's state directory, removed when it goes.
+class TemporaryState {
+ public:
+  TemporaryState() {
+    auto pattern = (std::filesystem::temp_directory_path() / "mimir-node-XXXXXX").string();
+    if (!mkdtemp(pattern.data())) throw std::runtime_error("cannot make a temporary state directory");
+    _path = pattern;
+  }
+  ~TemporaryState() {
+    std::error_code ignored;
+    std::filesystem::remove_all(_path, ignored);
+  }
+  TemporaryState(const TemporaryState&) = delete;
+  TemporaryState& operator=(const TemporaryState&) = delete;
+  const std::filesystem::path& path() const noexcept { return _path; }
+
+ private:
+  std::filesystem::path _path;
+};
 
 }  // namespace
 
@@ -100,7 +190,69 @@ int main(int argc, char** argv) {
     const auto tls_port = settings.number("tls.port", 0, 65535);
     const auto seconds = settings.number("seconds", 0, 1u << 30).value_or(0);
 
+    // The cluster (stage 3). Its shard count is the agreement table's slot
+    // count, the same on every node for the cluster's life (ruling 26).
+    const auto shards = static_cast<uint32_t>(settings.number("cluster.shards", 1, dannan::agree::max_slots).value_or(256));
+    std::vector<dannan::net::Endpoint> bootstrap;
+    for (const auto& text : settings.list("cluster.bootstrap")) bootstrap.push_back(endpoint(text));
+    std::vector<dannan::identity::NodeId> genesis;
+    for (const auto& text : settings.list("cluster.genesis")) {
+      const auto id = dannan::identity::NodeId::parse(text);
+      if (!id) throw settings.refuse("cluster.genesis", "a node id, 32 hex digits");
+      genesis.push_back(*id);
+    }
+    dannan::NodeConfig node_config;
+    std::optional<TemporaryState> temporary;
+    if (const auto state = settings.path_of("cluster.state")) {
+      const auto key = settings.path_of("cluster.key");
+      if (!key) throw dannan::config::ConfigError("cluster.state needs cluster.key");
+      node_config.state_path = *state;
+      node_config.key = dannan::identity::load_cluster_key(*key);
+      node_config.listen_host = settings.text("cluster.listen").value_or("0.0.0.0");
+      node_config.port = static_cast<uint16_t>(settings.number("cluster.port", 0, 65535).value_or(16379));
+    } else {
+      if (!bootstrap.empty() || !genesis.empty() || settings.text("cluster.key"))
+        throw dannan::config::ConfigError("a node that joins or founds a cluster with others needs cluster.state");
+      // A throwaway cluster of one: nothing outside this host can reach it.
+      temporary.emplace();
+      node_config.state_path = temporary->path();
+      const auto master = dannan::identity::random_bytes(32);
+      std::array<uint8_t, 32> bytes{};
+      std::copy(master.begin(), master.end(), bytes.begin());
+      node_config.key = dannan::identity::ClusterKey::from_master(bytes);
+      node_config.listen_host = "127.0.0.1";
+      node_config.port = 0;
+    }
+    // A node whose state is new never voted, so its acceptors may vote at once.
+    const bool fresh = !std::filesystem::exists(node_config.state_path / "node-id");
+    const auto self = dannan::identity::load_or_create_node_id(node_config.state_path);
+    if (genesis.empty() && bootstrap.empty()) genesis.push_back(self);
+    const bool founder = std::find(genesis.begin(), genesis.end(), self) != genesis.end();
+    const bool alone = genesis.size() == 1 && founder && bootstrap.empty();
+    node_config.advertise_host = settings.text("cluster.advertise").value_or("");
+    node_config.bootstrap = bootstrap;
+    node_config.node_name = settings.text("cluster.name").value_or("");
+    node_config.failure_domain = settings.text("cluster.domain").value_or("");
+    node_config.version = "mimir-node " + std::string(mimir::version);
+    node_config.log = sink;
+    node_config.agreement_slots = shards;
+    node_config.agreement_genesis = genesis;
+    if (!fresh && !alone) logger.warn("this node restarted without its acceptor state: it does not vote until it has caught up, which stage 3 does not do yet");
+
+    signal(SIGPIPE, SIG_IGN);
     asio::io_context io;
+    IoThreads threads(io, 2);
+    // Destroyed before the io threads end: a node destroyed after its io
+    // stopped never returns.
+    std::optional<dannan::Node> node;
+    node.emplace(io, node_config);
+    node->start();
+    auto space = std::make_unique<mimir::cluster::Space>(node->context(), fresh || alone);
+    if (founder)
+      space->found(10s, [](dannan::agree::Outcome outcome) {
+        say(std::string("{\"event\":\"founded\",\"committed\":") + (outcome.committed ? "true" : "false") + "}");
+      });
+
     mimir::command::DatabaseSettings database_settings;
     database_settings.databases = static_cast<size_t>(settings.number("databases", 1, 1024).value_or(1));
     database_settings.auth_plaintext = settings.toggle("auth.plaintext").value_or(false);
@@ -144,7 +296,8 @@ int main(int argc, char** argv) {
       tls = std::make_unique<dannan::listen::StreamListener>(io, config);
       tls->start(io.get_executor(), accepted);
     }
-    say("{\"event\":\"listening\",\"port\":" + std::to_string(plain.port()) + ",\"tls_port\":" + std::to_string(tls ? tls->port() : 0) + "}");
+    say("{\"event\":\"listening\",\"port\":" + std::to_string(plain.port()) + ",\"tls_port\":" + std::to_string(tls ? tls->port() : 0) + ",\"id\":\"" +
+        dannan::identity::to_string(self) + "\",\"cluster_port\":" + std::to_string(node->port()) + "}");
     logger.info("mimir-node " + std::string(mimir::version) + " listening on " + host + ":" + std::to_string(plain.port()));
 
     // Active expiry, ten times a second as Valkey's default hz, bounded per
@@ -162,20 +315,20 @@ int main(int argc, char** argv) {
 
     // At a stop, every open connection is closed and given two seconds to
     // finish before the executor stops: one left open holds itself forever.
+    std::promise<void> finished;
     asio::steady_timer drain(io);
     int drain_turns = 0;
     std::function<void()> drained = [&] {
       if (server->counters().open == 0 || ++drain_turns > 200) {
-        io.stop();
+        finished.set_value();
         return;
       }
       drain.expires_after(std::chrono::milliseconds(10));
       drain.async_wait([&](boost::system::error_code) { drained(); });
     };
-    bool stopping = false;
+    std::atomic<bool> stopping{false};
     const auto stop = [&] {
-      if (stopping) return;
-      stopping = true;
+      if (stopping.exchange(true)) return;
       plain.stop();
       if (tls) tls->stop();
       expiry.cancel();
@@ -195,7 +348,12 @@ int main(int argc, char** argv) {
         if (!error) stop();
       });
     }
-    io.run();
+    finished.get_future().wait();
+    // The cluster goes after the clients, while the io still runs.
+    space.reset();
+    node->stop();
+    node.reset();
+    threads.join();
     say("{\"event\":\"stopped\"}");
     return 0;
   } catch (const dannan::config::ConfigError& e) {

@@ -10,6 +10,7 @@
 # "mimir/<subsystem>/x.h".
 add_library(mimir SHARED
   cluster/register.cpp
+  cluster/space.cpp
   cluster/store.cpp
   command/acl.cpp
   command/acl_commands.cpp
