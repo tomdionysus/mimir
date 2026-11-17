@@ -144,6 +144,15 @@ marked:
     The claim board's registrar moves to one four-node Mimir cluster when
     stage 3's gate passes.
 
+35. **Agreement only, multi-key writes refused until Dannan 0.10.0**
+    (2026-11-17): ruling 34 holds from stage 3's step 3, a lone node
+    included, although Dannan 0.9.0 refuses a change of more than one key.
+    Until 0.10.0's atomic commit, a write that names more than one key is
+    refused on every node, a lone one included. That covers MSET, RENAME,
+    LMOVE, SMOVE, the STOREs, multi-key MULTI and scripts, and the flushes.
+    The differential cases that use them fail until then, as a known and
+    listed gap; no test is removed.
+
 ## Waiting on Tom
 
 Nothing. Proposed and not yet put to him: the shard count is one value for the
