@@ -10,9 +10,9 @@ durability, and the order.
 - State: `develop` pushed (the remote is public since 2026-11-15). Last gate:
   release 310 passed, differential 33 of 33 (corvus-jupiter, whose build tree
   is `/root/mimir-work/mimir/build-ci`; uranus is back but 4 GB). Hosted CI
-  green on all seven jobs at `eb17618` (it runs again since the repository
-  went public; its clang and ASan jobs catch what the Pis' GCC gate cannot:
-  read every completed run).
+  green at `6f4cc54` (five jobs since the sanitizer jobs were removed on
+  2026-11-17; its clang job catches thread-safety annotations the Pis' GCC
+  gate cannot: read every completed run).
 - Single-node work still owed (none waits on anyone): MEMORY STATS; PFDEBUG.
 - The single-node stage is complete: every Valkey type and command family,
   RESP2 and RESP3, pub/sub, transactions, server commands, configurable
@@ -236,7 +236,9 @@ then the code.
   named bug that cannot be pinned any other way. Never as a step's gate or
   a routine check (Tom; restated to every session 2026-11-17). Name the
   release or the bug before starting one. Mimir's gate is release plus
-  differential.
+  differential. Hosted CI has had no asan or tsan job since 2026-11-17
+  (Tom: "Remove them"); it keeps check, the two release builds, clang and
+  coverage.
 - Sanitizers (2026-11-16): every Pi boots a 4K-page, 48-bit-VA kernel
   (6.18.62-v8-va48+), so ASan, UBSan and TSan run on all four with g++, and
   with clang 19 on jupiter, saturn and neptune (uranus has no clang). TSan

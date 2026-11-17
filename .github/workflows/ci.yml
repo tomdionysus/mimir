@@ -6,8 +6,9 @@
 #
 # tools/ci.sh's steps on Debian 13, as the nodes have it: the header and format
 # check; release builds on x86-64 and on arm64, as a Pi builds them; clang with
-# its thread-safety analysis; ASan and UBSan, TSan; coverage to Codecov. Runs on
-# the Pi build servers stay by hand.
+# its thread-safety analysis; coverage to Codecov. Runs on the Pi build servers
+# stay by hand. No sanitizer jobs (Tom, 2026-11-17): `tools/ci.sh asan` and
+# `tsan` run only before a release, or to hunt a named bug.
 name: CI
 
 on:
@@ -36,12 +37,8 @@ jobs:
           - { step: release, arch: x86-64, runner: ubuntu-24.04 }
           - { step: release, arch: arm64, runner: ubuntu-24.04-arm }
           - { step: clang, arch: x86-64, runner: ubuntu-24.04 }
-          - { step: asan, arch: x86-64, runner: ubuntu-24.04 }
-          - { step: tsan, arch: x86-64, runner: ubuntu-24.04 }
     container:
       image: debian:trixie
-      # LeakSanitizer needs ptrace to stop the process's threads.
-      options: --cap-add SYS_PTRACE --security-opt seccomp=unconfined
     steps:
       - name: Install packages
         run: |
