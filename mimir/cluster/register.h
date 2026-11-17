@@ -71,6 +71,9 @@ struct Record {
   std::optional<uint64_t> expires_at;
   // Oldest first.
   std::vector<Applied> applied;
+  // How many writes have committed to the key: WATCH's evidence that nothing
+  // wrote it between the WATCH and the EXEC.
+  uint64_t serial = 0;
 
   bool empty() const noexcept { return !payload && applied.empty(); }
   // The reply recorded for operation `id`, if it was applied here.

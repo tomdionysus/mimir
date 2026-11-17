@@ -59,6 +59,17 @@ class Registers final : public Agreements {
 
   void on_committed(Committed told) override { committed = std::move(told); }
 
+  void read(size_t db, const std::string& key, std::function<void(Outcome)> done) override {
+    ++reads;
+    boost::asio::post(_io, [this, db, key, done = std::move(done)] {
+      Outcome outcome;
+      outcome.committed = true;
+      outcome.record = records[{db, key}];
+      done(outcome);
+    });
+  }
+  int reads = 0;
+
   // Versions order as commits do: a fixed-width count.
   static std::string version(uint64_t n) {
     std::string out(8, '\0');
@@ -68,6 +79,7 @@ class Registers final : public Agreements {
   // Another node's commit, told as its notice would.
   void commit_elsewhere(size_t db, const std::string& key, cluster::Record committed_record) {
     auto& held = records[{db, key}];
+    committed_record.serial = held.serial + 1;
     held = committed_record;
     committed(db, key, version(++_commits), committed_record);
   }
@@ -202,7 +214,7 @@ TEST(CommandAgreement, BlockingCommandsAndWritingTransactionsWaitForStepEight) {
   EXPECT_EQ(bed.run({"BLPOP", "l", "1"}), later);
   EXPECT_EQ(bed.run({"EVAL", "return 1", "0"}), later);
   EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
-  EXPECT_EQ(bed.run({"SET", "k", "v"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"BLPOP", "k", "1"}), "+QUEUED\r\n");
   EXPECT_EQ(bed.run({"EXEC"}), later);
   // The transaction is gone: a later command runs at once.
   EXPECT_EQ(bed.run({"GET", "k"}), "$-1\r\n");
@@ -242,6 +254,57 @@ TEST(CommandAgreement, AnOlderNoticeNeverUndoesANewerCommit) {
   // A notice for a commit before it, arriving late.
   bed.registers->committed(0, "k", Registers::version(0), string_record("old"));
   EXPECT_EQ(bed.run({"GET", "k"}), "$3\r\nnew\r\n");
+}
+
+TEST(CommandAgreement, ATransactionOverOneKeyCommitsWhole) {
+  AgreementBed bed;
+  EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
+  EXPECT_EQ(bed.run({"INCR", "k"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"INCR", "k"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"EXPIRE", "k", "100"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"GET", "k"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"EXEC"}), "*4\r\n:1\r\n:2\r\n:1\r\n$1\r\n2\r\n");
+  EXPECT_EQ(bed.registers->proposals, 1);
+  EXPECT_EQ(bed.registers->record(0, "k").serial, 1u);
+  EXPECT_EQ(bed.run({"GET", "k"}), "$1\r\n2\r\n");
+  EXPECT_TRUE(bed.registers->record(0, "k").expires_at);
+}
+
+TEST(CommandAgreement, AWatchedKeyWrittenElsewhereAbortsTheExec) {
+  AgreementBed bed;
+  EXPECT_EQ(bed.run({"WATCH", "k"}), "+OK\r\n");
+  EXPECT_EQ(bed.registers->reads, 1);
+  // Another node writes it, and this node has not heard yet: the agreement
+  // still sees it.
+  bed.registers->record(0, "k").serial = 1;
+  EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
+  EXPECT_EQ(bed.run({"SET", "k", "mine"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"EXEC"}), "*-1\r\n");
+  EXPECT_FALSE(bed.registers->record(0, "k").payload);
+}
+
+TEST(CommandAgreement, AWatchedKeyNobodyWroteLetsTheExecCommit) {
+  AgreementBed bed;
+  EXPECT_EQ(bed.run({"WATCH", "k"}), "+OK\r\n");
+  EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
+  EXPECT_EQ(bed.run({"SET", "k", "mine"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"EXEC"}), "*1\r\n+OK\r\n");
+  EXPECT_EQ(bed.run({"GET", "k"}), "$4\r\nmine\r\n");
+}
+
+TEST(CommandAgreement, ATransactionOverSeveralKeysIsRefused) {
+  AgreementBed bed;
+  const std::string several = "-ERR this command writes more than one key, which Mimir refuses until Dannan 0.10.0's atomic commit (ruling 35)\r\n";
+  EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
+  EXPECT_EQ(bed.run({"SET", "a", "1"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"SET", "b", "2"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"EXEC"}), several);
+  // A watch on another key than the one written is several keys too.
+  EXPECT_EQ(bed.run({"WATCH", "a"}), "+OK\r\n");
+  EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
+  EXPECT_EQ(bed.run({"SET", "b", "2"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"EXEC"}), several);
+  EXPECT_EQ(bed.registers->proposals, 0);
 }
 
 TEST(CommandAgreement, ANoticeBreaksAWatchOnItsKey) {

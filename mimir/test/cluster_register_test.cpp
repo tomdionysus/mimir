@@ -57,6 +57,7 @@ Record sample() {
       "12345678",
       15);
   record.expires_at = 1'900'000'000'000;
+  record.serial = 3;
   record.applied.push_back({"node-1/epoch/7", 1'000, "+OK\r\n"});
   record.applied.push_back({"node-2/epoch/9", 2'000, std::string("$1\r\n\0\r\n", 7)});
   return record;
@@ -104,9 +105,9 @@ TEST(ClusterRegister, DecodeRefusesWhatIsNotARecord) {
   flags[1] |= 0x80;
   EXPECT_FALSE(decode(flags));
   // The empty record's bytes are not a value.
-  EXPECT_FALSE(decode(Bytes{1, 0, 0, 0, 0, 0}));
+  EXPECT_FALSE(decode(Bytes{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
   // A count beyond the bound, refused before anything is allocated.
-  EXPECT_FALSE(decode(Bytes{1, 0, 0xff, 0xff, 0xff, 0xff}));
+  EXPECT_FALSE(decode(Bytes{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff}));
   // An operation id longer than the bound.
   Record long_id;
   long_id.applied.push_back({std::string(max_operation_id + 1, 'x'), 1, ""});

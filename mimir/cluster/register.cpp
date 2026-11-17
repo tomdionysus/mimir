@@ -58,6 +58,7 @@ std::optional<Bytes> encode(const Record& record) {
   dannan::net::Writer out;
   out.u8(format);
   out.u8(static_cast<uint8_t>((record.payload ? has_payload : 0) | (record.expires_at ? has_expiry : 0)));
+  out.u64(record.serial);
   if (record.expires_at) out.u64(*record.expires_at);
   if (record.payload) out.bytes(bytes_of(*record.payload));
   out.u32(static_cast<uint32_t>(record.applied.size()));
@@ -76,6 +77,7 @@ std::optional<Record> decode(std::span<const uint8_t> bytes) {
     const uint8_t flags = in.u8();
     if (flags & ~(has_payload | has_expiry)) return std::nullopt;
     Record record;
+    record.serial = in.u64();
     if (flags & has_expiry) record.expires_at = in.u64();
     if (flags & has_payload) record.payload = text_of(in.view_bytes(max_bulk));
     const uint32_t count = in.u32();
