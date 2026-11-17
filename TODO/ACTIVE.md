@@ -197,7 +197,9 @@ durability, and the order.
   The AcceptorStore interface changed (load(slot, names, every, done),
   keep(slot, held, done), optional records()): read `agree/agreement.h` there
   before building Mimir's store.
-- Pinned to Dannan 0.9.0 (from 0.8.5, 2026-11-17). Dannan's 0.9 is on its
+- Pinned to Dannan 0.9.1 (from 0.9.0, 2026-11-17: an advert change is
+  stamped above every copy of the record already sent, which Mimir's
+  capability advert relies on). Dannan's 0.9 is on its
   develop. A Pi's Dannan checkout without GitHub credentials takes a new tag
   by bundle: `git bundle create <file> refs/tags/<tag> ^<previous>` in
   ../dannan, then `git fetch <file> "refs/tags/<tag>:refs/tags/<tag>"`.
