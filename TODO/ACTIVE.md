@@ -138,6 +138,14 @@ durability, and the order.
     as across slots. About one extra round trip for multi-key MULTI, MSET,
     RENAME, LMOVE and the like; single-key commands stay one round.
   - Asked Dannan to refuse change() of several names until item 7 lands.
+  Taken and merged on Dannan's develop (`ea84a31`, 2026-11-17):
+  - change(), change_deltas() and forget() throw for more than one name
+    until item 7; read() may name several;
+  - ancestry is optional (a store without it loads it empty), so Mimir
+    keeps none;
+  - a repeatable change is re-run on the retry's own base.
+  Mimir's store keeps no ancestry, and every change carries its operation
+  id.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
