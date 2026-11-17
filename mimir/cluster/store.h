@@ -53,6 +53,9 @@ class Store final : public dannan::agree::AcceptorStore {
   std::optional<dannan::agree::AcceptorState> state(dannan::agree::Slot slot, const dannan::agree::Name& name) const;
   // How many registers it holds state for.
   size_t size() const;
+  // The names it holds a value for in `slot`, with each one's state: what a
+  // restarted peer catches up, and what this node's view is filled from.
+  std::vector<std::pair<dannan::agree::Name, dannan::agree::AcceptorState>> held(dannan::agree::Slot slot) const;
 
  private:
   struct Shard {

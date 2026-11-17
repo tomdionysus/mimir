@@ -123,6 +123,16 @@ std::optional<agree::AcceptorState> Store::state(agree::Slot slot, const agree::
   return held->second;
 }
 
+std::vector<std::pair<agree::Name, agree::AcceptorState>> Store::held(agree::Slot slot) const {
+  std::vector<std::pair<agree::Name, agree::AcceptorState>> out;
+  dannan::contract::Lock lock(_mutex);
+  const auto shard = _shards.find(slot);
+  if (shard == _shards.end()) return out;
+  for (const auto& [key, state] : shard->second.names)
+    if (state.value) out.emplace_back(agree::Name(key.begin(), key.end()), state);
+  return out;
+}
+
 size_t Store::size() const {
   dannan::contract::Lock lock(_mutex);
   size_t count = 0;

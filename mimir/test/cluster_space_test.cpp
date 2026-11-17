@@ -57,33 +57,63 @@ class Cluster {
       genesis.push_back(dannan::identity::load_or_create_node_id(_dirs.back()->path()));
     }
     ids = genesis;
-    for (size_t i = 0; i < size; ++i) {
-      dannan::NodeConfig config;
-      config.state_path = _dirs[i]->path();
-      config.key = cluster_key();
-      config.listen_host = "127.0.0.1";
-      config.advertise_host = "127.0.0.1";
-      config.port = 0;
-      if (i > 0) config.bootstrap.push_back({"127.0.0.1", nodes[0]->port()});
-      config.heartbeat = 100ms;
-      config.dead_after = 3s;
-      config.telemetry_interval = 1s;
-      config.agreement_slots = shards;
-      config.agreement_genesis = genesis;
-      config.log = dannan::status::console_sink(dannan::status::LogFormat::text, dannan::status::LogLevel::error);
-      nodes.push_back(std::make_unique<dannan::Node>(_io, config));
-      Agreements::register_types(nodes.back()->context());
-      nodes.back()->start();
-      spaces.push_back(std::make_unique<Space>(nodes.back()->context(), true));
-      command::DatabaseSettings settings;
-      settings.agreements = std::make_shared<Agreements>(*spaces.back());
-      settings.notify_keyspace_events = "KA";
-      databases.push_back(std::make_unique<command::Database>(dannan::contract::system_wall_clock(), settings));
-      fanouts.push_back(std::make_unique<Fanout>(nodes.back()->context(), databases.back()->pubsub()));
-      sessions.emplace_back();
-      sessions.back().id = databases.back()->next_client_id();
-    }
+    nodes.resize(size);
+    spaces.resize(size);
+    agreements.resize(size);
+    databases.resize(size);
+    fanouts.resize(size);
+    sessions.resize(size);
+    for (size_t i = 0; i < size; ++i) start(i, true);
   }
+
+  // Node `i` from its state directory: a new process, its acceptors voting at
+  // once if `ready`, else not until caught up.
+  void start(size_t i, bool ready) {
+    dannan::NodeConfig config;
+    config.state_path = _dirs[i]->path();
+    config.key = cluster_key();
+    config.listen_host = "127.0.0.1";
+    config.advertise_host = "127.0.0.1";
+    config.port = 0;
+    for (size_t j = 0; j < nodes.size(); ++j)
+      if (j != i && nodes[j]) {
+        config.bootstrap.push_back({"127.0.0.1", nodes[j]->port()});
+        break;
+      }
+    config.heartbeat = 100ms;
+    config.dead_after = 3s;
+    config.telemetry_interval = 1s;
+    config.agreement_slots = shards;
+    config.agreement_genesis = ids;
+    config.log = dannan::status::console_sink(dannan::status::LogFormat::text, dannan::status::LogLevel::error);
+    nodes[i] = std::make_unique<dannan::Node>(_io, config);
+    Agreements::register_types(nodes[i]->context());
+    nodes[i]->start();
+    spaces[i] = std::make_unique<Space>(nodes[i]->context(), ready);
+    agreements[i] = std::make_shared<Agreements>(*spaces[i]);
+    command::DatabaseSettings settings;
+    settings.agreements = agreements[i];
+    settings.notify_keyspace_events = "KA";
+    databases[i] = std::make_unique<command::Database>(dannan::contract::system_wall_clock(), settings);
+    fanouts[i] = std::make_unique<Fanout>(nodes[i]->context(), databases[i]->pubsub());
+    sessions[i] = command::Session{};
+    sessions[i].id = databases[i]->next_client_id();
+  }
+
+  // Node `i` stops, losing what it held in memory, and starts again.
+  void restart(size_t i) {
+    fanouts[i].reset();
+    nodes[i]->stop();
+    std::promise<void> drained;
+    boost::asio::post(_io, [&drained] { drained.set_value(); });
+    drained.get_future().wait();
+    databases[i].reset();
+    agreements[i].reset();
+    spaces[i].reset();
+    nodes[i].reset();
+    start(i, false);
+  }
+
   ~Cluster() {
     fanouts.clear();
     for (auto& node : nodes) node->stop();
@@ -92,6 +122,7 @@ class Cluster {
     boost::asio::post(_io, [&drained] { drained.set_value(); });
     drained.get_future().wait();
     databases.clear();
+    agreements.clear();
     spaces.clear();
     nodes.clear();
     _work.reset();
@@ -170,6 +201,7 @@ class Cluster {
   std::vector<dannan::identity::NodeId> ids;
   std::vector<std::unique_ptr<dannan::Node>> nodes;
   std::vector<std::unique_ptr<Space>> spaces;
+  std::vector<std::shared_ptr<Agreements>> agreements;
   std::vector<std::unique_ptr<command::Database>> databases;
   std::vector<std::unique_ptr<Fanout>> fanouts;
   std::vector<command::Session> sessions;
@@ -306,6 +338,25 @@ TEST(ClusterDatabase, APublishAndANotificationReachEveryNodesSubscribers) {
   // A write on another node: its notification is raised there and heard here.
   EXPECT_EQ(cluster.run(1, {"SET", "k", "v"}), "+OK\r\n");
   EXPECT_TRUE(eventually_heard(*heard, "__keyspace@0__:k"));
+}
+
+TEST(ClusterDatabase, ANodeRestartedWithoutItsStateCatchesUpBeforeItVotes) {
+  Cluster cluster(3);
+  ASSERT_TRUE(cluster.converged());
+  ASSERT_TRUE(cluster.found(0).committed);
+  for (int i = 0; i < 20; ++i) ASSERT_EQ(cluster.run(i % 2, {"SET", "key:" + std::to_string(i), std::to_string(i)}), "+OK\r\n");
+  cluster.restart(2);
+  EXPECT_FALSE(cluster.spaces[2]->store().ready());
+  ASSERT_TRUE(cluster.converged());
+  auto caught = std::make_shared<std::promise<void>>();
+  cluster.agreements[2]->recover([caught] { caught->set_value(); });
+  ASSERT_EQ(caught->get_future().wait_for(30s), std::future_status::ready);
+  EXPECT_TRUE(cluster.spaces[2]->store().ready());
+  // Its view holds every key, and it serves writes again.
+  for (int i = 0; i < 20; ++i)
+    EXPECT_EQ(cluster.run(2, {"GET", "key:" + std::to_string(i)}), "$" + std::to_string(std::to_string(i).size()) + "\r\n" + std::to_string(i) + "\r\n") << i;
+  EXPECT_EQ(cluster.run(2, {"INCR", "key:3"}), ":4\r\n");
+  EXPECT_TRUE(cluster.eventually(0, {"GET", "key:3"}, "$1\r\n4\r\n"));
 }
 
 }  // namespace

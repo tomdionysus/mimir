@@ -266,7 +266,8 @@ int main(int argc, char** argv) {
     std::function<void()> stop_node;
     database_settings.shutdown = [&io, &stop_node] { asio::post(io, [&stop_node] { stop_node(); }); };
     // Every write commits by agreement (ruling 34), a lone node's included.
-    database_settings.agreements = std::make_shared<mimir::cluster::Agreements>(*space);
+    auto agreements = std::make_shared<mimir::cluster::Agreements>(*space);
+    database_settings.agreements = agreements;
     std::unique_ptr<mimir::command::Database> made;
     try {
       made = std::make_unique<mimir::command::Database>(dannan::contract::system_wall_clock(), database_settings);
@@ -274,6 +275,13 @@ int main(int argc, char** argv) {
       throw dannan::config::ConfigError(e.what());
     }
     mimir::command::Database& database = *made;
+    // A member that restarted without its acceptor state catches up before
+    // it votes (the restart rule); its view fills as it does.
+    if (!space->store().ready())
+      agreements->recover([&logger] {
+        say("{\"event\":\"caught_up\"}");
+        logger.info("caught up with the cluster: this node's acceptors vote again");
+      });
     // PUBLISH and keyspace notifications reach every node's subscribers.
     auto fanout = std::make_unique<mimir::cluster::Fanout>(node->context(), database.pubsub());
     auto server = std::make_shared<mimir::server::Server>(io, database, logger.child("server"));

@@ -2,6 +2,29 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-18: Stage 3, step 6 (first part): catch-up after a restart
+
+- A member of a cluster of more than one that restarts without its
+  acceptor state (in memory until Dagda) catches up before it votes, by
+  cluster::Agreements::recover().
+  - For each shard it asks a ready peer for the names held there: a new
+    user type, 601 `mimir.shard_names`, paged at 1000 names, refused by a
+    node still catching up itself.
+  - Dannan's catch_up() then reads them at a majority and installs them.
+  - Last, it fills its database's view from what it holds (by the commit
+    hook, at each record's accepted ballot) and is set ready.
+  - A shard that cannot be caught up yet is retried a second later, with
+    the next peer.
+- mimir-node runs it at start when its acceptors are not ready, and says
+  `{"event":"caught_up"}`.
+- Store::held(slot) lists a shard's names with their states.
+- Test: ClusterDatabase.ANodeRestartedWithoutItsStateCatchesUpBeforeItVotes
+  (20 keys written, one of three nodes restarted from its state directory
+  with a new epoch: it does not vote, it catches up, serves every key, and
+  takes writes again).
+- Gate on node-a (-j1): release 353 passed; differential 234 (from
+  233, within one run's variation; nothing in the command path changed).
+
 ## 2026-11-17: Stage 3, step 8d: pub/sub across the cluster
 
 - `mimir/cluster/fanout.{h,cpp}`: Fanout opens Dannan's notify channel
