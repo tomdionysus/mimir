@@ -176,6 +176,17 @@ durability, and the order.
   Asked Dannan to confirm the tag holds change_deltas (decline, summaries,
   repeatable), the final AcceptorStore, the sim fixtures exported for
   linking, and max_slots 8192.
+  All five were confirmed on develop `df4b2d8`, and the tag waits on Tom's
+  word.
+  - The checkers link as `dannan::sim_checkers` (in dannanConfig), and the
+    fixture headers install under `dannan/test/fixtures/sim/`.
+  - SimNodes needs `DANNAN_TEST_TEMP_ROOT` defined by Mimir's tests (a
+    directory in the build tree).
+  - CHANGELOG 0.9.0 names the ABI and API changes from 0.8.x.
+  - Moved to 0.10.0: atomic commit, DTLS/UDP, the high-water mark, loader
+    promotion, and the fuzz export.
+  On the tag: move the pin to 0.9.0, bundle the tag to the Pis, then begin
+  stage 3.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
