@@ -167,6 +167,15 @@ durability, and the order.
     Mimir serves its space and, when lost, keeps its store not ready until
     catch_up().
   The example is `SimNodes.AgreementOverRealMembershipStaysLinearizableUnderFaults`.
+- 2026-11-17: Dannan 0.9.0 is to be cut tonight (Tom), from develop
+  `5276c24`. Mimir's answers on the open items:
+  - can wait for 0.10.0: atomic commit across sets (multi-key commands
+    are refused in cluster mode until it lands), the peer-witnessed
+    high-water mark, and the exported fuzz harness;
+  - don't use: DTLS/UDP and loader promotion.
+  Asked Dannan to confirm the tag holds change_deltas (decline, summaries,
+  repeatable), the final AcceptorStore, the sim fixtures exported for
+  linking, and max_slots 8192.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
