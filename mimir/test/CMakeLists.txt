@@ -6,6 +6,8 @@
 #
 
 add_executable(mimir_tests
+  cluster_register_test.cpp
+  cluster_store_test.cpp
   command_acl_test.cpp
   command_bitmaps_test.cpp
   command_blocking_test.cpp
