@@ -68,6 +68,7 @@
 #include "dannan/node.h"
 #include "dannan/status/log.h"
 #include "mimir/cluster/agreements.h"
+#include "mimir/cluster/fanout.h"
 #include "mimir/cluster/space.h"
 #include "mimir/command/database.h"
 #include "mimir/server/server.h"
@@ -273,6 +274,8 @@ int main(int argc, char** argv) {
       throw dannan::config::ConfigError(e.what());
     }
     mimir::command::Database& database = *made;
+    // PUBLISH and keyspace notifications reach every node's subscribers.
+    auto fanout = std::make_unique<mimir::cluster::Fanout>(node->context(), database.pubsub());
     auto server = std::make_shared<mimir::server::Server>(io, database, logger.child("server"));
     const auto accepted = [server](std::shared_ptr<dannan::listen::Stream> stream) { server->serve(std::move(stream)); };
 
@@ -355,6 +358,7 @@ int main(int argc, char** argv) {
     finished.get_future().wait();
     // The cluster goes after the clients, while the io still runs: the node
     // first, so no write in flight is proposed again, then the space.
+    fanout.reset();
     node->stop();
     space.reset();
     node.reset();

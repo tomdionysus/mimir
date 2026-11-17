@@ -14,6 +14,7 @@
 #include <chrono>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -25,6 +26,7 @@
 #include "dannan/node.h"
 #include "dannan/test/fixtures/temp_dir.h"
 #include "mimir/cluster/agreements.h"
+#include "mimir/cluster/fanout.h"
 #include "mimir/cluster/register.h"
 #include "mimir/cluster/space.h"
 #include "mimir/command/database.h"
@@ -75,12 +77,15 @@ class Cluster {
       spaces.push_back(std::make_unique<Space>(nodes.back()->context(), true));
       command::DatabaseSettings settings;
       settings.agreements = std::make_shared<Agreements>(*spaces.back());
+      settings.notify_keyspace_events = "KA";
       databases.push_back(std::make_unique<command::Database>(dannan::contract::system_wall_clock(), settings));
+      fanouts.push_back(std::make_unique<Fanout>(nodes.back()->context(), databases.back()->pubsub()));
       sessions.emplace_back();
       sessions.back().id = databases.back()->next_client_id();
     }
   }
   ~Cluster() {
+    fanouts.clear();
     for (auto& node : nodes) node->stop();
     // What the stop posted runs before the databases go.
     std::promise<void> drained;
@@ -166,6 +171,7 @@ class Cluster {
   std::vector<std::unique_ptr<dannan::Node>> nodes;
   std::vector<std::unique_ptr<Space>> spaces;
   std::vector<std::unique_ptr<command::Database>> databases;
+  std::vector<std::unique_ptr<Fanout>> fanouts;
   std::vector<command::Session> sessions;
 
  private:
@@ -259,6 +265,47 @@ TEST(ClusterDatabase, IncrementsFromEveryNodeAtOnceEachApplyOnce) {
     }
   EXPECT_EQ(seen.size(), 30u);
   for (size_t at = 0; at < 3; ++at) EXPECT_TRUE(cluster.eventually(at, {"GET", "counter"}, "$2\r\n30\r\n")) << at;
+}
+
+// What one subscriber on a node has been pushed, gathered from any thread.
+struct Heard {
+  std::mutex mutex;
+  std::vector<std::string> pushes;
+  bool saw(const std::string& part) {
+    std::lock_guard guard(mutex);
+    for (const auto& push : pushes)
+      if (push.find(part) != std::string::npos) return true;
+    return false;
+  }
+};
+
+bool eventually_heard(Heard& heard, const std::string& part) {
+  const auto until = std::chrono::steady_clock::now() + 5s;
+  while (std::chrono::steady_clock::now() < until) {
+    if (heard.saw(part)) return true;
+    std::this_thread::sleep_for(20ms);
+  }
+  return false;
+}
+
+TEST(ClusterDatabase, APublishAndANotificationReachEveryNodesSubscribers) {
+  Cluster cluster(3);
+  ASSERT_TRUE(cluster.converged());
+  ASSERT_TRUE(cluster.found(0).committed);
+  auto heard = std::make_shared<Heard>();
+  size_t count = 0;
+  const auto push = [heard](std::string bytes) {
+    std::lock_guard guard(heard->mutex);
+    heard->pushes.push_back(std::move(bytes));
+  };
+  cluster.databases[2]->pubsub().subscribe(command::PubSub::Kind::channel, 9001, "news", push, resp::Protocol::resp2, "subscribe", count);
+  cluster.databases[2]->pubsub().subscribe(command::PubSub::Kind::pattern, 9001, "__keyspace@0__:*", push, resp::Protocol::resp2, "psubscribe", count);
+  // Its interest is everywhere at once: every node subscribes to every topic.
+  EXPECT_EQ(cluster.run(0, {"PUBLISH", "news", "hello"}), ":0\r\n");
+  EXPECT_TRUE(eventually_heard(*heard, "hello"));
+  // A write on another node: its notification is raised there and heard here.
+  EXPECT_EQ(cluster.run(1, {"SET", "k", "v"}), "+OK\r\n");
+  EXPECT_TRUE(eventually_heard(*heard, "__keyspace@0__:k"));
 }
 
 }  // namespace
