@@ -160,7 +160,13 @@ durability, and the order.
   - SimNodes(world, n, faults, skew_ms, drift_ppm) and restart(i, wipe);
   - SimNetwork::partition and heal().
   A wipe takes a new identity. Asked for a wipe that keeps the id with a
-  new epoch, for the restart rule.
+  new epoch, for the restart rule. Taken (`feature/sim-agreement-nodes`,
+  `ccbe3f1`):
+  - restart(i, Wipe::store | Wipe::identity | Wipe::nothing);
+  - SimNodes::host(i, node, lost) runs after every start, which is where
+    Mimir serves its space and, when lost, keeps its store not ready until
+    catch_up().
+  The example is `SimNodes.AgreementOverRealMembershipStaysLinearizableUnderFaults`.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
