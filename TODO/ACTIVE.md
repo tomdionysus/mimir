@@ -303,7 +303,49 @@ then the code.
    gate. Done.
 3. The cluster by agreement only. Dannan 0.9.0 is tagged and pinned:
    single-key commands first; multi-key ones are refused in cluster mode
-   until 0.10.0's atomic commit.
+   until 0.10.0's atomic commit. Rulings 32 to 34 (2026-11-17): plain reads
+   serve the last value known committed, keyspace-wide commands are
+   cluster-wide, and a lone node is a cluster of one. Steps:
+   1. **The register and the acceptor store** (`mimir/cluster/`):
+      - a key's register is named by its database and key, and slotted by
+        Valkey's slot (CRC16 of the hash tag) mapped onto the shard count
+        in contiguous ranges;
+      - its value is Mimir's record: the RDB payload, the absolute expiry,
+        and the recent operation ids with their replies (bounded; a write
+        is refused rather than evict a live id);
+      - MimirStore implements AcceptorStore in memory: summaries are a
+        digest of the record; keep() is all or nothing and asks for a delta
+        whole (no deltas until step 7); value() answers whole; ready() is
+        false after a restart until caught up.
+      - Tested against Dannan's rules and real Agreements in process.
+   2. **The node**: mimir-node runs a dannan::Node from its YAML
+      (identity, state directory, peers). It advertises `mimir`, serves the
+      space `mimir` from MimirStore, and founds its slots on the genesis set,
+      a set of one for a lone node.
+   3. **Writes by agreement**: a single-key write runs as a Change on the
+      key's record. The command runs against a scratch keyspace restored
+      from the record, then is answered from the committed attempt's
+      result. Each write carries its operation id, so a retry applies it
+      once. The committing node updates its committed view, and sends a
+      commit notice to the key's replicas.
+   4. **Reads** (ruling 32): served from the committed view, with
+      read-your-writes per connection; strict reads through read().
+   5. **Routing**: a node outside a key's set forwards the command to a
+      replica (Routes::call), or answers MOVED to a cluster-aware client.
+      CLUSTER SLOTS, SHARDS and NODES describe the cluster.
+   6. **Membership**: placement moves slots by transfer() as nodes join
+      and leave. A restarted node catches up before it votes.
+   7. **change_deltas** on a local base: deltas from the live value, with
+      the summaries.
+   8. **Everything else in stage 3**:
+      - expiry by agreement, blocking pops across nodes, pub/sub and
+        keyspace notifications across the cluster;
+      - the cluster-wide keyspace commands (ruling 33);
+      - WATCH, MULTI and scripts over one key;
+      - ACL users by agreement (ruling 27).
+   9. **Gates**: the differential against a cluster of one and a cluster of
+      three; Dannan's SimNodes runs with Mimir's actors under faults, checked
+      for linearizability; the registrar moved to one four-node cluster.
 4. The merge class and the heal rule. Waits on Dannan 0.9.0's hybrid clock,
    and on 0.10.0's peer-witnessed high-water mark (the maintainer, 2026-11-17).
    Without key custody, the clock's ceiling is a plain durable file, so a
