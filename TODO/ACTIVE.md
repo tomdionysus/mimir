@@ -146,6 +146,16 @@ durability, and the order.
   - a repeatable change is re-run on the retry's own base.
   Mimir's store keeps no ancestry, and every change carries its operation
   id.
+- Reviewed 2026-11-17, Dannan's simulation transport seam
+  (`TODO/2026-11-17-sim-transport-seam.md`, `feature/sim-durability`): the
+  call seam (option 2) suits Mimir, and Mimir needs no session layer in the
+  world.
+  - Mimir's actors use call(), broadcast() and send() with faults, and
+    node adverts through membership.
+  - Mimir's RESP listener and MIGRATE stay outside the world. Actors drive
+    Database::execute directly.
+  - Asked for: per-node clock offset and drift; restart with the store
+    kept or wiped; matrix partitions with a heal at a chosen tick.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
