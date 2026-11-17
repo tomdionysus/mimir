@@ -187,13 +187,17 @@ durability, and the order.
     promotion, and the fuzz export.
   On the tag: move the pin to 0.9.0, bundle the tag to the Pis, then begin
   stage 3.
+- Dannan 0.9.0 was tagged 2026-11-17 (main `59b7abc`). Mimir's pin moved
+  to 0.9.0 the same day: release 310 passed and differential 33 of 33, on
+  uranus at -j1. Uranus has the tag; the other Pis take it by bundle when
+  they next build.
 - Dannan's reconfiguration is built on its `feature/agreement-reconfiguration`
   (`c524a28`, not merged): per-slot records, transfer(), settle, a
   caller-named slot, a slot-table fingerprint per request, hint(space, slot).
   The AcceptorStore interface changed (load(slot, names, every, done),
   keep(slot, held, done), optional records()): read `agree/agreement.h` there
   before building Mimir's store.
-- Pinned to Dannan 0.8.5 (ABI of 0.8.0 kept). Dannan's 0.9 is on its
+- Pinned to Dannan 0.9.0 (from 0.8.5, 2026-11-17). Dannan's 0.9 is on its
   develop. A Pi's Dannan checkout without GitHub credentials takes a new tag
   by bundle: `git bundle create <file> refs/tags/<tag> ^<previous>` in
   ../dannan, then `git fetch <file> "refs/tags/<tag>:refs/tags/<tag>"`.
@@ -290,7 +294,9 @@ then the code.
 1. The skeleton. Done.
 2. One node: every Valkey 8 command, RESP2 and RESP3, with the differential
    gate. Done.
-3. The cluster by agreement only. Waits on Dannan 0.9.0.
+3. The cluster by agreement only. Dannan 0.9.0 is tagged and pinned:
+   single-key commands first; multi-key ones are refused in cluster mode
+   until 0.10.0's atomic commit.
 4. The merge class and the heal rule. Waits on Dannan 0.9.0's hybrid clock,
    and on 0.10.0's peer-witnessed high-water mark (Tom, 2026-11-17).
    Without key custody, the clock's ceiling is a plain durable file, so a
