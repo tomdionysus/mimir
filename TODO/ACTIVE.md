@@ -377,7 +377,17 @@ then the code.
       and leave. A restarted node catches up before it votes.
    7. **change_deltas** on a local base: deltas from the live value, with
       the summaries.
-   8. **Everything else in stage 3**:
+   8. Partly done 2026-11-17 (release 351; differential 234, from 381):
+      - transactions and WATCH over one key (8a);
+      - blocking pops on one key (8b);
+      - scripts on their one declared key (8c).
+      Still owed in this step:
+      - expiry by agreement;
+      - pub/sub and notifications across the cluster;
+      - the cluster-wide keyspace commands (ruling 33);
+      - ACL by agreement (ruling 27);
+      - SCRIPT and FUNCTION libraries across the cluster.
+      **Everything else in stage 3**:
       - expiry by agreement, blocking pops across nodes, pub/sub and
         keyspace notifications across the cluster;
       - the cluster-wide keyspace commands (ruling 33);
