@@ -291,7 +291,12 @@ then the code.
 2. One node: every Valkey 8 command, RESP2 and RESP3, with the differential
    gate. Done.
 3. The cluster by agreement only. Waits on Dannan 0.9.0.
-4. The merge class and the heal rule. Waits on Dannan 0.9.0's hybrid clock.
+4. The merge class and the heal rule. Waits on Dannan 0.9.0's hybrid clock,
+   and on 0.10.0's peer-witnessed high-water mark (the maintainer, 2026-11-17).
+   Without key custody, the clock's ceiling is a plain durable file, so a
+   restored state directory could issue stamps again. 0.10.0 closes that:
+   a node issues no stamp until its clock passes the highest stamp a
+   majority of peers report from it.
 5. Persistence, `persisted` and `replicated`, checkpoints. Waits on Dagda's
    contract v2.
 6. Eviction, then the Lugh plugin. The plugin waits on Lugh's principal
