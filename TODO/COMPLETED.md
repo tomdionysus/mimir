@@ -2,6 +2,25 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-17: Dannan 0.9.0
+
+- Pin moved from 0.8.5 to 0.9.0: agreement (CASPaxos per slot,
+  reconfiguration, fast path, value-less prepare, deltas, change_deltas),
+  the simulation harness and its checkers, and the hybrid clock. Mimir
+  compiled against it unchanged, since nothing of Mimir uses agreement yet.
+- Gate on node-d (-j1, shared with Lugh): release 310 passed;
+  differential 33 of 33, its node stopped by PID, node-d's service
+  untouched.
+- Reviews given to Dannan before the tag (recorded in ACTIVE.md):
+  - value-less prepare and `past`;
+  - deltas in keep();
+  - the final AcceptorStore;
+  - change_deltas (decline, summaries);
+  - the applied-twice and half-taken findings (Mimir's changes are
+    repeatable by operation id; multi-name changes go through item 7);
+  - the simulation seam and Wipe::store;
+  - the clock's ceiling without custody.
+
 ## 2026-11-16: Dannan 0.8.5
 
 - Pin moved from 0.8.4 to 0.8.5 (ABI kept; a shared sign-in back-off, and a
