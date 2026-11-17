@@ -127,6 +127,23 @@ marked:
     own cluster; RESTORE-ASKING is RESTORE; MIGRATE is built later, as a
     client of another server, so data can move from Valkey into Mimir.
 
+32. **A plain read serves the last value its node knows committed**
+    (2026-11-17): Dannan's agreement never tells a replica that a write
+    committed. A node knows a commit from one of three sources: its own
+    commit, the commit notice Mimir sends a key's replicas after each commit,
+    or a later accept that proves it. A plain read may be stale (ruling 5)
+    but never shows a value that is later undone. A connection always reads
+    its own writes. A strict read takes a majority round (Dannan's read()).
+33. **Whole-keyspace commands are cluster-wide** (2026-11-17): KEYS, SCAN,
+    DBSIZE, RANDOMKEY, FLUSHDB and FLUSHALL answer for the whole cluster from
+    any node (ruling 1). SCAN's cursor walks slot by slot, each slot asked of
+    a replica, and the flushes delete by agreement in every slot.
+34. **One path: a lone node is a cluster of one** (2026-11-17): every
+    mimir-node is a dannan::Node, and every write goes through agreement,
+    even on a genesis set of one node. There is no separate standalone path.
+    The claim board's registrar moves to one four-node Mimir cluster when
+    stage 3's gate passes.
+
 ## Waiting on Tom
 
 Nothing. Proposed and not yet put to him: the shard count is one value for the
