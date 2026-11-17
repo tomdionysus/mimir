@@ -24,6 +24,7 @@
 #include "dannan/contract/thread_safety.h"
 #include "dannan/contract/time_source.h"
 #include "mimir/command/acl.h"
+#include "mimir/command/agreements.h"
 #include "mimir/command/pubsub.h"
 #include "mimir/command/scripting.h"
 #include "mimir/command/table.h"
@@ -61,6 +62,10 @@ struct DatabaseSettings {
   // thread under the database's lock: it must only post the stop. None: a
   // client cannot stop this node.
   std::function<void()> shutdown;
+  // The cluster (stage 3): every write naming one key commits by agreement,
+  // and one naming more is refused until Dannan 0.10.0 (ruling 35). None: the
+  // database runs every command on its own keyspace.
+  std::shared_ptr<Agreements> agreements;
 };
 
 // A parked command's wake: given its reply once a write has served it. Called
@@ -221,7 +226,36 @@ class Database {
     Wake wake;
     // Held by CLIENT PAUSE: released with no bytes, to be run again.
     bool postponed = false;
+    // A write waiting for its agreement: answered by its commit, never served
+    // by serve_ready.
+    bool proposal = false;
   };
+  // A write by agreement (stage 3): what it is, carried through its retries.
+  struct Proposal {
+    uint64_t wait = 0;
+    // A copy of the connection's session: the change may run after the
+    // connection has gone.
+    Session session;
+    const Spec* spec = nullptr;
+    std::vector<std::string> args;
+    size_t db = 0;
+    std::string key;
+    std::string operation;
+    uint64_t issued_ms = 0;
+    uint64_t deadline_ms = 0;
+  };
+  // Whether this write must be refused in a cluster, and why (ruling 35, and
+  // what step 8 brings).
+  std::optional<std::string> cluster_refusal_locked(const Spec& spec, const std::vector<std::string>& args, const Session& session) DANNAN_REQUIRES(_mutex);
+  // The command run against `base`, a copy of its key alone in a keyspace of
+  // its own: the record it leaves and the result (its reply and the
+  // notifications it would raise). Nothing outside it changes.
+  Agreements::Changed speculate(const Proposal& proposal, const cluster::Record& base) DANNAN_EXCLUDES(_mutex);
+  // Proposes it, and answers its connection once it is decided.
+  void propose(std::shared_ptr<Proposal> proposal) DANNAN_EXCLUDES(_mutex);
+  void decided(const std::shared_ptr<Proposal>& proposal, Agreements::Outcome outcome) DANNAN_EXCLUDES(_mutex);
+  // A committed record made this node's view of its key.
+  void install_locked(size_t db, const std::string& key, const cluster::Record& record) DANNAN_REQUIRES(_mutex);
   // Whether CLIENT PAUSE holds this command now.
   bool paused_locked(const Spec& spec, const Session& session) DANNAN_REQUIRES(_mutex);
   using Woken = std::vector<std::pair<Wake, std::string>>;
@@ -317,6 +351,9 @@ class Database {
   // be published.
   uint32_t _notify_flags DANNAN_GUARDED_BY(_mutex) = 0;
   std::vector<Event> _events DANNAN_GUARDED_BY(_mutex);
+  // A committed record being installed: its keyspace's "new" is the commit's
+  // to announce, from the result it carries.
+  bool _installing DANNAN_GUARDED_BY(_mutex) = false;
 };
 
 }  // namespace mimir::command

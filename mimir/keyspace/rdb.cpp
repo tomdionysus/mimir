@@ -768,6 +768,9 @@ int64_t integer_of(const std::string& text) {
 Entry read_stream(Reader& r, uint8_t type) {
   Stream stream;
   uint64_t node = 0;
+  // The last node's entries, deleted ones included: an append fills it until
+  // it holds node_entries, as Valkey's does after a RESTORE.
+  uint64_t last_filled = 0;
   for (uint64_t nodes = r.count(); nodes > 0; --nodes, ++node) {
     const std::string key = r.string();
     if (key.size() != 16) throw Malformed{};
@@ -784,6 +787,7 @@ Entry read_stream(Reader& r, uint8_t type) {
     const int64_t deleted = integer_of(next());
     const int64_t master_count = integer_of(next());
     if (live < 0 || deleted < 0 || master_count < 0 || static_cast<uint64_t>(master_count) > lp.size()) throw Malformed{};
+    last_filled = static_cast<uint64_t>(live) + static_cast<uint64_t>(deleted);
     std::vector<std::string> master_fields;
     for (int64_t f = 0; f < master_count; ++f) master_fields.push_back(next());
     if (integer_of(next()) != 0) throw Malformed{};
@@ -813,7 +817,7 @@ Entry read_stream(Reader& r, uint8_t type) {
     }
     if (seen != live) throw Malformed{};
   }
-  stream.appended = node * Stream::node_entries;
+  stream.appended = node == 0 ? 0 : (node - 1) * Stream::node_entries + std::min(last_filled, Stream::node_entries);
   const uint64_t length = r.length();
   if (length != stream.entries.size()) throw Malformed{};
   stream.last_id.ms = r.length();

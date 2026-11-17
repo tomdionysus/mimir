@@ -2,6 +2,47 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-17: Stage 3, step 3: writes by agreement
+
+- `mimir/command/agreements.h` is the Agreements interface the database
+  proposes through; `mimir/cluster/agreements.{h,cpp}` implements it on
+  Dannan's change(). Its operation ids are the node, the epoch and a count;
+  every change is repeatable; the replicas are the genesis set for now.
+- Database (DatabaseSettings::agreements):
+  - A write naming one key parks its connection and is proposed.
+  - The Change runs the command speculatively on a scratch keyspace
+    restored from the record. Its clock is fixed at the issue time and its
+    random source is seeded from the operation id, so attempts agree.
+  - Notifications are captured into the result, not published.
+  - An operation already applied answers its recorded result.
+  - On commit, the record is installed into the live keyspace (this node's
+    committed view), and touch, the notifications, invalidations and the
+    wake follow. Unknown outcomes are proposed again until 15 s;
+    refusals answer -CLUSTERDOWN.
+  - Ruling 35: writes of several keys (MSET, RENAME, MOVE, COPY, SWAPDB,
+    the flushes, the STOREs) are refused. Blocking commands, EVAL, EVALSHA
+    and FCALL, and an EXEC with queued writes are refused until step 8.
+  - CLIENT UNBLOCK leaves a proposal alone.
+- mimir-node gives the database its Agreements, so a lone node writes
+  through agreement too (ruling 34).
+- Found by the differential through agreement, and fixed:
+  - an "expired" was announced twice (now once, by the live keyspace, when
+    the write looks its key up);
+  - a restored stream started a new node instead of filling its last one,
+    which changed approximate XTRIM (rdb restore; test
+    KeyspaceRdb.ARestoredStreamFillsItsLastNode).
+- Tests: CommandAgreement (8), with a register stand-in that can lose
+  answers and refuse.
+- Gate on corvus-uranus (-j1): release 337 passed.
+- Differential through a lone node, each case on a fresh node (FLUSHALL is
+  refused): 381 differing commands.
+  - 135 are ruling 35 refusals, and 141 are step 8 refusals.
+  - 105 follow from those refusals; each was read, and each depends on a
+    refused setup command (MSET, a STORE, BITOP, SMOVE, EXEC or EVAL).
+  - No other difference.
+  - Known gap: Mimir's DUMP writes no deleted stream entries, so a stream
+    whose last node had entries deleted refills it more than Valkey would.
+
 ## 2026-11-17: Stage 3, step 2: the node
 
 - `mimir/cluster/space.{h,cpp}`: Space advertises `mimir`, serves the space

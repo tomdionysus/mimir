@@ -322,7 +322,8 @@ then the code.
       (identity, state directory, peers). It advertises `mimir`, serves the
       space `mimir` from MimirStore, and founds its slots on the genesis set,
       a set of one for a lone node.
-   3. **Writes by agreement** (ruling 35: multi-key writes are refused
+   3. Done 2026-11-17 (release 337; differential differences all from
+      ruling 35 and step 8). **Writes by agreement** (ruling 35: multi-key writes are refused
       until Dannan 0.10.0, a lone node included). The design:
       - The Database is given the cluster: proposals go through
         `context.agreement().change(space, shard, {name}, replicas,

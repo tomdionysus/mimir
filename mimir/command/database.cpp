@@ -8,9 +8,13 @@
 #include "mimir/command/database.h"
 
 #include <algorithm>
+#include <functional>
 #include <optional>
 #include <stdexcept>
+#include <tuple>
+#include <variant>
 
+#include "dannan/net/codec.h"
 #include "mimir/command/args.h"
 #include "mimir/command/handlers.h"
 #include "mimir/keyspace/rdb.h"
@@ -94,6 +98,75 @@ bool spec_allowed_subscribed(std::string_view name) {
     if (name == allowed) return true;
   }
   return false;
+}
+
+// Runs its function when it goes: declared before a lock, it runs once the
+// lock is let go, however the block is left.
+struct AfterUnlock {
+  std::function<void()> fn;
+  ~AfterUnlock() {
+    if (fn) fn();
+  }
+};
+
+// The clock a write runs on by agreement: its issue time, on every attempt.
+class FixedClock final : public dannan::contract::WallClock {
+ public:
+  explicit FixedClock(uint64_t ms) : _ms(ms) {}
+  uint64_t unix_ms() const noexcept override { return _ms; }
+
+ private:
+  uint64_t _ms;
+};
+
+// How long a write by agreement may take, retries included, before its
+// connection is told the cluster could not decide it.
+constexpr uint64_t proposal_deadline_ms = 15'000;
+
+// A notification a write raises: its database, event and key.
+using Raised = std::tuple<size_t, std::string, std::string>;
+
+// A write's result as the attempt that committed carries it: its reply, then
+// the notifications it raises once committed.
+std::string encode_result(std::string_view reply, const std::vector<Raised>& raised) {
+  dannan::net::Writer out;
+  out.bytes({reinterpret_cast<const uint8_t*>(reply.data()), reply.size()});
+  out.u32(static_cast<uint32_t>(raised.size()));
+  for (const auto& [db, event, key] : raised) {
+    out.u64(db);
+    out.string(event);
+    out.string(key);
+  }
+  const auto bytes = out.take();
+  return std::string(bytes.begin(), bytes.end());
+}
+
+// The reply and notifications a result holds; none for bytes that are not one.
+std::optional<std::pair<std::string, std::vector<Raised>>> decode_result(std::string_view bytes) {
+  try {
+    dannan::net::Reader in({reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()});
+    const auto reply = in.view_bytes(512ull * 1024 * 1024);
+    std::pair<std::string, std::vector<Raised>> out{std::string(reinterpret_cast<const char*>(reply.data()), reply.size()), {}};
+    const uint32_t count = in.u32();
+    if (count > 1u << 20) return std::nullopt;
+    for (uint32_t i = 0; i < count; ++i) {
+      const auto db = in.u64();
+      auto event = in.string();
+      auto key = in.string(512ull * 1024 * 1024);
+      out.second.emplace_back(static_cast<size_t>(db), std::move(event), std::move(key));
+    }
+    in.finish();
+    return out;
+  } catch (const dannan::net::DecodeError&) {
+    return std::nullopt;
+  }
+}
+
+// A reason as one line of an error reply.
+std::string one_line(std::string text) {
+  std::replace(text.begin(), text.end(), '\r', ' ');
+  std::replace(text.begin(), text.end(), '\n', ' ');
+  return text;
 }
 
 }  // namespace
@@ -182,7 +255,9 @@ void Database::bind_listeners() {
       notify_locked(i, 'x', "expired", key);
       invalidate_locked(key, nullptr);
     };
-    listener.created = [this, i](std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS { notify_locked(i, 'n', "new", key); };
+    listener.created = [this, i](std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+      if (!_installing) notify_locked(i, 'n', "new", key);
+    };
     _dbs[i]->set_listener(std::move(listener));
   }
 }
@@ -295,7 +370,9 @@ bool Database::paused_locked(const Spec& spec, const Session& session) {
 
 bool Database::unblock_locked(int64_t client, bool error) {
   for (auto& [id, waiter] : _waiters) {
-    if (waiter.session->id != client || waiter.postponed) continue;
+    // A write waiting for its agreement is not blocked: it is answered by its
+    // commit.
+    if (waiter.session->id != client || waiter.postponed || waiter.proposal) continue;
     std::string bytes;
     if (error) {
       resp::Reply reply(waiter.session->protocol);
@@ -556,6 +633,9 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
   }
   Woken woken;
   {
+    // A write by agreement is proposed once the lock is let go: the change runs
+    // under the lock, from the agreement's own thread.
+    AfterUnlock after;
     dannan::contract::Lock lock(_mutex);
     if (!session.welcomed) welcome_locked(session);
     _sessions.emplace(session.id, &session);
@@ -617,6 +697,51 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
     ++session.commands;
     // The database the command ran in, before it may change it (SELECT).
     const size_t db = session.db;
+    // In a cluster (stage 3) a write naming one key commits by agreement; the
+    // connection waits for it. Keyless writes (FUNCTION, SCRIPT) hold this
+    // node's own state and run here.
+    if (_settings.agreements) {
+      if (auto refused = cluster_refusal_locked(*spec, args, session)) {
+        if (spec->name == "exec") {
+          session.in_multi = false;
+          session.multi_failed = false;
+          session.queued.clear();
+          unwatch_locked(session);
+        }
+        reply.error(*refused);
+        out.append(reply.bytes());
+        return executed;
+      }
+      const auto keys = spec->find_keys ? spec->find_keys(args) : keys_of(*spec, args);
+      if (has_flag(spec->flags, "write") && keys.size() == 1) {
+        if (!wake) {
+          reply.error("ERR this write needs a connection that can wait for its agreement");
+          out.append(reply.bytes());
+          return executed;
+        }
+        look_up_keys(*spec, args, db);
+        feed_monitors(session, *spec, args, db);
+        // An expired key is found here, as Valkey's write finds it: its
+        // "expired" is this node's to announce, once, before the write's own.
+        _dbs[db]->find(keys[0]);
+        publish_events();
+        auto proposal = std::make_shared<Proposal>();
+        proposal->wait = _next_wait++;
+        proposal->session = session;
+        proposal->spec = spec;
+        proposal->args = args;
+        proposal->db = db;
+        proposal->key = std::string(keys[0]);
+        proposal->operation = _settings.agreements->operation_id();
+        proposal->issued_ms = _wall.unix_ms();
+        proposal->deadline_ms = proposal->issued_ms + proposal_deadline_ms;
+        _waiters.emplace(proposal->wait, Waiter{&session, args, {}, false, std::move(wake), false, true});
+        executed.wait = proposal->wait;
+        executed.wait_seconds = 0;
+        after.fn = [this, proposal] { propose(proposal); };
+        return executed;
+      }
+    }
     Call call{session, *this, *_dbs[db], reply, args};
     call.db = db;
     look_up_keys(*spec, args, db);
@@ -671,6 +796,139 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
   }
   for (auto& [wake_one, bytes] : woken) wake_one(std::move(bytes));
   return executed;
+}
+
+std::optional<std::string> Database::cluster_refusal_locked(const Spec& spec, const std::vector<std::string>& args, const Session& session) {
+  static const std::string several = "ERR this command writes more than one key, which Mimir refuses until Dannan 0.10.0's atomic commit (ruling 35)";
+  static const std::string later = "ERR Mimir does not yet run blocking commands, or transactions and scripts that write, by agreement";
+  const std::string_view name = spec.name;
+  // A script may write any key it is given: refused until step 8, but for
+  // the read-only forms.
+  if (name == "eval" || name == "evalsha" || name == "fcall") return later;
+  if (name == "exec") {
+    for (const auto& queued : session.queued) {
+      const Spec* inner = find_spec(queued[0]);
+      if (inner && has_flag(inner->flags, "write")) return later;
+    }
+    return std::nullopt;
+  }
+  if (!has_flag(spec.flags, "write")) return std::nullopt;
+  // These name keys in two databases, or every key there is.
+  if (name == "flushall" || name == "flushdb" || name == "swapdb" || name == "move" || name == "copy" || name == "migrate") return several;
+  if (has_flag(spec.flags, "blocking")) return later;
+  const auto keys = spec.find_keys ? spec.find_keys(args) : keys_of(spec, args);
+  if (keys.size() > 1) return several;
+  return std::nullopt;
+}
+
+Agreements::Changed Database::speculate(const Proposal& proposal, const cluster::Record& base) {
+  // Applied already, by an attempt an earlier round took: its result again.
+  if (const auto* applied = base.find(proposal.operation)) return {base, applied->reply};
+  dannan::contract::Lock lock(_mutex);
+  FixedClock clock(proposal.issued_ms);
+  keyspace::Keyspace scratch(clock);
+  if (base.payload) {
+    auto restored = keyspace::rdb::restore(*base.payload);
+    auto* entry = std::get_if<keyspace::Entry>(&restored);
+    if (!entry) return {base, encode_result("-ERR this key's stored value cannot be read\r\n", {})};
+    entry->expires_at = base.expires_at;
+    scratch.put(proposal.key, std::move(*entry));
+  }
+  const size_t before = _events.size();
+  // An expiry is announced by the live keyspace, where the write found it;
+  // here it is only taken out.
+  keyspace::Keyspace::Listener listener;
+  listener.created = [this, db = proposal.db](std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS { notify_locked(db, 'n', "new", key); };
+  scratch.set_listener(std::move(listener));
+  // This attempt's own session, clock and random choices: every attempt of
+  // one operation chooses alike.
+  Session session = proposal.session;
+  const auto saved = _random;
+  _random.seed(std::hash<std::string>{}(proposal.operation));
+  resp::Reply reply(session.protocol);
+  Call call{session, *this, scratch, reply, proposal.args};
+  call.db = proposal.db;
+  try {
+    proposal.spec->handler(call);
+  } catch (const CommandError& e) {
+    call.blocked = false;
+    reply = resp::Reply(session.protocol);
+    reply.error(e.what());
+  }
+  _random = saved;
+  cluster::Record out;
+  out.applied = base.applied;
+  if (const keyspace::Entry* entry = scratch.find(proposal.key)) {
+    out.payload = keyspace::rdb::dump(*entry);
+    out.expires_at = entry->expires_at;
+  }
+  std::vector<Raised> raised;
+  for (size_t i = before; i < _events.size(); ++i) raised.emplace_back(_events[i].db, _events[i].event, _events[i].key);
+  _events.erase(_events.begin() + static_cast<std::ptrdiff_t>(before), _events.end());
+  std::string result = encode_result(call.blocked ? timeout_reply(session.protocol, call.block_null_bulk) : reply.bytes(), raised);
+  if (!cluster::note_applied(out, {proposal.operation, proposal.issued_ms, result}))
+    return {base, encode_result("-ERR too many writes to this key are in flight; try again\r\n", {})};
+  return {std::move(out), std::move(result)};
+}
+
+void Database::propose(std::shared_ptr<Proposal> proposal) {
+  _settings.agreements->change(
+      proposal->db, proposal->key, [this, proposal](const cluster::Record& base) { return speculate(*proposal, base); },
+      [this, proposal](Agreements::Outcome outcome) { decided(proposal, std::move(outcome)); });
+}
+
+void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Outcome outcome) {
+  // Whether it took effect is not known: proposed again, it finds its own
+  // operation if it did, and is applied once.
+  if (!outcome.committed && outcome.unknown && _wall.unix_ms() < proposal->deadline_ms) return propose(proposal);
+  Woken woken;
+  Wake wake;
+  std::string bytes;
+  {
+    dannan::contract::Lock lock(_mutex);
+    const auto found = _waiters.find(proposal->wait);
+    Session* session = found != _waiters.end() ? found->second.session : nullptr;
+    const auto result = outcome.committed ? decode_result(outcome.result) : std::nullopt;
+    if (result) {
+      install_locked(proposal->db, proposal->key, outcome.record);
+      for (const auto& [db, event, key] : result->second) _events.push_back(Event{db, event, key});
+      Session* const previous = _current;
+      _current = session;
+      _own_invalidations.clear();
+      _touched.clear();
+      touch(*proposal->spec, proposal->args, proposal->db, session);
+      bytes = result->first;
+      if (!_waiters.empty()) serve_ready(woken);
+      publish_events();
+      flush_tracking_locked(session ? &bytes : nullptr);
+      _current = previous;
+    } else if (outcome.committed) {
+      bytes = "-ERR the write committed, but its reply cannot be read\r\n";
+    } else {
+      bytes = "-CLUSTERDOWN " + one_line(outcome.why.empty() ? "the write could not be agreed" : outcome.why) + "\r\n";
+    }
+    if (found != _waiters.end()) {
+      wake = std::move(found->second.wake);
+      forget_waiter(proposal->wait);
+    }
+  }
+  for (auto& [wake_one, reply] : woken) wake_one(std::move(reply));
+  if (wake) wake(std::move(bytes));
+}
+
+void Database::install_locked(size_t db, const std::string& key, const cluster::Record& record) {
+  auto& live = *_dbs.at(db);
+  _installing = true;
+  if (record.payload) {
+    auto restored = keyspace::rdb::restore(*record.payload);
+    if (auto* entry = std::get_if<keyspace::Entry>(&restored)) {
+      entry->expires_at = record.expires_at;
+      live.put(key, std::move(*entry));
+    }
+  } else {
+    live.erase(key);
+  }
+  _installing = false;
 }
 
 void Database::run_locked(Session& session, const std::vector<std::string>& args, resp::Reply& out) {

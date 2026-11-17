@@ -215,5 +215,28 @@ TEST(KeyspaceRdb, Functions) {
   EXPECT_EQ(std::get<std::vector<std::string>>(back), (std::vector<std::string>{"one", "two"}));
 }
 
+// A restored stream fills its last node before it starts another, as Valkey's
+// does: approximate trimming removes whole nodes, so where they end is visible
+// (stage 3 restores a stream on every write by agreement).
+TEST(KeyspaceRdb, ARestoredStreamFillsItsLastNode) {
+  Stream stream;
+  for (uint64_t i = 1; i <= 150; ++i) stream.append(StreamId{i, 0}, {"f", "v"});
+  auto back = rdb::restore(rdb::dump(Entry{stream, std::nullopt}));
+  ASSERT_TRUE(std::holds_alternative<Entry>(back));
+  auto& restored = std::get<Stream>(std::get<Entry>(back).value);
+  EXPECT_EQ(restored.appended, 150u);
+  restored.append(StreamId{151, 0}, {"f", "v"});
+  EXPECT_EQ(restored.node_of.at(StreamId{151, 0}), 1u);
+  EXPECT_EQ(restored.node_of.at(StreamId{150, 0}), 1u);
+  EXPECT_EQ(restored.node_of.at(StreamId{100, 0}), 0u);
+  // A full last node is followed by a new one.
+  Stream full;
+  for (uint64_t i = 1; i <= 100; ++i) full.append(StreamId{i, 0}, {"f", "v"});
+  auto again = rdb::restore(rdb::dump(Entry{full, std::nullopt}));
+  auto& restored_full = std::get<Stream>(std::get<Entry>(again).value);
+  restored_full.append(StreamId{101, 0}, {"f", "v"});
+  EXPECT_EQ(restored_full.node_of.at(StreamId{101, 0}), 1u);
+}
+
 }  // namespace
 }  // namespace mimir::keyspace
