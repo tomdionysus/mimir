@@ -153,6 +153,14 @@ marked:
     The differential cases that use them fail until then, as a known and
     listed gap; no test is removed.
 
+36. **A script writes only the key it declares** (2026-11-17): EVAL,
+    EVALSHA and FCALL run by agreement on their one declared key. A write
+    inside a script to a key it did not declare is refused, as is any
+    command inside it naming another key. A script that declares no key runs
+    on its node's committed view and only reads. This is Valkey's
+    documented rule ("all keys must be passed explicitly"), not its
+    standalone leniency.
+
 ## Waiting on the maintainer
 
 Nothing. Proposed and not yet put to him: the shard count is one value for the
