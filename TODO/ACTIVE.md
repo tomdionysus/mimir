@@ -366,7 +366,9 @@ then the code.
         step 8. Until then, in a cluster, they are refused as multi-key
         writes are.
       - Commit notices to the other replicas are step 4.
-   4. **Reads** (ruling 32): served from the committed view, with
+   4. Commit notices done 2026-11-17 (release 342). Still owed: strict
+      reads, and read-your-writes when a write was forwarded (step 5).
+      **Reads** (ruling 32): served from the committed view, with
       read-your-writes per connection; strict reads through read().
    5. **Routing**: a node outside a key's set forwards the command to a
       replica (Routes::call), or answers MOVED to a cluster-aware client.

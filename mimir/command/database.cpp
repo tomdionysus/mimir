@@ -214,6 +214,9 @@ Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings set
   }
   if (!set_notify_flags_locked(_settings.notify_keyspace_events))
     throw std::invalid_argument("notify keyspace events: not Valkey's letters: " + _settings.notify_keyspace_events);
+  if (_settings.agreements)
+    _settings.agreements->on_committed(
+        [this](size_t db, const std::string& key, const std::string& version, const cluster::Record& record) { install_committed(db, key, version, record); });
 }
 
 void Database::welcome_locked(Session& session) {
@@ -890,7 +893,8 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
     Session* session = found != _waiters.end() ? found->second.session : nullptr;
     const auto result = outcome.committed ? decode_result(outcome.result) : std::nullopt;
     if (result) {
-      install_locked(proposal->db, proposal->key, outcome.record);
+      // A newer commit's notice may have come first: the view keeps it.
+      install_locked(proposal->db, proposal->key, outcome.version, outcome.record);
       for (const auto& [db, event, key] : result->second) _events.push_back(Event{db, event, key});
       Session* const previous = _current;
       _current = session;
@@ -916,7 +920,31 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
   if (wake) wake(std::move(bytes));
 }
 
-void Database::install_locked(size_t db, const std::string& key, const cluster::Record& record) {
+void Database::install_committed(size_t db, const std::string& key, const std::string& version, const cluster::Record& record) {
+  Woken woken;
+  {
+    dannan::contract::Lock lock(_mutex);
+    if (db >= _dbs.size()) return;
+    if (!install_locked(db, key, version, record)) return;
+    Session* const previous = _current;
+    _current = nullptr;
+    _touched.clear();
+    invalidate_locked(key, nullptr);
+    std::string named = scoped(db, key);
+    if (const auto found = _watchers.find(named); found != _watchers.end())
+      for (Session* s : found->second) s->watch_touched = true;
+    if (!_waiting_on.empty()) _touched.push_back(std::move(named));
+    if (!_waiters.empty()) serve_ready(woken);
+    flush_tracking_locked(nullptr);
+    _current = previous;
+  }
+  for (auto& [wake_one, reply] : woken) wake_one(std::move(reply));
+}
+
+bool Database::install_locked(size_t db, const std::string& key, const std::string& version, const cluster::Record& record) {
+  auto& known = _versions[scoped(db, key)];
+  if (!known.empty() && version <= known) return false;
+  known = version;
   auto& live = *_dbs.at(db);
   _installing = true;
   if (record.payload) {
@@ -929,6 +957,7 @@ void Database::install_locked(size_t db, const std::string& key, const cluster::
     live.erase(key);
   }
   _installing = false;
+  return true;
 }
 
 void Database::run_locked(Session& session, const std::vector<std::string>& args, resp::Reply& out) {

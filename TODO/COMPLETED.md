@@ -2,6 +2,30 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-17: Stage 3, step 4: commit notices (ruling 32)
+
+- cluster::Agreements sends a commit notice after each commit to the set's
+  other active nodes (user type 600 `mimir.commit_notice`, registered before
+  the node starts). It carries the database, the key, the version (the
+  committing ballot as 40 bytes that order as ballots do) and the record
+  when it is at most 64 KiB. The notice is best effort, and a lost one
+  leaves a replica stale (ruling 5). The handler decodes untrusted bytes
+  with bounds.
+- Agreements::Outcome carries the version; Agreements::on_committed hands
+  notices to the database.
+- Database keeps per key the version its view holds. A commit, its own or
+  a notice, is installed only if it is newer, so it is never older than
+  what is held and never undone. A notice touches watchers, trackers and
+  waiters as a local write does.
+- Tests:
+  - CommandAgreement: a notice served, an older notice ignored, a notice
+    breaking WATCH;
+  - ClusterDatabase, three real nodes on loopback with Databases: a write on
+    one is read on the others, and 30 concurrent INCRs from all three apply
+    once each, with 30 distinct replies.
+- Gate on node-d (-j2): release 342 passed. The per-case
+  differential shows 380 differences, all of step 3's kinds (from 381).
+
 ## 2026-11-17: Dannan 0.9.1
 
 - Pin moved from 0.9.0 to 0.9.1: an advert change is now stamped above

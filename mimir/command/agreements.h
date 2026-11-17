@@ -43,6 +43,8 @@ class Agreements {
     // Committed: the record as committed, and the committing attempt's result.
     cluster::Record record;
     std::string result;
+    // Committed: the commit's version, bytes ordered as the key's commits are.
+    std::string version;
     // Not committed: why.
     std::string why;
   };
@@ -53,6 +55,14 @@ class Agreements {
   // its own operation in the record. `done` is posted once, never called
   // inline. Thread-safe; waits on nothing.
   virtual void change(size_t db, const std::string& key, Change change, std::function<void(Outcome)> done) = 0;
+
+  // A commit another node made (ruling 32's commit notice): the key, the
+  // commit's version, and the record committed.
+  using Committed = std::function<void(size_t db, const std::string& key, const std::string& version, const cluster::Record& record)>;
+  // Tells `committed` of the commits other nodes make to keys this node
+  // replicates, on any thread, in any order (the version orders them). Set
+  // once, before the first proposal.
+  virtual void on_committed(Committed committed) = 0;
 };
 
 }  // namespace mimir::command
