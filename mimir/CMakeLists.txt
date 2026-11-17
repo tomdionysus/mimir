@@ -10,6 +10,7 @@
 # "mimir/<subsystem>/x.h".
 add_library(mimir SHARED
   cluster/agreements.cpp
+  cluster/fanout.cpp
   cluster/register.cpp
   cluster/space.cpp
   cluster/store.cpp

@@ -2,6 +2,25 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-17: Stage 3, step 8d: pub/sub across the cluster
+
+- `mimir/cluster/fanout.{h,cpp}`: Fanout opens Dannan's notify channel
+  `mimir.pubsub` and subscribes this node to every topic.
+  - PubSub hands it every local publication: PUBLISH, SPUBLISH, and
+    keyspace notifications.
+  - Other nodes deliver each to their own subscribers through
+    PubSub::deliver, without carrying it on, and skip their own.
+  - Each notification is raised once, by the committing node, under its
+    own notify-keyspace-events.
+- PubSub: publish/spublish deliver locally, then hand the fan-out the
+  message once its lock is released. set_fanout and deliver were added.
+- Per-channel interest (rather than every topic everywhere) is a later
+  refinement.
+- Test: ClusterDatabase.APublishAndANotificationReachEveryNodesSubscribers
+  (three real nodes).
+- Gate on corvus-jupiter (-j2): release 352 passed; the per-case
+  differential shows 233 differences.
+
 ## 2026-11-17: Stage 3, step 8c: scripts by agreement
 
 - EVAL, EVALSHA and FCALL that declare one key (or the same key more than

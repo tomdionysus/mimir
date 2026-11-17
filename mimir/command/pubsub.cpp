@@ -101,8 +101,47 @@ void PubSub::drop(int64_t id) {
 }
 
 size_t PubSub::publish(const std::string& channel, const std::string& text) {
-  dannan::contract::Lock lock(_mutex);
+  Fanout fanout;
   size_t received = 0;
+  {
+    dannan::contract::Lock lock(_mutex);
+    received = deliver_locked(Kind::channel, channel, text);
+    fanout = _fanout;
+  }
+  if (fanout) fanout(Kind::channel, channel, text);
+  return received;
+}
+
+size_t PubSub::spublish(const std::string& channel, const std::string& text) {
+  Fanout fanout;
+  size_t received = 0;
+  {
+    dannan::contract::Lock lock(_mutex);
+    received = deliver_locked(Kind::shard, channel, text);
+    fanout = _fanout;
+  }
+  if (fanout) fanout(Kind::shard, channel, text);
+  return received;
+}
+
+size_t PubSub::deliver(Kind kind, const std::string& channel, const std::string& text) {
+  dannan::contract::Lock lock(_mutex);
+  return deliver_locked(kind, channel, text);
+}
+
+void PubSub::set_fanout(Fanout fanout) {
+  dannan::contract::Lock lock(_mutex);
+  _fanout = std::move(fanout);
+}
+
+size_t PubSub::deliver_locked(Kind kind, const std::string& channel, const std::string& text) {
+  size_t received = 0;
+  if (kind == Kind::shard) {
+    auto found = _shard.find(channel);
+    if (found == _shard.end()) return 0;
+    for (const auto& [id, subscriber] : found->second) subscriber.push(message(subscriber.protocol, {"smessage", channel, text}));
+    return found->second.size();
+  }
   auto found = _channels.find(channel);
   if (found != _channels.end()) {
     for (const auto& [id, subscriber] : found->second) {
@@ -118,14 +157,6 @@ size_t PubSub::publish(const std::string& channel, const std::string& text) {
     }
   }
   return received;
-}
-
-size_t PubSub::spublish(const std::string& channel, const std::string& text) {
-  dannan::contract::Lock lock(_mutex);
-  auto found = _shard.find(channel);
-  if (found == _shard.end()) return 0;
-  for (const auto& [id, subscriber] : found->second) subscriber.push(message(subscriber.protocol, {"smessage", channel, text}));
-  return found->second.size();
 }
 
 std::vector<std::string> PubSub::channels(Kind kind, const std::optional<std::string>& pattern) {

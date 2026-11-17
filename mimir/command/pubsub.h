@@ -57,6 +57,14 @@ class PubSub {
   size_t publish(const std::string& channel, const std::string& message);
   size_t spublish(const std::string& channel, const std::string& message);
 
+  // The cluster's fan-out (stage 3): told, once the lock is let go, of every
+  // message published here (keyspace notifications included), to carry it to
+  // the other nodes. Set once, before the first publish.
+  using Fanout = std::function<void(Kind kind, const std::string& channel, const std::string& message)>;
+  void set_fanout(Fanout fanout);
+  // A message published on another node: delivered here, never carried on.
+  size_t deliver(Kind kind, const std::string& channel, const std::string& message);
+
   // PUBSUB's answers.
   std::vector<std::string> channels(Kind kind, const std::optional<std::string>& pattern);
   size_t subscribers(Kind kind, const std::string& name);
@@ -69,12 +77,14 @@ class PubSub {
   };
   using Table = std::map<std::string, std::map<int64_t, Subscriber>>;
   Table& table(Kind kind) DANNAN_REQUIRES(_mutex);
+  size_t deliver_locked(Kind kind, const std::string& channel, const std::string& message) DANNAN_REQUIRES(_mutex);
   static std::string message(resp::Protocol protocol, std::initializer_list<std::string_view> parts);
 
   dannan::contract::Mutex _mutex;
   Table _channels DANNAN_GUARDED_BY(_mutex);
   Table _patterns DANNAN_GUARDED_BY(_mutex);
   Table _shard DANNAN_GUARDED_BY(_mutex);
+  Fanout _fanout DANNAN_GUARDED_BY(_mutex);
 };
 
 }  // namespace mimir::command
