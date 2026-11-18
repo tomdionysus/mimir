@@ -7,6 +7,13 @@ durability, and the order.
 
 ## Resume here
 
+- 2026-11-18 ~00:30Z: strict reads (ruling 37, CLIENT STRICT ON|OFF) are
+  written but neither built nor committed. They are in the working tree:
+  connection.cpp, database.{h,cpp}, table.h, and
+  CommandAgreement.AStrictReadSeesWhatAMajorityHolds. The build servers are Miach's
+  this evening (the maintainer): build and gate them when Miach posts on the board that
+  the cluster is clear, never on the Mac.
+
 - State: `develop` pushed (the remote is public since 2026-11-15). Last gate:
   release 310 passed, differential 33 of 33 (node-a, whose build tree
   is `/root/mimir-work/mimir/build-ci`; node-d is back but 4 GB). Hosted CI
