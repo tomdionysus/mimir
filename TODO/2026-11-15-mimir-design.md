@@ -161,6 +161,13 @@ marked:
     documented rule ("all keys must be passed explicitly"), not its
     standalone leniency.
 
+37. **A client asks for strict reads with CLIENT STRICT ON|OFF**
+    (2026-11-18): a Mimir subcommand of CLIENT, beside Valkey's
+    per-connection modes. While it is ON, every read on that connection is
+    confirmed with a majority of its key's replicas (Dannan's read()), and is
+    refused on a minority side. OFF, the default, gives ruling 32's plain
+    reads. CLIENT INFO and CLIENT LIST show it.
+
 ## Waiting on Tom
 
 Nothing. Proposed and not yet put to him: the shard count is one value for the
