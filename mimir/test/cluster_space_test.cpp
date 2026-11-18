@@ -359,5 +359,32 @@ TEST(ClusterDatabase, ANodeRestartedWithoutItsStateCatchesUpBeforeItVotes) {
   EXPECT_TRUE(cluster.eventually(0, {"GET", "key:3"}, "$1\r\n4\r\n"));
 }
 
+TEST(ClusterDatabase, AnExpiryIsHeardOnceWhereverItIsFound) {
+  Cluster cluster(3);
+  ASSERT_TRUE(cluster.converged());
+  ASSERT_TRUE(cluster.found(0).committed);
+  auto heard = std::make_shared<Heard>();
+  size_t count = 0;
+  cluster.databases[2]->pubsub().subscribe(
+      command::PubSub::Kind::channel, 9002, "__keyspace@0__:brief",
+      [heard](std::string bytes) {
+        std::lock_guard guard(heard->mutex);
+        heard->pushes.push_back(std::move(bytes));
+      },
+      resp::Protocol::resp2, "subscribe", count);
+  EXPECT_EQ(cluster.run(0, {"SET", "brief", "v", "PX", "100"}), "+OK\r\n");
+  ASSERT_TRUE(cluster.eventually(2, {"EXISTS", "brief"}, ":1\r\n"));
+  std::this_thread::sleep_for(300ms);
+  // Every node finds it expired in its own view; each tells its own
+  // subscribers, and none carries it to the others.
+  for (size_t at = 0; at < 3; ++at) EXPECT_EQ(cluster.run(at, {"GET", "brief"}), "$-1\r\n");
+  std::this_thread::sleep_for(300ms);
+  std::lock_guard guard(heard->mutex);
+  size_t expiries = 0;
+  for (const auto& push : heard->pushes)
+    if (push.find("expired") != std::string::npos) ++expiries;
+  EXPECT_EQ(expiries, 1u);
+}
+
 }  // namespace
 }  // namespace mimir::cluster

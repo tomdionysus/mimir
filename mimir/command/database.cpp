@@ -315,8 +315,18 @@ void Database::publish_events() {
   _events.clear();
   for (const auto& e : events) {
     const std::string db = std::to_string(e.db);
-    if (_notify_flags & notify_keyspace) _pubsub.publish("__keyspace@" + db + "__:" + e.key, e.event);
-    if (_notify_flags & notify_keyevent) _pubsub.publish("__keyevent@" + db + "__:" + e.event, e.key);
+    // An expiry or a miss is this node's view's own: every node raises it for
+    // its own subscribers. A write's events are raised by the node that
+    // committed it and carried to every node (the cluster's fan-out).
+    const bool own = e.event == "expired" || e.event == "keymiss";
+    const auto send = [this, own](const std::string& channel, const std::string& message) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+      if (own)
+        _pubsub.deliver(PubSub::Kind::channel, channel, message);
+      else
+        _pubsub.publish(channel, message);
+    };
+    if (_notify_flags & notify_keyspace) send("__keyspace@" + db + "__:" + e.key, e.event);
+    if (_notify_flags & notify_keyevent) send("__keyevent@" + db + "__:" + e.event, e.key);
   }
 }
 
