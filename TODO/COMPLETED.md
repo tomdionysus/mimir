@@ -2,6 +2,19 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-18: A node's own expiries and misses stay its own
+
+- Found reading the fan-out: every node's view raises "expired" (lazy and
+  active expiry) and "keymiss" for itself. Carried to every node, a
+  subscriber would have heard one expiry once per node.
+- Database::publish_events now delivers those two to this node's
+  subscribers only (PubSub::deliver). A write's events are still raised by
+  the committing node and carried everywhere.
+- Test: ClusterDatabase.AnExpiryIsHeardOnceWhereverItIsFound (three nodes
+  each find the key expired; a subscriber on one hears it once).
+- Gate on node-a (-j1): release 354 passed. The test was not first
+  run against the old code: the fault was found by reading.
+
 ## 2026-11-18: Stage 3, step 6 (first part): catch-up after a restart
 
 - A member of a cluster of more than one that restarts without its
