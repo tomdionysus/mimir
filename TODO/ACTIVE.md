@@ -29,10 +29,11 @@ classes of command, agreement in Dannan, durability, and the order.
 
 State on 2026-11-19:
 
-- `develop` is pushed and level with `origin/develop` at `903f59a`, apart
-  from the strict-read files above. Hosted CI was last read green at
-  `494ff46`; the three commits since are one fix (`ffd3131`) and two
-  documents. Read the newest completed run before the next push.
+- `develop` is pushed and level with `origin/develop`, apart from the
+  strict-read files above. The last code commit is `ffd3131`; everything
+  after it is documents. Hosted CI was last read green at `494ff46`, so
+  `ffd3131` has not been read green: read the newest completed run before
+  the next push.
 - Last gate: release 354 passed (node-a, 2026-11-18). The per-case
   differential shows 233 or 234 differences, all accounted for: 143 are
   ruling 35 refusals, 4 are undeclared-key script writes (ruling 36), and
