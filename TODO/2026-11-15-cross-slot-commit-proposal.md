@@ -6,6 +6,10 @@ in Dannan's plan under item 7, which Dannan takes after its fast path, the
 harness's next phase, the file-system interface and the hybrid clock (Tom's
 order). Ruling 29 (Tom) settled the merge-class question: (a).
 
+Status on 2026-11-19: not built. Dannan 0.9.0 shipped without it and moved
+it to 0.10.0. Until then Mimir refuses every write naming more than one key
+(ruling 35), in one slot as across slots.
+
 ## Kvasir's review, taken (2026-11-15)
 
 1. **Intents at the hosted system's granularity.** A Kvasir range is one

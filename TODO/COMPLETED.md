@@ -2,6 +2,92 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-19: Handoff, and the documents brought up to date
+
+- Where it stands: `develop` at `903f59a`, pushed. Last gate, 2026-11-18 on
+  corvus-jupiter: release 354 passed; the per-case differential shows 233
+  or 234 differences, all from rulings 35 and 36 and cases whose setup used
+  a refused command. Hosted CI last read green at `494ff46`.
+- Not landed: strict reads (ruling 37, CLIENT STRICT ON|OFF) are written
+  and in the working tree, neither built nor tested. `ACTIVE.md`, "Resume
+  here", lists the files and what is owed.
+- Rulings this session: 32 (plain reads serve the last value known
+  committed), 33 (keyspace-wide commands are cluster-wide), 34 (a lone node
+  is a cluster of one), 35 (multi-key writes refused until Dannan 0.10.0),
+  36 (a script writes only the key it declares), 37 (CLIENT STRICT). Hosted
+  CI's sanitizer jobs were removed at Tom's word.
+- The Pis were wiped to bare OS on 2026-11-18 (Tom, through Lir Development
+  Cluster). mimir.service was kept and checked on all four afterwards:
+  active, no restart, every library found, NOAUTH to an unauthenticated
+  PING. Its dependency list given before the wipe left out the four Lua
+  runtime libraries; the service failed on uranus until Lir Development
+  Cluster reinstalled them. The list in `ACTIVE.md` is now complete.
+  `/root/mimir-work` went, with the build trees and the per-case
+  differential's runner.
+- Documents: `ACTIVE.md` rewritten as the plan and the resume note; its
+  history of the Dannan 0.9 reviews moved to the entry below; the design's
+  stale statements corrected against the rulings; `README.md`,
+  `CONTRIBUTING.md` and `CLAUDE.md` brought up to stage 3. No code changed,
+  and nothing was built.
+
+## 2026-11-16 to 2026-11-17: The Dannan 0.9 reviews
+
+Moved from `ACTIVE.md` on 2026-11-19. What Mimir asked of Dannan's agreement
+while it was built, and what Dannan took. The designs are in `../dannan/TODO/`.
+
+- **Reconfiguration** (2026-11-15, Tom approved): agreement records are per
+  slot and a change's names share one slot. change(), read(), forget() and
+  catch_up() take the slot from the caller; with transfer(), settle, a
+  slot-table fingerprint per request and hint(space, slot).
+- **Value-less prepare** (Dannan `058a568`): Mimir chose value-less
+  prepares, the reduction deciding from summaries and fetching only diverged
+  names, over bringing every value back into prepares. A summary per name,
+  64 bytes; value() may stay bytes (DUMP form). Dannan took all five points
+  (`930b088`). The fetch answer carries `past`, and a store may always
+  answer whole.
+- **Deltas in keep()** (Dannan `ca7ad31`): deltas go into keep() (Held
+  carries delta and base; Kept{kept, need_whole}), not a separate apply().
+  Mimir's four points, taken: nothing is kept when need_whole is non-empty;
+  a keep() already at the new ballot is not applied again; deltas and
+  ballots are kept in one append; a delta the value cannot take answers
+  need_whole.
+- **The final AcceptorStore** (Dannan `1c624d3`): load(slot, names, every,
+  values, done); keep(slot, held, done(Kept)); value(slot, name, ballot,
+  since, done(optional<Fetched{bytes, past}>)). On cost, Mimir asked for a
+  local-holder change, since a whole-bytes Change makes an agreement write
+  to a large collection O(n) at the proposer. Tom moved it into 0.9.0; a
+  fetch prefers self.
+- **change_deltas**: DeltaChange(span<const Base>) -> Deltas. Mimir's three
+  asks, taken: Deltas can decline (why "declined"); it carries the summary
+  each delta yields, and a name with no summary takes no fast path;
+  DeltaChange runs on the agreement's strand with no lock held. An identity
+  change() catches up need_whole acceptors.
+- **The agreement review** (Dannan `0702313`, which found a change can be
+  applied twice and a multi-name change half taken). Mimir's answer: every
+  change is repeatable through its own operation id and the recorded reply
+  kept in the value; the reduction takes only merge ops; multi-name changes
+  wait for the atomic commit, in a slot as across slots. Taken on Dannan's
+  develop (`ea84a31`): change(), change_deltas() and forget() refuse more
+  than one name; ancestry is optional, and Mimir keeps none; a repeatable
+  change is re-run on the retry's own base.
+- **The simulation seam** (Dannan `d50bb67`, `ccbe3f1`): the call seam
+  suits Mimir, whose actors will drive Database::execute directly, its RESP
+  listener and MIGRATE staying outside the world. Asked for and built:
+  SimNodes(world, n, faults, skew_ms, drift_ppm); restart(i, Wipe::store |
+  Wipe::identity | Wipe::nothing); SimNetwork::partition and heal();
+  SimNodes::host(i, node, lost), where Mimir serves its space. The example
+  is `SimNodes.AgreementOverRealMembershipStaysLinearizableUnderFaults`.
+- **The 0.9.0 cut** (2026-11-17, develop `df4b2d8`, main `59b7abc`): Mimir
+  agreed that the atomic commit across sets, the peer-witnessed high-water
+  mark and the exported fuzz harness wait for 0.10.0, and uses neither
+  DTLS/UDP nor loader promotion. Confirmed in the tag: change_deltas, the
+  final AcceptorStore, the sim fixtures exported for linking
+  (`dannan::sim_checkers`, headers under `dannan/test/fixtures/sim/`), and
+  max_slots 8192.
+- **The atomic commit across slots**: Mimir's proposal is
+  `TODO/2026-11-15-cross-slot-commit-proposal.md`, reviewed by Kvasir, in
+  Dannan's plan for 0.10.0.
+
 ## 2026-11-18: A node's own expiries and misses stay its own
 
 - Found reading the fan-out: every node's view raises "expired" (lazy and

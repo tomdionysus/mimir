@@ -124,14 +124,41 @@ the RESP parser and `RESTORE`), `MIMIR_WARNINGS_AS_ERRORS`.
 
 ### Run a node
 
-`mimir-node` is one node. It reports what it does as one JSON object per line.
+`mimir-node` is one node. It reports what it does as one JSON object per line, first a
+`listening` event with its ports and its node id.
 
 ```
 ./build/mimir-node --port 6379
-#   {"event":"listening","port":6379,"tls_port":0}
 redis-cli -p 6379 SET greeting hello
 redis-cli -p 6379 GET greeting
 ```
+
+Started like this, with no state directory, it is a throwaway cluster of one: its writes
+go through agreement as a larger cluster's do, and nothing outside the host can join it.
+
+### Run a cluster
+
+Each node needs the cluster's key file, a state directory of its own, and the ids of the
+founding nodes (a node's id is in its `listening` event, and is kept in its state
+directory). The shard count is the same on every node and fixed for the cluster's life.
+
+```yaml
+cluster:
+  key: /etc/mimir/cluster.key
+  state: /var/lib/mimir
+  port: 16379
+  advertise: node-a.example
+  genesis:
+    - 0123456789abcdef0123456789abcdef
+    - 123456789abcdef0123456789abcdef0
+    - 23456789abcdef0123456789abcdef01
+  bootstrap:
+    - node-b.example:16379
+    - node-c.example:16379
+  shards: 256
+```
+
+See "Status" for what a cluster does today and what it does not yet.
 
 ### Configure
 
@@ -198,6 +225,9 @@ LC_ALL=C valkey-server --port 7379 --bind 127.0.0.1 --save "" --appendonly no --
 MIMIR_DIFF_MIMIR_PORT=7380 MIMIR_DIFF_VALKEY_PORT=7379 ./build/mimir_tests --gtest_filter='Differential.*'
 ```
 
+While multi-key writes are refused (see "Status"), a case cannot clear the node with
+`FLUSHALL`, so each case is run against a freshly started node.
+
 ## Repository layout
 
 ```
@@ -206,6 +236,8 @@ mimir/keyspace/   values and expiry: hash slots, glob patterns, the types' own
                   structures, geohashes, HyperLogLog, streams, RDB serialisation
 mimir/command/    the command table, the commands, the database, scripting,
                   pub/sub and ACL
+mimir/cluster/    the cluster on Dannan's agreement: a key's register and record,
+                  the acceptor store, commit notices, catch-up, pub/sub fan-out
 mimir/server/     connections over Dannan's listener
 mimir/test/       GoogleTest, one binary (mimir_tests), with the differential gate
 mimir/fuzz/       libFuzzer targets for untrusted bytes
@@ -218,23 +250,43 @@ Conventions, shared with the stack: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Status
 
-Version 0.1.0, in development; no release is cut yet. The single-node stage is complete
-and gated: every Valkey type and command family over RESP2 and RESP3, transactions,
-scripting and functions, pub/sub and keyspace notifications, and ACL with `AUTH`, each
-checked against Valkey 8.1.1 by the differential gate (277 tests, and 32 differential
-cases).
+Version 0.1.0, in development; no release is cut yet, and it is not ready to hold data
+anyone needs. Everything is in memory.
 
-What follows, in order (`TODO/ACTIVE.md`):
+**Done: one node.** Every Valkey type and command family over RESP2 and RESP3,
+transactions, scripting and functions, pub/sub and keyspace notifications, and ACL with
+`AUTH`, each checked against Valkey 8.1.1 by the differential gate.
 
-1. The cluster by agreement: every key on three replicas, agreement-class commands
-   committed through Dannan's leaderless agreement, which ships in Dannan 0.9.0.
-   Multi-key commands across slots commit atomically (Tom's ruling), by an atomic commit
-   across replica sets proposed to Dannan.
-2. Merging writes and the rule at heal: a value agreed by a majority is never overturned
-   by a merging write made on the minority side of a split.
-3. Persistence in Dagda: `ephemeral`, `persisted`, `decided` and `replicated`
+**In progress: the cluster by agreement**, on Dannan 0.9. Every write, on every node, a
+lone node included, is committed through Dannan's leaderless agreement on a majority of
+its key's replicas (354 tests on 2026-11-18). Built so far:
+
+- single-key writes, with a retried commit answering as the first did;
+- `MULTI`/`EXEC` with `WATCH`, blocking pops, and scripts, each over one key;
+- reads served from what the node knows committed, which may be stale but is never
+  later undone;
+- `PUBLISH` and keyspace notifications reaching every node's subscribers;
+- a restarted node catching up before it votes.
+
+Not yet, in a cluster or on a lone node:
+
+- **A write naming more than one key is refused**: `MSET`, `RENAME`, `LMOVE`, `SMOVE`,
+  the `STORE` commands, `FLUSHALL` and `FLUSHDB`, and transactions and scripts over
+  several keys. They wait for the atomic commit across replica sets in Dannan 0.10.0.
+- A script may write only the one key it declares.
+- Every node must be in every key's replica set: forwarding and `MOVED`, moving shards
+  as nodes join and leave, and the `CLUSTER` commands are not built.
+- Strict reads, `KEYS`, `SCAN` and `DBSIZE` across the cluster, ACL changes and loaded
+  scripts shared between nodes, and expiry by agreement.
+
+What follows the cluster, in order (`TODO/ACTIVE.md`):
+
+1. Merging writes and the rule at heal: a value agreed by a majority is never overturned
+   by a merging write made on the minority side of a split. Until then every write takes
+   agreement, so a minority side refuses writes.
+2. Persistence in Dagda: `ephemeral`, `persisted`, `decided` and `replicated`
    acknowledgement levels, per command or per session.
-4. Eviction that works whichever node a client talks to, then the Lugh plugin.
+3. Eviction that works whichever node a client talks to, then the Lugh plugin.
 
 ## Licence
 

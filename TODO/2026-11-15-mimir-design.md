@@ -1,4 +1,4 @@
-# Mimir: design (draft, 2026-11-15)
+# Mimir: design (2026-11-15, rulings to 2026-11-18)
 
 Mimir is a Redis-compatible, multi-master, leaderless distributed database: a
 hosted system on Dannan, persisting in Dagda, written new from this design.
@@ -12,12 +12,17 @@ Written by the Mimir session from Tom's rulings in conversation and the answers
 of the Dannan, Dagda, Lir and Lugh sessions (2026-11-15). Each statement is
 marked:
 
-- **Ruled**: Tom's decision, 2026-11-15.
+- **Ruled**: Tom's decision, dated where it is later than 2026-11-15.
 - **Agreed**: another session's answer about its own project, not disputed.
 - **Proposed**: the Mimir session's recommendation. Nothing proposed is built
   until Tom rules and the owning session has reviewed it.
 
-## Ruled (Tom, 2026-11-15)
+The rulings are the authority. The sections after them were written on
+2026-11-15, before the cluster stage was built; where a later ruling changed
+one, the section says so and names the ruling. What is built, and what is
+next, is `TODO/ACTIVE.md`.
+
+## Ruled (Tom)
 
 1. **Every Redis command works, correctly, from any node, with no leader.**
    A merge-only store (two winners of one `SET NX` in a split) is not Mimir.
@@ -170,24 +175,24 @@ marked:
 
 ## Waiting on Tom
 
-Nothing. Proposed and not yet put to him: the shard count is one value for the
-whole cluster, fixed when the cluster is made, and a node configured with
-another is refused at start (changing it would move every key).
+`TODO/ACTIVE.md` keeps the list ("Waiting on Tom" and "Proposed, not yet put
+to Tom"), so it is in one place.
 
 ## Shape
 
 - **One process per node**, advertising capability `mimir` (stack decision 2).
-  Pins Dannan 0.8.2 today; 0.9.0 changes the ABI, one rebuild (Agreed, Dannan).
+  Pins a Dannan release tag (0.9.1 on 2026-11-19).
 - **Clients** connect over `dannan::listen`'s `StreamListener`; Mimir parses
   RESP2 and RESP3 above it, with a fuzz target. A per-client outbound byte bound
   closes a slow client (Agreed, Dannan and Lir). Under optional client
   certificates, one that did not verify is not an absent one (Lir's lesson).
-- **Shards.** Keys hash through Redis's 16384 slots onto S shards. A shard is
-  held in memory on 3 nodes chosen by `placement::by_capacity` with Mimir's
-  salts among nodes advertising `mimir`. A node outside the set forwards with
-  `Routes::call`, or answers `MOVED` to a cluster-aware client. Every node
-  computes placement from its own roster, so forwarding tolerates one extra hop
-  after a membership change (Agreed, Dannan).
+- **Shards.** Keys hash through Redis's 16384 slots onto S shards, each a
+  Dannan agreement slot (ruling 26). A shard is founded on the genesis set
+  and held in memory on its replica set, which lives in the slot's own
+  acceptors and moves only by Dannan's transfer(), proposed by placement
+  (`placement::by_capacity` among nodes advertising `mimir`) as nodes join
+  and leave. A node outside the set forwards with `Routes::call`, or answers
+  `MOVED` to a cluster-aware client.
 - **Work classes** (Agreed, Dannan). A client command is foreground and runs on
   the connection's strand; replication a client's write waits on is foreground;
   catch-up is loader; checkpointing, eviction scans and anti-entropy are
@@ -212,9 +217,11 @@ read-modify-write commands of ruling 3 are in this class by default.
   key's value, committed when a majority of the key's 3 replicas accept it. No
   leader, no lease, no primary. One round when a key is uncontended, two when
   two nodes race for it.
-- Keys in one slot share their replicas, so one round commits several keys
-  atomically: `MULTI`/`EXEC` within a slot, with `WATCH` a version check inside
-  the round. Across slots, `CROSSSLOT`, as Valkey's cluster answers.
+- Several keys commit atomically, in one slot or across slots (rulings 22
+  and 29; never `CROSSSLOT`), through Dannan's atomic commit across replica
+  sets, which is due in Dannan 0.10.0. Until then a write naming more than
+  one key is refused (ruling 35). `WATCH` is a check of each key's write
+  count inside the agreed change.
 - A blocking pop is a committed pop, so an element is delivered once. Serving
   the longest-waiting client first across nodes needs the waiters recorded in
   the key's replicated state, dropped by incarnation when their node leaves.
@@ -283,6 +290,12 @@ What Mimir needs, as behaviour:
   catches up before it votes.
 - A strict read confirmed with a majority, and a refusal on a minority side.
 
+Built: it shipped in Dannan 0.9.0 (2026-11-17), with everything below except
+several registers committing atomically, which is 0.10.0's. How Mimir uses it
+is `TODO/ACTIVE.md`, "What stage 3 rests on"; the reviews are in
+`TODO/COMPLETED.md`, "The Dannan 0.9 reviews". The rest of this section is
+the history of the request.
+
 Dannan's answer (2026-11-15; Tom confirmed ruling 6 to it directly): built in
 Dannan 0.9.0 beside the hybrid clock, its design to be reviewed by Mimir, Lugh
 and Dagda before it is built. Dannan's part is the proposer, the wire
@@ -318,7 +331,8 @@ are lost retries and reads its own write. Every agreement command therefore
 tags its write with the command's id (node, connection, sequence), and a retry
 that finds its own tag answers from the effect already committed, not by
 running again: an LPOP retried must not pop twice, and a `SET NX` retried must
-answer OK, not nil. Dannan's harness (0.9.0) carries Mimir's reducer case as a
+answer OK, not nil. (As built, the id is the node, its durability epoch and a
+per-node counter.) Dannan's harness (0.9.0) carries Mimir's reducer case as a
 named requirement: acceptors at one highest ballot holding different merged
 states, with a checker that refuses a reducer that moves the base back.
 
@@ -375,6 +389,12 @@ at the speculative class. To be designed in full before it is built.
 
 ## Pub/sub (Agreed, Dannan and Lir)
 
+As built (2026-11-17): every publication goes to every node over one notify
+channel, `mimir.pubsub`, and each node delivers to its own subscribers. A
+notification is raised once, by the committing node; a node's own "expired"
+and "keymiss" stay with its own subscribers. Fan-out by announced interest,
+below, is a later refinement.
+
 `PUBLISH`, `SUBSCRIBE`, `PSUBSCRIBE` and keyspace notifications ride Dannan's
 notify channels directly, at most once, fanned out only to nodes that have
 announced interest. Lir's interest index is the reference and is not a library;
@@ -423,11 +443,12 @@ for Dannan (rule 3) rather than written twice.
    every type, tested from Valkey 8's command documentation with a GoogleTest
    differential gate against a Valkey 8 server on the Pis.
 3. The cluster by agreement only: every write takes the agreement path, which
-   is correct everywhere and majority-only. Waits on Dannan's agreement
-   primitive. In memory only: levels 1 and 2 are refused (ruling 17).
-4. The merge class and the heal rule. Waits on Dannan's hybrid clock (ruling 8).
-5. Persistence, levels 1 and 2, and checkpoints. Waits on Dagda's contract v2
-   (slice 4; slices are paused for Macha's port).
+   is correct everywhere and majority-only. In progress on Dannan 0.9. In
+   memory only: `persisted` and `replicated` are refused (ruling 17).
+4. The merge class and the heal rule. Waits on Dannan 0.10.0's peer-witnessed
+   high-water mark for the hybrid clock (ruling 8).
+5. Persistence, `persisted` and `replicated`, and checkpoints. Waits on
+   Dagda's contract v2 (slice 4).
 6. Eviction, then the Lugh plugin (waits on Lugh's events and Lir's client
    library).
 
@@ -435,9 +456,10 @@ for Dannan (rule 3) rather than written twice.
 
 | Of | What | Status |
 |---|---|---|
-| Dannan | The agreement primitive (ruling 6) | To be designed with the Dannan session |
-| Dannan | The hybrid logical clock (ruling 8) | Dannan recommends it for 0.9.0 |
-| Dannan | "Interest set by announcement" | Proposed when Mimir's pub/sub is built |
+| Dannan | The agreement primitive (ruling 6) | Shipped in 0.9.0 |
+| Dannan | Atomic commit across replica sets (rulings 22, 29) | Planned for 0.10.0 |
+| Dannan | The hybrid logical clock (ruling 8) | In 0.9.0; its peer-witnessed high-water mark is 0.10.0's |
+| Dannan | "Interest set by announcement" | Not asked yet: pub/sub goes to every node for now |
 | Dagda | The log and contract v2 | Slice 4, paused |
 | Dagda | A range form of `retire` | Not asked: batched entries keep lists short |
 | Lugh | Principal events over Lir | Designed, not scheduled |
