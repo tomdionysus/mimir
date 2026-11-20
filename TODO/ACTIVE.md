@@ -107,7 +107,8 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the Pis run mimi
 - Fuzz targets build with clang 19 and the default
   `fuzzer,address,undefined`.
 - Features and milestones go on a `feature/<name>` branch off `develop`,
-  merged to `develop` when complete (Tom, 2026-11-20); commit on the branch
+  squashed onto `develop` as one commit when complete (Tom, 2026-11-20);
+  commit on the branch
   when a step's gate passes, and push it. Small fixes and documents go to
   `develop` directly. Read the completed
   hosted CI runs, not only the newest (superseded runs are cancelled); push
