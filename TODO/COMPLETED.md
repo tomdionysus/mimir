@@ -2,6 +2,31 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-20: Stage 3: ACL users by agreement (ruling 27)
+
+- `3dc0af4`. ACL SETUSER and DELUSER commit on one register of their own:
+  database number 0xFFFF (no keyspace has it; there are at most 1024) and
+  key "acl". Its record's payload is ACL LIST's lines, each length-prefixed
+  (Acl::lines and Acl::replace_users, all or none).
+- The change runs the ACL handler on a copy of the users as agreed, or,
+  before the first change, as this node's settings seed them; meanwhile
+  `acl_locked()` answers the copy and `sessions_locked()` none, so nothing
+  is closed until the commit.
+- On commit, and on each other node at its notice (or at catch-up), the
+  node's users become the record (if newer), then it closes the
+  connections of a user gone and the subscribers a narrowed user may no
+  longer hear (`acl::refused_subscribers`, shared with the local path). The
+  proposer's own connection, if closed, closes after its reply.
+- Known gaps: inside MULTI they are refused in a cluster; nodes whose
+  settings seed different users differ until the first change.
+- Test: CommandAgreement.UsersChangeByAgreementAndReachEveryNode (a change
+  committed and used here, the same users line for line on another node
+  from the notice, a deleted user's connection closed there, a refused
+  change and MULTI changing nothing).
+- Gate on corvus-neptune (-j2): release 359 passed. Differential, per
+  case: 233 differing replies; a first run showed 234, the extra one in
+  NotificationsCollections, which varies from run to run.
+
 ## 2026-11-20: Stage 3: expiry by agreement
 
 - `2d42f55`. When a node's view finds a key expired (a read, or active

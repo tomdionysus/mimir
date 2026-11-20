@@ -11,7 +11,7 @@ Next: routing, step 3.3 of "Ordered work" below.
 State on 2026-11-20:
 
 - `develop` is pushed. Hosted CI read green at `3aee353`.
-- Last gate: release 358 passed (corvus-neptune, 2026-11-20). The per-case
+- Last gate: release 359 passed (corvus-neptune, 2026-11-20). The per-case
   differential (`tools/differential.sh build-ci/release`) shows 233
   differing replies, all accounted for: ruling 35 refusals (157 replies
   carry its words), 4 undeclared-key script writes (ruling 36), and the
@@ -178,7 +178,8 @@ Settled with Dannan in review (the record is in `COMPLETED.md`, "The Dannan
    agreement; commit notices; transactions and WATCH over one key; blocking
    pops on one key; scripts on their one declared key; pub/sub and keyspace
    notifications across the cluster; catch-up after a restart; strict reads
-   (ruling 37); expiry by agreement. Still to do, in this order:
+   (ruling 37); expiry by agreement; ACL users by agreement (ruling 27).
+   Still to do, in this order:
    3. **Routing.** A node outside a key's set forwards the command to a
       replica (Routes::call), or answers MOVED to a cluster-aware client.
       CLUSTER SLOTS, SHARDS and NODES describe the cluster. With it:
@@ -191,12 +192,12 @@ Settled with Dannan in review (the record is in `COMPLETED.md`, "The Dannan
       O(n) at the proposer.
    6. **Cluster-wide keyspace commands** (ruling 33): KEYS, SCAN, DBSIZE,
       RANDOMKEY slot by slot. The flushes wait for 0.10.0 (ruling 35).
-   7. **ACL users by agreement** (ruling 27).
    8. **SCRIPT and FUNCTION libraries across the cluster**: an EVALSHA on
       another node answers NOSCRIPT today.
    9. Smaller gaps: a script that only reads but declares its key counts as
       a write for WATCH; per-channel interest for pub/sub, where every
-      publication goes to every node today.
+      publication goes to every node today; ACL SETUSER and DELUSER inside
+      MULTI are refused in a cluster.
    10. **Gates**: the differential against a cluster of one and a cluster
        of three; Dannan's SimNodes run with Mimir's actors under faults,
        checked for linearizability (the checkers link as
