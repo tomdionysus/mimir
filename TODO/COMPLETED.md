@@ -2,6 +2,30 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-20: Stage 3: scripts and function libraries by agreement (ruling 39)
+
+- `eb8eb94`. The cluster's own registers share database number 0xFFFF:
+  "acl", "functions", and "script:<sha>".
+- FUNCTION LOAD, DELETE, FLUSH and RESTORE run on a copy of the agreed
+  libraries (none before the first), and the record is FUNCTION DUMP's
+  payload of the result (Scripting::library_codes and replace_libraries,
+  all or none). Every node's libraries become it at commit or notice.
+- SCRIPT LOAD commits the body to its SHA's register. An EVAL's script is
+  shared once per node in the background (no waiter).
+- An EVALSHA whose SHA this node lacks is parked as postponed, reads that
+  register at a majority, caches the body, and runs again. The session
+  remembers the SHA so it looks only once. SCRIPT FLUSH clears this node's
+  cache only, and a register last loaded before the flush is not brought
+  back, so EVALSHA answers NOSCRIPT after a flush, as Valkey's does.
+- Inside MULTI, FUNCTION's changes are refused in a cluster, as ACL's are.
+- Tests: CommandAgreement.FunctionLibrariesChangeByAgreementAndReachEveryNode
+  and ScriptsAreFoundAcrossTheCluster. The test fake counts the system
+  registers' proposals apart from keys', so the older script tests still
+  count only key proposals; the bed reruns a postponed command, as the
+  connection does.
+- Gate on corvus-neptune (-j2): release 361 passed. Differential, per
+  case: 233 differing replies, unchanged.
+
 ## 2026-11-20: Stage 3: ACL users by agreement (ruling 27)
 
 - `3dc0af4`. ACL SETUSER and DELUSER commit on one register of their own:
