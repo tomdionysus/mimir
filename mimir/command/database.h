@@ -231,6 +231,10 @@ class Database {
     std::string operation;
     uint64_t issued_ms = 0;
     uint64_t deadline_ms = 0;
+    // Not a client's command: the deletion of a key this node's view found
+    // expired, which commits only if the key is expired at `issued_ms` in
+    // the agreed record (a later EXPIRE elsewhere wins). No spec, no waiter.
+    bool expiry = false;
   };
   struct Waiter {
     Waiter(Session* session_, std::vector<std::string> args_, std::vector<std::string> keys_, bool null_bulk_, Wake wake_, bool postponed_ = false,
@@ -265,6 +269,12 @@ class Database {
   void repropose_locked(const std::shared_ptr<Proposal>& proposal) DANNAN_REQUIRES(_mutex);
   // Starts the attempts repropose_locked queued.
   void start_pending() DANNAN_EXCLUDES(_mutex);
+  // In a cluster, a key this node's view found expired is deleted by
+  // agreement, so the acceptors drop it too; queued for start_pending.
+  void expire_by_agreement_locked(size_t db, std::string_view key) DANNAN_REQUIRES(_mutex);
+  // The expiry's change: the key deleted if it has expired by the
+  // proposal's issue time, otherwise nothing changed.
+  Agreements::Changed speculate_expiry(const Proposal& proposal, const cluster::Record& base);
   // A blocking write's timeout and timeout reply, read from its arguments:
   // the error when its timeout is refused.
   struct Blocking {
@@ -413,8 +423,13 @@ class Database {
   // database (an EXEC's queued commands run against it too), the key's write
   // count as the agreement found it, and no side effect leaves it.
   bool _speculating DANNAN_GUARDED_BY(_mutex) = false;
-  // Blocking pops' attempts to propose once the lock is let go.
+  // Blocking pops' attempts, and expiries, to propose once the lock is let go.
   std::vector<std::shared_ptr<Proposal>> _pending DANNAN_GUARDED_BY(_mutex);
+  // Keys (scoped) whose expiry is proposed: one proposal each at a time.
+  std::set<std::string> _expiring DANNAN_GUARDED_BY(_mutex);
+  // Set while a write looks its own key up before proposing: an expiry it
+  // finds is its own speculation's to take out, not a separate proposal's.
+  bool _writing_lookup DANNAN_GUARDED_BY(_mutex) = false;
   keyspace::Keyspace* _scratch DANNAN_GUARDED_BY(_mutex) = nullptr;
   size_t _scratch_db DANNAN_GUARDED_BY(_mutex) = 0;
   uint64_t _scratch_serial DANNAN_GUARDED_BY(_mutex) = 0;
