@@ -1670,10 +1670,11 @@ Agreements::Changed Database::speculate_removal(const Proposal& proposal, const 
 std::vector<Agreements::Name> Database::names_locked(const Spec& spec, const std::vector<std::string>& args, const Session& session, size_t db) {
   std::vector<Agreements::Name> out;
   std::set<std::pair<size_t, std::string>> seen;
-  const auto add = [&](size_t in, std::string key) {
+  // Called here, under the lock this function holds.
+  const auto add = [&](size_t in, std::string key) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
     if (in < _dbs.size() && seen.emplace(in, key).second) out.push_back({in, std::move(key)});
   };
-  const auto every_key = [&](size_t in) {
+  const auto every_key = [&](size_t in) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
     if (in < _dbs.size())
       for (auto& key : _dbs[in]->keys()) add(in, std::move(key));
   };
@@ -1820,7 +1821,8 @@ void Database::touch_key_locked(size_t db, const std::string& key, const Session
 
 std::vector<std::string> Database::versions_of_locked(const Proposal& proposal) {
   std::vector<std::string> out;
-  const auto version = [this](size_t db, const std::string& key) {
+  // Called here, under the lock this function holds.
+  const auto version = [this](size_t db, const std::string& key) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
     const auto found = _versions.find(scoped(db, key));
     return found == _versions.end() ? std::string() : found->second;
   };
