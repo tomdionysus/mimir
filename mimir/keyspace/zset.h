@@ -64,6 +64,11 @@ class SortedSet {
   // ZSCAN's page of a large sorted set: up to `count` items (member and
   // score) from `cursor`, and the cursor to go on from (ScanOrder).
   std::pair<std::vector<Item>, uint64_t> page(uint64_t cursor, size_t count);
+  // Takes the scan numbers of `before`, the value this one replaces (a write
+  // committed by agreement installs a whole new value): an element in both
+  // keeps its number, and a new one is numbered on from where `before` had
+  // reached, so a scan begun before the write goes on as ruling 30 promises.
+  void adopt_numbers(const SortedSet& before);
 
  private:
   struct Entry {

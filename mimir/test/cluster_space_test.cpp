@@ -32,6 +32,7 @@
 #include "mimir/cluster/register.h"
 #include "mimir/cluster/space.h"
 #include "mimir/command/database.h"
+#include "mimir/test/fixtures/local_agreements.h"
 
 namespace mimir::cluster {
 namespace {
@@ -350,7 +351,9 @@ TEST(ClusterSpace, EveryNodeListsWhereEveryNodeTakesClients) {
 
   // MIMIR NODES answers from that list, under ACL like any command.
   dannan::test::SteppedWall wall;
+  boost::asio::io_context local;
   command::DatabaseSettings settings;
+  settings.agreements = std::make_shared<test::LocalAgreements>(local);
   settings.nodes = [&cluster] { return cluster.spaces[0]->client_addresses(); };
   settings.users = {"user watcher on nopass +@all -mimir|nodes"};
   command::Database database(wall, settings);

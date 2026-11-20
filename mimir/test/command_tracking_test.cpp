@@ -34,11 +34,7 @@ struct Client {
     session.push = [this](std::string bytes) { pushed.push_back(std::move(bytes)); };
     bed.database.welcome(session);
   }
-  std::string run(Args args) {
-    std::string out;
-    bed.database.execute(session, args, out);
-    return out;
-  }
+  std::string run(Args args) { return bed.run_as(session, std::move(args)); }
   std::vector<std::string> take() { return std::exchange(pushed, {}); }
 };
 
@@ -189,7 +185,8 @@ TEST(CommandTracking, TransactionsAndScriptsReadAndChangeForTheirCaller) {
   a.run({"HELLO", "3"});
   a.run({"CLIENT", "TRACKING", "ON"});
   a.run({"GET", "k"});
-  b.run({"EVAL", "redis.call('set','k','12')", "0"});
+  // A script declares the key it writes (ruling 36).
+  b.run({"EVAL", "redis.call('set','k','12')", "1", "k"});
   EXPECT_EQ(a.take(), std::vector<std::string>{invalidate({"k"})});
   a.run({"MULTI"});
   a.run({"GET", "k"});

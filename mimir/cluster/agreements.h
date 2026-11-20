@@ -50,6 +50,9 @@ class Agreements final : public command::Agreements {
   std::string operation_id() override;
   void change(size_t db, const std::string& key, Change change, std::function<void(Outcome)> done) override;
   void read(size_t db, const std::string& key, std::function<void(Outcome)> done) override;
+  // Refused, posted, until Dannan's atomic commit across replica sets.
+  void change_keys(std::vector<Name> names, ChangeKeys change, std::function<void(KeysOutcome)> done) override;
+  bool several_keys() const override { return false; }
   void on_committed(Committed committed) override;
 
   // Catches this node up after a restart that lost its acceptor state (the

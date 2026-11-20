@@ -271,6 +271,12 @@ void Agreements::read(size_t db, const std::string& key, std::function<void(Outc
                  });
 }
 
+void Agreements::change_keys(std::vector<Name>, ChangeKeys, std::function<void(KeysOutcome)> done) {
+  KeysOutcome refused;
+  refused.why = "a change of several keys waits for Dannan's atomic commit across replica sets (ruling 35)";
+  _space.context().time().after(std::chrono::milliseconds(0), [done = std::move(done), refused] { done(refused); });
+}
+
 void Agreements::notify(size_t db, const std::string& key, const std::string& version, const Record& record) {
   auto& context = _space.context();
   const auto& replicas = context.agreement().table().genesis.nodes;

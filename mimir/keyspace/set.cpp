@@ -86,4 +86,13 @@ std::vector<std::string_view> Set::ordered() const {
   return out;
 }
 
+void Set::adopt_numbers(const Set& before) {
+  _order.resume_from(before._order.reached());
+  for (const auto& member : _members) {
+    auto& entry = _index.at(member);
+    const auto found = before._index.find(member);
+    entry.number = found != before._index.end() ? found->second.number : _order.next();
+  }
+}
+
 }  // namespace mimir::keyspace

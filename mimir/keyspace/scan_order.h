@@ -50,6 +50,15 @@ class ScanOrder {
   void removed(uint64_t number) {
     if (_built) _by_number.erase(number);
   }
+  // Where numbering has reached, and numbering on from `reached` (the index
+  // built again when next paged): a collection that replaces another keeps
+  // its numbers (adopt_numbers).
+  uint64_t reached() const noexcept { return _next; }
+  void resume_from(uint64_t reached) noexcept {
+    _next = reached;
+    _by_number.clear();
+    _built = false;
+  }
   // Every number from zero again (a collection copied element by element).
   void restart() noexcept {
     _next = 0;

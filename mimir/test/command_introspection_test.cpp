@@ -126,10 +126,13 @@ TEST(CommandIntrospection, ClientUnblockEndsAWait) {
   std::string out;
   auto executed = bed.database.execute(waiting, {"BLPOP", "list", "0"}, out, [&](std::string reply) { woken = std::move(reply); });
   ASSERT_TRUE(executed.wait.has_value());
+  // Its attempt by agreement finds nothing: it parks on its key.
+  bed.settle();
   EXPECT_EQ(bed.run({"CLIENT", "UNBLOCK", std::to_string(waiting.id)}), integer(1));
   EXPECT_EQ(woken, "*-1\r\n");
   EXPECT_EQ(bed.run({"CLIENT", "UNBLOCK", std::to_string(waiting.id)}), integer(0));
   bed.database.execute(waiting, {"BLPOP", "list", "0"}, out, [&](std::string reply) { woken = std::move(reply); });
+  bed.settle();
   EXPECT_EQ(bed.run({"CLIENT", "UNBLOCK", std::to_string(waiting.id), "ERROR"}), integer(1));
   EXPECT_EQ(woken, error("UNBLOCKED client unblocked via CLIENT UNBLOCK"));
   EXPECT_EQ(bed.run({"CLIENT", "UNBLOCK", "999", "BOGUS"}), error("ERR CLIENT UNBLOCK reason should be TIMEOUT or ERROR"));
@@ -200,10 +203,12 @@ TEST(CommandIntrospection, ClientPauseHoldsCommandsUntilItEnds) {
   EXPECT_EQ(bed.run({"CLIENT", "UNPAUSE"}), ok());
   EXPECT_EQ(woken, (std::vector<std::string>{"", ""}));
   EXPECT_EQ(bed.database.waiting(), 0u);
-  // Run again, it runs.
+  // Run again, it runs: by agreement, answered once committed.
   out.clear();
-  EXPECT_FALSE(run({"SET", "k", "v"}, out).wait.has_value());
-  EXPECT_EQ(out, ok());
+  woken.clear();
+  EXPECT_FALSE(run({"SET", "k", "v"}, out).postponed);
+  bed.settle();
+  EXPECT_EQ(woken, (std::vector<std::string>{ok()}));
 
   // ALL holds even PING, and a later shorter pause does not shorten it.
   EXPECT_EQ(bed.run({"CLIENT", "PAUSE", "1000", "WRITE"}), ok());
@@ -227,8 +232,8 @@ TEST(CommandIntrospection, ClientPauseRefusesWhatValkeyRefuses) {
   EXPECT_EQ(bed.run({"CLIENT", "PAUSE", "10", "BOGUS"}), error("ERR CLIENT PAUSE mode must be WRITE or ALL"));
   // Without a way to wait (a script, a test), a held command runs at once.
   EXPECT_EQ(bed.run({"CLIENT", "PAUSE", "1000"}), ok());
-  EXPECT_EQ(bed.run({"PING"}), "+PONG\r\n");
-  EXPECT_EQ(bed.run({"CLIENT", "UNPAUSE"}), ok());
+  EXPECT_EQ(bed.run_unwaited({"PING"}), "+PONG\r\n");
+  EXPECT_EQ(bed.run_unwaited({"CLIENT", "UNPAUSE"}), ok());
 }
 
 // Ruling 31: Valkey's persistence and replication commands, with Mimir's
@@ -268,23 +273,17 @@ TEST(CommandIntrospection, MigrateRefusesWhatValkeyRefuses) {
   EXPECT_EQ(bed.run({"MIGRATE", "127.0.0.1", "7382", "k", "x", "1000"}), error("ERR value is not an integer or out of range"));
   EXPECT_EQ(bed.run({"MIGRATE", "127.0.0.1", "7382", "k", "0", "x"}), error("ERR value is not an integer or out of range"));
   // Nothing can wait here for a target.
-  EXPECT_EQ(bed.run({"MIGRATE", "127.0.0.1", "7382", "k", "0", "1000"}), error("ERR MIGRATE needs a connection that can wait for its target"));
+  EXPECT_EQ(bed.run_unwaited({"MIGRATE", "127.0.0.1", "7382", "k", "0", "1000"}), error("ERR MIGRATE needs a connection that can wait for its target"));
   EXPECT_EQ(bed.run({"COMMAND", "GETKEYS", "MIGRATE", "h", "1", "", "0", "10", "AUTH", "KEYS", "KEYS", "a", "b"}), array({bulk("a"), bulk("b")}));
 }
 
 TEST(CommandIntrospection, ShutdownStopsTheNode) {
-  dannan::test::SteppedWall wall;
   int stopped = 0;
   command::DatabaseSettings settings;
   settings.shutdown = [&] { ++stopped; };
-  command::Database database(wall, settings);
-  command::Session session;
-  session.id = database.next_client_id();
-  const auto run = [&](Args args) {
-    std::string out;
-    database.execute(session, args, out);
-    return out;
-  };
+  Bed bed(settings);
+  command::Session& session = bed.session;
+  const auto run = [&](Args args) { return bed.run(std::move(args)); };
   EXPECT_EQ(run({"SHUTDOWN", "ABORT"}), error("ERR No shutdown in progress."));
   EXPECT_EQ(run({"SHUTDOWN", "BOGUS"}), error("ERR syntax error"));
   EXPECT_EQ(run({"SHUTDOWN", "NOW", "ABORT"}), error("ERR syntax error"));

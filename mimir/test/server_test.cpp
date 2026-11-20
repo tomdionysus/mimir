@@ -25,6 +25,7 @@
 
 #include "dannan/listen/listener.h"
 #include "dannan/test/fixtures/stepped_time.h"
+#include "mimir/test/fixtures/bed.h"
 
 namespace mimir::server {
 namespace {
@@ -33,8 +34,10 @@ namespace asio = boost::asio;
 
 struct ServerBed {
   dannan::test::SteppedWall wall;
-  command::Database database{wall};
   asio::io_context io;
+  // Every write commits by agreement, on an in-process cluster of one run on
+  // the server's own io thread.
+  command::Database database{wall, test::Bed::settings_with(std::make_shared<test::LocalAgreements>(io))};
   asio::executor_work_guard<asio::io_context::executor_type> work{io.get_executor()};
   std::shared_ptr<Server> server = std::make_shared<Server>(io, database, dannan::status::ScopedLogger(dannan::status::null_sink(), "server"));
   dannan::listen::StreamListener listener{io, loopback()};

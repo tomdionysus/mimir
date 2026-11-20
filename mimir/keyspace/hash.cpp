@@ -59,4 +59,13 @@ std::pair<std::vector<Hash::const_iterator>, uint64_t> Hash::page(uint64_t curso
   });
 }
 
+void Hash::adopt_numbers(const Hash& before) {
+  _order.resume_from(before._order.reached());
+  for (const auto& item : _items) {
+    auto& entry = _index.at(item.first);
+    const auto found = before._index.find(item.first);
+    entry.number = found != before._index.end() ? found->second.number : _order.next();
+  }
+}
+
 }  // namespace mimir::keyspace

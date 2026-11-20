@@ -62,26 +62,29 @@ TEST(CommandScripting, CallRunsCommandsAndConvertsReplies) {
   EXPECT_EQ(bed.run({"EVAL", "return server.call('GET', 'k')", "0"}), bulk("v"));
   // A null bulk reply is false in Lua.
   EXPECT_EQ(bed.run({"EVAL", "return redis.call('GET', 'none') == false", "0"}), integer(1));
-  EXPECT_EQ(bed.run({"EVAL", "return redis.call('INCRBY', 'n', 5) + 1", "0"}), integer(6));
-  EXPECT_EQ(bed.run({"EVAL", "redis.call('RPUSH', 'l', 'a', 'b'); return redis.call('LRANGE', 'l', 0, -1)", "0"}), array({bulk("a"), bulk("b")}));
+  // A key a script writes is declared (ruling 36: "all keys must be passed
+  // explicitly"); the script may still name it literally.
+  EXPECT_EQ(bed.run({"EVAL", "return redis.call('INCRBY', 'n', 5) + 1", "1", "n"}), integer(6));
+  EXPECT_EQ(bed.run({"EVAL", "redis.call('RPUSH', 'l', 'a', 'b'); return redis.call('LRANGE', 'l', 0, -1)", "1", "l"}), array({bulk("a"), bulk("b")}));
   // A status reply is a table with ok.
-  EXPECT_EQ(bed.run({"EVAL", "return redis.call('SET', 'k', 'w').ok", "0"}), bulk("OK"));
+  EXPECT_EQ(bed.run({"EVAL", "return redis.call('SET', 'k', 'w').ok", "1", "k"}), bulk("OK"));
 }
 
 TEST(CommandScripting, CommandErrorStopsTheScript) {
   Bed bed;
   bed.run({"SET", "s", "x"});
   const std::string body = "redis.call('LPUSH', 's', 1)\nredis.call('SET', 'after', 1)";
-  EXPECT_EQ(bed.run({"EVAL", body, "0"}), error("WRONGTYPE Operation against a key holding the wrong kind of value" + suffix(command::sha1_hex(body), 1)));
+  EXPECT_EQ(bed.run({"EVAL", body, "2", "s", "after"}),
+            error("WRONGTYPE Operation against a key holding the wrong kind of value" + suffix(command::sha1_hex(body), 1)));
   EXPECT_EQ(bed.run({"EXISTS", "after"}), integer(0));
 }
 
 TEST(CommandScripting, PcallReturnsTheError) {
   Bed bed;
   bed.run({"SET", "s", "x"});
-  EXPECT_EQ(bed.run({"EVAL", "local r = redis.pcall('LPUSH', 's', 1); return r.err", "0"}),
+  EXPECT_EQ(bed.run({"EVAL", "local r = redis.pcall('LPUSH', 's', 1); return r.err", "1", "s"}),
             bulk("WRONGTYPE Operation against a key holding the wrong kind of value"));
-  EXPECT_EQ(bed.run({"EVAL", "return redis.pcall('LPUSH', 's', 1)", "0"}), error("WRONGTYPE Operation against a key holding the wrong kind of value"));
+  EXPECT_EQ(bed.run({"EVAL", "return redis.pcall('LPUSH', 's', 1)", "1", "s"}), error("WRONGTYPE Operation against a key holding the wrong kind of value"));
 }
 
 TEST(CommandScripting, RefusedCommands) {
@@ -233,7 +236,7 @@ TEST(CommandScripting, SelectInAScriptIsTheScriptsOwn) {
 TEST(CommandScripting, ScriptsInTransactions) {
   Bed bed;
   EXPECT_EQ(bed.run({"MULTI"}), ok());
-  EXPECT_EQ(bed.run({"EVAL", "return redis.call('INCR', 'n')", "0"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run({"EVAL", "return redis.call('INCR', 'n')", "1", "n"}), "+QUEUED\r\n");
   EXPECT_EQ(bed.run({"EXEC"}), array({integer(1)}));
 }
 

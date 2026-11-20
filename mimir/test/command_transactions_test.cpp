@@ -22,11 +22,7 @@ using namespace std::chrono_literals;
 
 struct Other {
   explicit Other(Bed& bed_) : bed(bed_) { session.id = bed.database.next_client_id(); }
-  std::string run(std::vector<std::string> args) {
-    std::string out;
-    bed.database.execute(session, args, out);
-    return out;
-  }
+  std::string run(std::vector<std::string> args) { return bed.run_as(session, std::move(args)); }
   Bed& bed;
   command::Session session;
 };

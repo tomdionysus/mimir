@@ -184,12 +184,10 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the build server
   hosted CI (a note on the board before installing), a CMake option for the
   test-only link, and its own test binary or filter so the unit suite stays
   self-contained.
-- No single-node special case (the maintainer, 2026-11-20): the lone node's
-  immediate vote in mimir-node goes, and the database's no-cluster path
-  goes. Agreements become mandatory, the multi-key refusal moves into
-  cluster::Agreements, and the unit tests run through an in-process
-  agreement stand-in that commits several keys at once.
-
+- No single-node special case (the maintainer, 2026-11-20): done 2026-11-20, see
+  COMPLETED.md. Known limits left: a flush, SWAPDB and SORT ... STORE name
+  the keys of this node's view (a key written elsewhere and not yet seen
+  here is missed), until the per-slot form of Dannan's atomic commit.
 ## Releases
 
 The maintainer, 2026-11-20: "When you have completed all current tasks, you may cut

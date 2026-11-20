@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "mimir/cluster/register.h"
 
@@ -55,6 +56,35 @@ class Agreements {
   // its own operation in the record. `done` is posted once, never called
   // inline. Thread-safe; waits on nothing.
   virtual void change(size_t db, const std::string& key, Change change, std::function<void(Outcome)> done) = 0;
+
+  // A change of several keys at once, atomically (rulings 22 and 29): each
+  // name's record as a majority holds it, in the order named, and the new
+  // record of each, in the same order. Repeatable as `change` is. `done` is
+  // posted once, never called inline. Thread-safe; waits on nothing.
+  struct Name {
+    size_t db = 0;
+    std::string key;
+    bool operator==(const Name&) const = default;
+  };
+  struct ChangedKeys {
+    std::vector<cluster::Record> records;
+    std::string result;
+  };
+  using ChangeKeys = std::function<ChangedKeys(const std::vector<cluster::Record>& current)>;
+  struct KeysOutcome {
+    bool committed = false;
+    bool unknown = false;
+    // Committed: each name's record as committed, and its commit's version.
+    std::vector<cluster::Record> records;
+    std::vector<std::string> versions;
+    std::string result;
+    std::string why;
+  };
+  virtual void change_keys(std::vector<Name> names, ChangeKeys change, std::function<void(KeysOutcome)> done) = 0;
+  // Whether change_keys can commit: the cluster's capability, not a node's.
+  // Until Dannan's atomic commit across replica sets (its item 26) the
+  // cluster's cannot, and a write of several keys is refused (ruling 35).
+  virtual bool several_keys() const = 0;
 
   // A strict read of `key`'s record (ruling 5): committed with the record a
   // majority holds, or not committed and why. `done` is posted once.
