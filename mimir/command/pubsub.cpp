@@ -46,7 +46,10 @@ std::string confirmation(resp::Protocol protocol, std::string_view verb, const s
 
 void PubSub::subscribe(Kind kind, int64_t id, const std::string& name, const Push& push, resp::Protocol protocol, std::string_view verb, size_t& count) {
   dannan::contract::Lock lock(_mutex);
-  if (table(kind)[name].emplace(id, Subscriber{push, protocol}).second) ++count;
+  auto& subscribers = table(kind)[name];
+  const bool first = subscribers.empty();
+  if (subscribers.emplace(id, Subscriber{push, protocol}).second) ++count;
+  if (first && _interest) _interest(kind, name, true);
   push(confirmation(protocol, verb, &name, count));
 }
 
@@ -58,7 +61,10 @@ void PubSub::unsubscribe(Kind kind, int64_t id, const std::optional<std::string>
     auto found = t.find(*name);
     if (found != t.end()) {
       if (found->second.erase(id) > 0 && count > 0) --count;
-      if (found->second.empty()) t.erase(found);
+      if (found->second.empty()) {
+        t.erase(found);
+        if (_interest) _interest(kind, *name, false);
+      }
     }
   }
   push(confirmation(protocol, verb, name ? &*name : nullptr, count));
@@ -92,12 +98,23 @@ void PubSub::set_protocol(int64_t id, resp::Protocol protocol) {
 
 void PubSub::drop(int64_t id) {
   dannan::contract::Lock lock(_mutex);
-  for (Table* t : {&_channels, &_patterns, &_shard}) {
-    for (auto it = t->begin(); it != t->end();) {
+  for (const Kind kind : {Kind::channel, Kind::pattern, Kind::shard}) {
+    Table& t = table(kind);
+    for (auto it = t.begin(); it != t.end();) {
       it->second.erase(id);
-      it = it->second.empty() ? t->erase(it) : std::next(it);
+      if (!it->second.empty()) {
+        ++it;
+        continue;
+      }
+      if (_interest) _interest(kind, it->first, false);
+      it = t.erase(it);
     }
   }
+}
+
+void PubSub::set_interest(Interest interest) {
+  dannan::contract::Lock lock(_mutex);
+  _interest = std::move(interest);
 }
 
 size_t PubSub::publish(const std::string& channel, const std::string& text) {

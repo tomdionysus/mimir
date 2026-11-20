@@ -311,13 +311,26 @@ struct Heard {
   }
 };
 
-bool eventually_heard(Heard& heard, const std::string& part) {
-  const auto until = std::chrono::steady_clock::now() + 5s;
+bool eventually_heard(Heard& heard, const std::string& part, std::chrono::milliseconds within = 5s) {
+  const auto until = std::chrono::steady_clock::now() + within;
   while (std::chrono::steady_clock::now() < until) {
     if (heard.saw(part)) return true;
     std::this_thread::sleep_for(20ms);
   }
   return false;
+}
+
+TEST(ClusterFanout, ANodeWantsThePrefixesItsSubscriptionsNeed) {
+  using Kind = command::PubSub::Kind;
+  EXPECT_EQ(Fanout::prefix_of(Kind::channel, "news"), "c:news");
+  EXPECT_EQ(Fanout::prefix_of(Kind::shard, "news"), "s:news");
+  EXPECT_EQ(Fanout::prefix_of(Kind::pattern, "news.*"), "c:news.");
+  EXPECT_EQ(Fanout::prefix_of(Kind::pattern, "__keyspace@0__:*"), "c:__keyspace@0__:");
+  EXPECT_EQ(Fanout::prefix_of(Kind::pattern, "h?llo"), "c:h");
+  EXPECT_EQ(Fanout::prefix_of(Kind::pattern, "*"), "c:");
+  // A prefix another covers is left out, so a topic matches at most one.
+  EXPECT_EQ(Fanout::minimal({{"c:news", 1}, {"c:news.", 2}, {"c:sport", 1}, {"s:news", 1}}), (std::vector<std::string>{"c:news", "c:sport", "s:news"}));
+  EXPECT_EQ(Fanout::minimal({{"c:", 1}, {"c:news", 1}, {"s:x", 1}}), (std::vector<std::string>{"c:", "s:x"}));
 }
 
 TEST(ClusterDatabase, APublishAndANotificationReachEveryNodesSubscribers) {
@@ -332,9 +345,14 @@ TEST(ClusterDatabase, APublishAndANotificationReachEveryNodesSubscribers) {
   };
   cluster.databases[2]->pubsub().subscribe(command::PubSub::Kind::channel, 9001, "news", push, resp::Protocol::resp2, "subscribe", count);
   cluster.databases[2]->pubsub().subscribe(command::PubSub::Kind::pattern, 9001, "__keyspace@0__:*", push, resp::Protocol::resp2, "psubscribe", count);
-  // Its interest is everywhere at once: every node subscribes to every topic.
-  EXPECT_EQ(cluster.run(0, {"PUBLISH", "news", "hello"}), ":0\r\n");
-  EXPECT_TRUE(eventually_heard(*heard, "hello"));
+  // Its interest reaches the other nodes as a push, not at once: a publish
+  // made before it arrived goes nowhere (at most once), so publish until heard.
+  bool reached = false;
+  for (int attempt = 0; attempt < 50 && !reached; ++attempt) {
+    EXPECT_EQ(cluster.run(0, {"PUBLISH", "news", "hello"}), ":0\r\n");
+    reached = eventually_heard(*heard, "hello", 100ms);
+  }
+  EXPECT_TRUE(reached);
   // A write on another node: its notification is raised there and heard here.
   EXPECT_EQ(cluster.run(1, {"SET", "k", "v"}), "+OK\r\n");
   EXPECT_TRUE(eventually_heard(*heard, "__keyspace@0__:k"));
