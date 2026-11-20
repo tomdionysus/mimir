@@ -223,6 +223,13 @@ ruling 43:
   none of its own (no duplication). Deltas mean a write never costs the
   value's size on disk, and values are not held twice in memory.
 
+44. **Mimir is tested with a real Redis client: hiredis, in GoogleTest**
+    (2026-11-20). Debian's libhiredis-dev, a test-only dependency, never
+    linked into mimir-node. GoogleTest cases connect with hiredis to a real
+    three-node Mimir cluster: HELLO 3 and CLIENT SETINFO, pipelining, RESP3
+    maps, sets and pushes, pub/sub in RESP2's subscribed mode, reconnecting
+    to another node when one is killed, and Mimir's own errors.
+
 ## Waiting on the maintainer
 
 `TODO/ACTIVE.md` keeps the list ("Waiting on the maintainer" and "Proposed, not yet put
