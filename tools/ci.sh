@@ -14,6 +14,8 @@
 #   tools/ci.sh asan       AddressSanitizer and UndefinedBehaviorSanitizer
 #   tools/ci.sh tsan       ThreadSanitizer
 #   tools/ci.sh coverage   a coverage build's tests; lcov report build-ci/coverage.info
+#   tools/ci.sh tidy       clang-tidy's bugprone-use-after-move over every source
+#                          and Mimir's headers, warnings as errors
 #
 # Builds go under build-ci/ (MIMIR_CI_OUT to move it), one job per CPU
 # (MIMIR_CI_JOBS to set it: 2 on the shared Pis). Dannan is fetched at the
@@ -21,7 +23,7 @@
 # repository (MIMIR_DANNAN_REPOSITORY to name another). Needs g++ cmake
 # ninja-build pkg-config libboost-dev libssl-dev liblua5.1-0-dev lua-cjson-dev
 # lua-bitop-dev lua-cmsgpack libyaml-cpp-dev libgtest-dev, and for its
-# step clang, clang-format or lcov.
+# step clang, clang-format, clang-tidy or lcov.
 
 set -eu
 
@@ -88,8 +90,16 @@ case "$step" in
     rm "$out/all.info" "$out/library.info"
     lcov --summary "$out/coverage.info" --ignore-errors "$ignore"
     ;;
+  tidy)
+    # Configured, not built: clang-tidy needs only the compile database.
+    tidy=$(command -v run-clang-tidy || command -v run-clang-tidy-19)
+    cmake -S "$top" -B "$out/tidy" -G Ninja -DCMAKE_CXX_COMPILER="${CXX:-clang++}" -DCMAKE_BUILD_TYPE=Release -DMIMIR_BUILD_TESTING=ON \
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DMIMIR_DANNAN_REPOSITORY="$MIMIR_DANNAN_REPOSITORY"
+    ours="^$top/(mimir|tools)/"
+    "$tidy" -p "$out/tidy" -j "$jobs" -quiet -checks='-*,bugprone-use-after-move' -warnings-as-errors='*' -header-filter="$ours" "$ours"
+    ;;
   *)
-    echo "usage: tools/ci.sh check|release|clang|asan|tsan|coverage" >&2
+    echo "usage: tools/ci.sh check|release|clang|asan|tsan|coverage|tidy" >&2
     exit 2
     ;;
 esac
