@@ -161,7 +161,11 @@ std::string client_line(const Session& s, uint64_t now) {
        << " qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0"
        << " rbs=0 rbp=0 obl=0 oll=0 omem=0 tot-mem=0 events=r cmd=" << s.last_command << " user=" << s.user
        << " redir=-1 resp=" << (s.protocol == resp::Protocol::resp3 ? 3 : 2) << " lib-name=" << s.lib_name << " lib-ver=" << s.lib_version
-       << " tot-cmds=" << s.commands << "\n";
+       << " tot-cmds=" << s.commands;
+  // Mimir's own field, shown only where it is on, so a Valkey client's line
+  // reads as Valkey's.
+  if (s.strict) line << " strict=1";
+  line << "\n";
   return line.str();
 }
 
@@ -452,6 +456,16 @@ void client(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
       throw CommandError(syntax_error);
     }
     t.caching = true;
+    call.reply.simple("OK");
+  } else if (sub == "strict") {
+    // Mimir's (ruling 37): reads confirmed with a majority, or not.
+    if (call.args.size() != 3) wrong_arity("client|strict");
+    if (iequals(call.args[2], "ON"))
+      call.session.strict = true;
+    else if (iequals(call.args[2], "OFF"))
+      call.session.strict = false;
+    else
+      throw CommandError(syntax_error);
     call.reply.simple("OK");
   } else if (sub == "import-source") {
     if (call.args.size() != 3) wrong_arity("client|import-source");

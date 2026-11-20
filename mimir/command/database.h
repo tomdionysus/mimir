@@ -302,6 +302,10 @@ class Database {
   // WATCH in a cluster: each key's write count read from a majority, then the
   // watch taken; the connection waits for it.
   void watch_strictly(uint64_t wait, size_t db, std::vector<std::string> keys) DANNAN_EXCLUDES(_mutex);
+  // A read on a CLIENT STRICT connection (ruling 37): each key read from a
+  // majority and made this node's view, then the command run here and
+  // answered; refused when a majority cannot be reached.
+  void read_strictly(uint64_t wait, size_t db, std::vector<std::string> keys, std::vector<std::string> args) DANNAN_EXCLUDES(_mutex);
   // Another node's commit, from its notice: installed, and its watchers,
   // trackers and waiters told as a local write's are.
   void install_committed(size_t db, const std::string& key, const std::string& version, const cluster::Record& record) DANNAN_EXCLUDES(_mutex);

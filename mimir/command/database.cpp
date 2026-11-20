@@ -755,6 +755,17 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         after.fn = [this, wait, db, named = std::move(named)]() mutable { watch_strictly(wait, db, std::move(named)); };
         return executed;
       }
+      // A strict connection's read (ruling 37) is confirmed with a majority
+      // first; a read naming no key (DBSIZE, SCAN) is served plain.
+      if (session.strict && wake && !session.in_multi && !has_flag(spec->flags, "write") && reads_its_keys(*spec) && !keys.empty()) {
+        const uint64_t wait = _next_wait++;
+        _waiters.emplace(wait, Waiter{&session, args, {}, false, std::move(wake), false, true});
+        executed.wait = wait;
+        std::vector<std::string> named;
+        for (const auto key : keys) named.emplace_back(key);
+        after.fn = [this, wait, db, named = std::move(named), args]() mutable { read_strictly(wait, db, std::move(named), args); };
+        return executed;
+      }
       // An EXEC whose writes and watches all name one key commits whole by
       // agreement; one that only reads runs here.
       std::string exec_key;
@@ -1120,6 +1131,66 @@ Database::ExecKey Database::exec_key_locked(const Session& session) {
   // A transaction that writes no key it names (keyless writes) runs here.
   if (named.empty()) out.writes = false;
   return out;
+}
+
+void Database::read_strictly(uint64_t wait, size_t db, std::vector<std::string> keys, std::vector<std::string> args) {
+  struct Gathered {
+    std::mutex mutex;
+    size_t left = 0;
+    std::vector<std::pair<std::string, Agreements::Outcome>> read;
+    std::string failure;
+  };
+  auto gathered = std::make_shared<Gathered>();
+  gathered->left = keys.size();
+  for (const auto& key : keys) {
+    _settings.agreements->read(db, key, [this, wait, db, key, args, gathered](Agreements::Outcome outcome) {
+      {
+        std::lock_guard guard(gathered->mutex);
+        if (outcome.committed)
+          gathered->read.emplace_back(key, std::move(outcome));
+        else if (gathered->failure.empty())
+          gathered->failure = outcome.why.empty() ? "the key could not be read from a majority" : outcome.why;
+        if (--gathered->left > 0) return;
+      }
+      Woken woken;
+      Wake wake;
+      std::string bytes;
+      {
+        dannan::contract::Lock lock(_mutex);
+        const auto found = _waiters.find(wait);
+        if (found == _waiters.end()) return;
+        if (!gathered->failure.empty()) {
+          bytes = "-CLUSTERDOWN " + one_line(gathered->failure) + "\r\n";
+        } else {
+          // What a majority holds is this node's view now, then the read runs
+          // on it.
+          _touched.clear();
+          for (const auto& [named, read] : gathered->read)
+            if (install_locked(db, named, read.version, read.record)) touch_key_locked(db, named, nullptr);
+          Session& session = *found->second.session;
+          const Spec* spec = find_spec(args[0]);
+          resp::Reply reply(session.protocol);
+          Call call{session, *this, *_dbs[db], reply, args};
+          call.db = db;
+          try {
+            spec->handler(call);
+          } catch (const CommandError& e) {
+            reply = resp::Reply(session.protocol);
+            reply.error(e.what());
+          }
+          bytes = reply.bytes();
+          track_reads_locked(session, *spec, args);
+          if (!_waiters.empty()) serve_ready(woken);
+          publish_events();
+        }
+        wake = std::move(found->second.wake);
+        forget_waiter(wait);
+      }
+      for (auto& [wake_one, reply] : woken) wake_one(std::move(reply));
+      if (wake) wake(std::move(bytes));
+      start_pending();
+    });
+  }
 }
 
 void Database::watch_strictly(uint64_t wait, size_t db, std::vector<std::string> keys) {
