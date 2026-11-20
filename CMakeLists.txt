@@ -58,6 +58,13 @@ set(MIMIR_SANITIZED OFF)
 if(CMAKE_CXX_FLAGS MATCHES "-fsanitize=")
   set(MIMIR_SANITIZED ON)
 endif()
+# Dannan's own switch for it (DANNAN_SANITIZE, from 0.10.0), named from this
+# build's flags: address (with UBSan) or thread.
+if(CMAKE_CXX_FLAGS MATCHES "-fsanitize=[^ ]*thread")
+  set(DANNAN_SANITIZE thread)
+elseif(CMAKE_CXX_FLAGS MATCHES "-fsanitize=[^ ]*address")
+  set(DANNAN_SANITIZE address)
+endif()
 if(NOT TARGET dannan::dannan AND NOT MIMIR_SANITIZED)
   if(MIMIR_FETCH_DANNAN)
     find_package(dannan ${MIMIR_DANNAN_TAG} CONFIG QUIET)
