@@ -23,8 +23,14 @@ Status: designed; not built. Built on shared pieces, as placed by the stack:
   React 19, React Router 7 as a static SPA, Vite 7, TypeScript 5.9, plain
   CSS, Vitest. Lugh carves it after its P8.0. Mimir asked Lugh for generic
   pieces (a cursor-paged table, a detail panel, useEvents over SSE, a status
-  badge, number tiles, a text editor area), and writes them itself if no
-  one else needs them.
+  badge, number tiles, a text editor area). Lugh takes the table, the
+  detail panel and useEvents into the package; the status badge, number
+  tile and editor are Mimir's to write unless Louhi or Kvasir ask too.
+- Dannan's item 24 took Mimir's four additions: server-sent events,
+  authorize(subject, scopes, issued_at, version) before every handler,
+  bounded JSON bodies, and handlers that complete later. Password sign-in
+  goes through an AccountSource, so Mimir's SHA-256 ACL hashes work as
+  they are.
 
 What follows is Mimir's own part: the settings, the API and the screens.
 

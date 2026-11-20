@@ -185,6 +185,23 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the Pis run mimi
 - The refusal text and documents name "Dannan's atomic commit across
   replica sets" (Dannan's item 26, its third minor), not "0.10.0".
 
+## Releases
+
+Tom, 2026-11-20: "When you have completed all current tasks, you may cut
+versions by rationalising docs - README should always be focused on
+installation and use - creating deb packages, running full tests including
+sanitation and fuzzing, and tagging and merging to main, pushing. You must
+maintain a release badge."
+
+Mimir has cut no release yet (0.1.0 in CMake). The first is cut when the
+work above is done: README rewritten for installation and use (the design
+and status move to docs/ or TODO/); a deb package of mimir-node (binary,
+libmimir, the systemd unit and a default config.yaml, depending on the
+Debian packages it links); the full tests once on the cluster (release,
+ASan, TSan, the differential, and the fuzz targets for a bounded time);
+then develop merged to main, tagged x.y.z, both pushed. The release badge
+is in the README already.
+
 ## Waiting on Tom
 
 - `decided` for a merging write (the design's "Durability", Proposed): a
