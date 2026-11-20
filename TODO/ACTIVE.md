@@ -6,13 +6,17 @@ classes of command, agreement in Dannan, durability, and the order.
 
 ## Resume here
 
-Next: scripts and functions by agreement (ruling 39), step 3.8 of "Ordered
-work" below. Routing (3.3) needs placement (3.4) first.
+Next: the stack-wide placement plan the maintainer asked for (2026-11-20), negotiated
+through the stack's coordinating session
+(`../stack-coordinator/TODO/2026-11-20-cluster-stack-placement.md`);
+Mimir's audit is `TODO/2026-11-20-duplication-audit.md`. Pieces of Mimir
+may move to Dannan; nothing moves until the maintainer decides. Meanwhile, stage 3:
+cluster-wide keyspace commands (3.6); routing (3.3) needs placement (3.4).
 
 State on 2026-11-20:
 
 - `develop` is pushed. Hosted CI read green at `3aee353`.
-- Last gate: release 359 passed (node-c, 2026-11-20). The per-case
+- Last gate: release 361 passed (node-c, 2026-11-20). The per-case
   differential (`tools/differential.sh build-ci/release`) shows 233
   differing replies, all accounted for: ruling 35 refusals (157 replies
   carry its words), 4 undeclared-key script writes (ruling 36), and the
@@ -179,7 +183,8 @@ Settled with Dannan in review (the record is in `COMPLETED.md`, "The Dannan
    agreement; commit notices; transactions and WATCH over one key; blocking
    pops on one key; scripts on their one declared key; pub/sub and keyspace
    notifications across the cluster; catch-up after a restart; strict reads
-   (ruling 37); expiry by agreement; ACL users by agreement (ruling 27).
+   (ruling 37); expiry by agreement; ACL users by agreement (ruling 27);
+   scripts and function libraries by agreement (ruling 39).
    Still to do, in this order:
    3. **Routing** (ruling 38, no special nodes): a node outside a key's
       set forwards the command to a replica (Routes::call), and the client
@@ -195,8 +200,6 @@ Settled with Dannan in review (the record is in `COMPLETED.md`, "The Dannan
       O(n) at the proposer.
    6. **Cluster-wide keyspace commands** (ruling 33): KEYS, SCAN, DBSIZE,
       RANDOMKEY slot by slot. The flushes wait for 0.10.0 (ruling 35).
-   8. **SCRIPT and FUNCTION libraries across the cluster** (ruling 39): an
-      EVALSHA on another node answers NOSCRIPT today. Next.
    9. Smaller gaps: a script that only reads but declares its key counts as
       a write for WATCH; per-channel interest for pub/sub, where every
       publication goes to every node today; ACL SETUSER and DELUSER inside
