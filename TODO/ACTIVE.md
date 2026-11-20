@@ -209,6 +209,30 @@ reads a freed node, when a node stops with a store completion in flight
 clean. The packaging and the README for installation and use are on
 `feature/packaging`, squashed with the repin.
 
+The repin reviewed against Dannan's 0.10.0 changelog (develop e9aac3d, read
+before the tag; check again at the tag that fix/agreement-lifetime is in it):
+- `identity::sha1`: replaces Mimir's own `sha1_hex` (scripting.cpp, OpenSSL's
+  EVP directly), with `identity::hex`. That was Mimir's only direct use of
+  OpenSSL, so `OpenSSL::SSL OpenSSL::Crypto` leave mimir's link line and
+  `find_package(OpenSSL)` goes; Dannan brings them. Change in the repin.
+- `agree::MemoryStore`: the same store as Mimir's `cluster::Store`, which
+  should go (no duplication). Not yet: Mimir reads `held(slot)` (every name a
+  slot holds, with its state) for catch-up and to fill a node's view, and
+  MemoryStore has no such reader. Asked of Dannan for 0.10.x; Mimir's Store
+  stays until then.
+- `durable_sync_directory`: --init-state's marker removal uses
+  `posix_file_system().remove` and `sync_directory`; equivalent, but the
+  stack's helper is the one to use. Change in the repin.
+- `encoding/base.h`: `valid_hash` (acl.cpp) checks 64 lower hex digits by
+  hand; kept, since Valkey requires lower-case hex there and a decoder's
+  question (does it decode) is not that one.
+- Not adopted now: `Completion<T>`/`Outcome<T>` (a change to every callback,
+  a feature of its own after 0.1.0); `SwappableSink` (Mimir makes its sink
+  before its first line already); `RetryPolicy::unbounded`, `RandomId`,
+  `dannan::testing` (no use here: RANDOMKEY's generator is not a secret, and
+  the fuzz targets are libFuzzer's); `Prefix::parse` (Mimir parses no
+  prefixes).
+
 The deb follows the stack's convention (the stack's coordinating session,
 2026-11-20; read Manannan's docs/packaging.md and debian/, and Dannan's and
 Dagda's debian/, first):
