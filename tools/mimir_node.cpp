@@ -196,13 +196,14 @@ int main(int argc, char** argv) {
       return 0;
     }
     if (settings.toggle("init_state").value_or(false)) {
-      const auto state = settings.path_of("cluster.state");
-      if (!state) throw dannan::config::ConfigError("--init-state needs cluster.state");
-      if (std::filesystem::exists(*state / "node-id")) throw dannan::config::ConfigError("cluster.state already holds a node id: " + state->string());
+      const auto named = settings.path_of("cluster.state");
+      if (!named) throw dannan::config::ConfigError("--init-state needs cluster.state");
+      const std::filesystem::path state = *named;
+      if (std::filesystem::exists(state / "node-id")) throw dannan::config::ConfigError("cluster.state already holds a node id: " + state.string());
       // The id first: a crash between the two leaves a node that counts as
       // restarted, which catches up before it votes, never the reverse.
-      const auto id = dannan::identity::load_or_create_node_id(*state);
-      dannan::identity::durable_replace_file(*state / never_started, "");
+      const auto id = dannan::identity::load_or_create_node_id(state);
+      dannan::identity::durable_replace_file(state / never_started, "");
       std::cout << "{\"event\":\"initialised\",\"id\":\"" << dannan::identity::to_string(id) << "\"}" << std::endl;
       return 0;
     }
