@@ -215,8 +215,7 @@ TEST_F(ClientGate, MimirsOwnErrorsReachTheClientAsErrors) {
   const auto several = client.command({"MSET", "errors:a", "1", "errors:b", "2"});
   ASSERT_TRUE(several);
   ASSERT_EQ(several->type, REDIS_REPLY_ERROR);
-  EXPECT_EQ(text(several.get()),
-            "ERR this command writes more than one key, which Mimir refuses until Dannan's atomic commit across replica sets (ruling 35)");
+  EXPECT_EQ(text(several.get()), "ERR this command writes more than one key, which Mimir refuses until Dannan's atomic commit across replica sets (ruling 35)");
 }
 
 // A cluster of its own: a node dies in it.

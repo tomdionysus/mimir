@@ -147,10 +147,10 @@ class Cluster {
 
   void start(size_t i) {
     auto argv = common(i);
-    for (const auto& item : std::vector<std::string>{"--listen", "127.0.0.1", "--port", std::to_string(_ports[i]), "--databases", "16", "--cluster-key",
-                                                     (_dir.path() / "cluster.key").string(), "--cluster-listen", "127.0.0.1", "--cluster-advertise",
-                                                     "127.0.0.1", "--cluster-port", std::to_string(_cluster_ports[i]), "--cluster-name",
-                                                     "node-" + std::to_string(i), "--seconds", "0"})
+    for (const auto& item :
+         std::vector<std::string>{"--listen", "127.0.0.1", "--port", std::to_string(_ports[i]), "--databases", "16", "--cluster-key",
+                                  (_dir.path() / "cluster.key").string(), "--cluster-listen", "127.0.0.1", "--cluster-advertise", "127.0.0.1", "--cluster-port",
+                                  std::to_string(_cluster_ports[i]), "--cluster-name", "node-" + std::to_string(i), "--seconds", "0"})
       argv.push_back(item);
     for (const auto& id : _ids) {
       argv.push_back("--genesis");
