@@ -32,16 +32,17 @@ commands (3.6).
 
 State on 2026-11-20:
 
-- `develop` is pushed. Hosted CI read green at `3aee353`.
-- Last gate: release 363 passed (ASan and TSan 363 too) (node-c, 2026-11-20). The per-case
-  differential (`tools/differential.sh build-ci/release`) shows 233 or 234
-  differing replies. NotificationsCollections varied by one between runs;
-  investigated 2026-11-20: `SMOVE s s2 b` is refused (ruling 35), so where
-  Valkey's `s` holds only "c", Mimir's holds "b" and "c", and the next
-  `SPOP s` picks either at random. It is a knock-on of a known refusal, not
-  a Mimir defect, and goes when multi-key writes land (Dannan 0.10.0)., all accounted for: ruling 35 refusals (157 replies
-  carry its words), 4 undeclared-key script writes (ruling 36), and the
-  rest cases whose setup used a refused command.
+- `develop` is pushed; hosted CI green, coverage uploaded to Codecov with
+  the repository's token (91.9% of lines on 2026-11-20).
+- Last gate: release 363 passed, and ASan and TSan 363 each
+  (node-c, 2026-11-20). The per-case differential
+  (`tools/differential.sh build-ci/release`) shows 233 differing replies,
+  all accounted for: ruling 35 refusals (157 replies carry its words), 4
+  undeclared-key script writes (ruling 36), and the rest cases whose setup
+  used a refused command. NotificationsCollections varies by one between
+  runs: `SMOVE s s2 b` is refused (ruling 35), so Mimir's `s` holds "b" and
+  "c" where Valkey's holds "c", and the next `SPOP s` picks at random. A
+  knock-on of the refusal, not a defect; it goes with the atomic commit.
 - Dannan is pinned at 0.9.2 (2026-11-20), the stack's version. On a build server,
   clone `build/dannan-full-0.9.1.bundle`, then fetch
   `build/dannan-0.9.2.bundle`'s tag.
@@ -162,7 +163,8 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the build server
   libdannan), unpack to `/opt/mimir`, `systemctl restart mimir`. Entries
   come back with the registrar's next refresh.
 - It moves to one four-node cluster when stage 3's gate passes (ruling 34).
-  That needs Dannan 0.10.0, since the registrar's writes must not be refused
+  That needs Dannan's atomic commit across replica sets, since the
+  registrar's writes must not be refused
   by ruling 35. Do not upgrade it to a stage 3 build before then without
   checking every command the claim board sends.
 
@@ -187,8 +189,6 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the build server
   goes. Agreements become mandatory, the multi-key refusal moves into
   cluster::Agreements, and the unit tests run through an in-process
   agreement stand-in that commits several keys at once.
-- The refusal text and documents name "Dannan's atomic commit across
-  replica sets" (Dannan's item 26, its third minor), not "0.10.0".
 
 ## Releases
 
@@ -236,8 +236,8 @@ Settled with Dannan in review (the record is in `COMPLETED.md`, "The Dannan
 
 - Agreement is per slot. Mimir's shard is Valkey's slot (CRC16 of the hash
   tag or key) mapped onto the shard count in contiguous ranges, so tagged
-  keys share a shard. A change names one key: Dannan refuses more until
-  0.10.0's atomic commit.
+  keys share a shard. A change names one key: Dannan refuses more until its
+  atomic commit across replica sets.
 - A key's register is named by its database and key. Its value is Mimir's
   record: the DUMP payload, the absolute expiry, the recent operation ids
   with their replies, and a serial (the count of committed writes).
@@ -286,7 +286,7 @@ Settled with Dannan in review (the record is in `COMPLETED.md`, "The Dannan
       the summaries, so an agreement write to a large collection is not
       O(n) at the proposer.
    6. **Cluster-wide keyspace commands** (ruling 33): KEYS, SCAN, DBSIZE,
-      RANDOMKEY slot by slot. The flushes wait for 0.10.0 (ruling 35).
+      RANDOMKEY slot by slot. The flushes wait for the atomic commit (ruling 35).
    9. Smaller gaps: a script that only reads but declares its key counts as
       a write for WATCH; per-channel interest for pub/sub, where every
       publication goes to every node today; ACL SETUSER and DELUSER inside
@@ -298,11 +298,12 @@ Settled with Dannan in review (the record is in `COMPLETED.md`, "The Dannan
        defined by Mimir's tests); then the registrar moved to one four-node
        cluster.
 
-   Waiting on Dannan 0.10.0, its atomic commit across sets: every write
+   Waiting on Dannan's atomic commit across replica sets (its item 26, the
+   third minor of its plan): every write
    naming more than one key (MSET, RENAME, LMOVE, SMOVE, the STOREs,
    multi-key MULTI, scripts and blocking pops, the flushes). Mimir's
    proposal for it is `TODO/2026-11-15-cross-slot-commit-proposal.md`.
-4. The merge class and the heal rule. Waits on Dannan 0.10.0's
+4. The merge class and the heal rule. Waits on Dannan's
    peer-witnessed high-water mark (the maintainer, 2026-11-17): without key custody the
    hybrid clock's ceiling is a plain durable file, so a restored state
    directory could issue stamps again; with it, a node issues no stamp until

@@ -75,7 +75,8 @@ struct DatabaseSettings {
   // client cannot stop this node.
   std::function<void()> shutdown;
   // The cluster (stage 3): every write naming one key commits by agreement,
-  // and one naming more is refused until Dannan 0.10.0 (ruling 35). None: the
+  // and one naming more is refused until Dannan's atomic commit across replica
+  // sets (ruling 35). None: the
   // database runs every command on its own keyspace.
   std::shared_ptr<Agreements> agreements;
   // Every active node's client address, this one's included (MIMIR NODES,

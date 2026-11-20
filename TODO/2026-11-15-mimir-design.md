@@ -149,7 +149,7 @@ next, is `TODO/ACTIVE.md`.
     The claim board's registrar moves to one four-node Mimir cluster when
     stage 3's gate passes.
 
-35. **Agreement only, multi-key writes refused until Dannan 0.10.0**
+35. **Agreement only, multi-key writes refused until Dannan's atomic commit**
     (2026-11-17): ruling 34 holds from stage 3's step 3, a lone node
     included, although Dannan 0.9.0 refuses a change of more than one key.
     Until 0.10.0's atomic commit, a write that names more than one key is
@@ -157,6 +157,9 @@ next, is `TODO/ACTIVE.md`.
     LMOVE, SMOVE, the STOREs, multi-key MULTI and scripts, and the flushes.
     The differential cases that use them fail until then, as a known and
     listed gap; no test is removed.
+    (2026-11-20: Dannan renumbered its minors; the atomic commit is now its
+    item 26, in the third minor, not 0.10.0. The ruling stands: refused
+    until it lands.)
 
 36. **A script writes only the key it declares** (2026-11-17): EVAL,
     EVALSHA and FCALL run by agreement on their one declared key. A write
@@ -276,7 +279,8 @@ read-modify-write commands of ruling 3 are in this class by default.
   two nodes race for it.
 - Several keys commit atomically, in one slot or across slots (rulings 22
   and 29; never `CROSSSLOT`), through Dannan's atomic commit across replica
-  sets, which is due in Dannan 0.10.0. Until then a write naming more than
+  sets, Dannan's item 26 (the third minor of its 2026-11-20 plan). Until then a
+  write naming more than
   one key is refused (ruling 35). `WATCH` is a check of each key's write
   count inside the agreed change.
 - A blocking pop is a committed pop, so an element is delivered once. Serving
@@ -348,7 +352,7 @@ What Mimir needs, as behaviour:
 - A strict read confirmed with a majority, and a refusal on a minority side.
 
 Built: it shipped in Dannan 0.9.0 (2026-11-17), with everything below except
-several registers committing atomically, which is 0.10.0's. How Mimir uses it
+several registers committing atomically, which is Dannan's item 26. How Mimir uses it
 is `TODO/ACTIVE.md`, "What stage 3 rests on"; the reviews are in
 `TODO/COMPLETED.md`, "The Dannan 0.9 reviews". The rest of this section is
 the history of the request.
@@ -502,7 +506,7 @@ for Dannan (rule 3) rather than written twice.
 3. The cluster by agreement only: every write takes the agreement path, which
    is correct everywhere and majority-only. In progress on Dannan 0.9. In
    memory only: `persisted` and `replicated` are refused (ruling 17).
-4. The merge class and the heal rule. Waits on Dannan 0.10.0's peer-witnessed
+4. The merge class and the heal rule. Waits on Dannan's peer-witnessed
    high-water mark for the hybrid clock (ruling 8).
 5. Persistence, `persisted` and `replicated`, and checkpoints. Waits on
    Dagda's contract v2 (slice 4).
@@ -514,8 +518,8 @@ for Dannan (rule 3) rather than written twice.
 | Of | What | Status |
 |---|---|---|
 | Dannan | The agreement primitive (ruling 6) | Shipped in 0.9.0 |
-| Dannan | Atomic commit across replica sets (rulings 22, 29) | Planned for 0.10.0 |
-| Dannan | The hybrid logical clock (ruling 8) | In 0.9.0; its peer-witnessed high-water mark is 0.10.0's |
+| Dannan | Atomic commit across replica sets (rulings 22, 29) | Dannan's item 26, its third minor |
+| Dannan | The hybrid logical clock (ruling 8) | In 0.9.0; the clock rules (acceptors refusing stamps too far ahead) in 0.10.0 |
 | Dannan | "Interest set by announcement" | Not asked yet: pub/sub goes to every node for now |
 | Dagda | The log and contract v2 | Slice 4, paused |
 | Dagda | A range form of `retire` | Not asked: batched entries keep lists short |

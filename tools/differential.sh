@@ -7,8 +7,8 @@
 #
 # The differential gate, one case at a time: each Differential.* case runs
 # against a freshly started mimir-node, since FLUSHALL is refused until
-# Dannan 0.10.0 (ruling 35) and the cases cannot share one node. Valkey 8 is
-# started once. Every node this script starts is stopped by its own PID,
+# Dannan's atomic commit across replica sets (ruling 35) and the cases cannot
+# share one node. Valkey 8 is started once. Every node this script starts is stopped by its own PID,
 # never by name: the build servers run mimir.service.
 #
 #   tools/differential.sh [build directory]    (default build-ci/release)
@@ -76,7 +76,7 @@ done
 # Each differing reply is one GoogleTest "Failure"; those refused by ruling 35
 # (several keys) or ruling 36 (a script's undeclared key) are counted apart.
 differing=$(grep -c ': Failure$' "$log" || true)
-ruling35=$(grep -c 'Mimir refuses until Dannan 0.10.0' "$log" || true)
+ruling35=$(grep -c 'Mimir refuses until Dannan' "$log" || true)
 ruling36=$(grep -c 'must declare it' "$log" || true)
 echo "cases: $passed passed, $failed failed"
 echo "differing replies: $differing ($ruling35 ruling 35 refusals, $ruling36 undeclared script keys; log: $log)"

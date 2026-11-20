@@ -224,7 +224,8 @@ TEST(CommandAgreement, EachDatabaseHasItsOwnRegisters) {
 
 TEST(CommandAgreement, WritesOfSeveralKeysAreRefusedUntilAtomicCommit) {
   AgreementBed bed;
-  const std::string several = "-ERR this command writes more than one key, which Mimir refuses until Dannan 0.10.0's atomic commit (ruling 35)\r\n";
+  const std::string several =
+      "-ERR this command writes more than one key, which Mimir refuses until Dannan's atomic commit across replica sets (ruling 35)\r\n";
   EXPECT_EQ(bed.run({"MSET", "a", "1", "b", "2"}), several);
   EXPECT_EQ(bed.run({"RENAME", "a", "b"}), several);
   EXPECT_EQ(bed.run({"FLUSHALL"}), several);
@@ -245,7 +246,7 @@ TEST(CommandAgreement, AScriptCommitsByAgreementOnItsOneDeclaredKey) {
   EXPECT_FALSE(bed.registers->record(0, "other").payload);
   // Several keys are several keys.
   EXPECT_EQ(bed.run({"EVAL", "return 1", "2", "a", "b"}),
-            "-ERR this command writes more than one key, which Mimir refuses until Dannan 0.10.0's atomic commit (ruling 35)\r\n");
+            "-ERR this command writes more than one key, which Mimir refuses until Dannan's atomic commit across replica sets (ruling 35)\r\n");
 }
 
 TEST(CommandAgreement, AScriptThatDeclaresNoKeyRunsHereAndOnlyReads) {
@@ -327,7 +328,7 @@ TEST(CommandAgreement, ABlockingPopTimesOutWithItsReply) {
 TEST(CommandAgreement, ABlockingPopOverSeveralKeysIsRefused) {
   AgreementBed bed;
   EXPECT_EQ(bed.run({"BLPOP", "a", "b", "1"}),
-            "-ERR this command writes more than one key, which Mimir refuses until Dannan 0.10.0's atomic commit (ruling 35)\r\n");
+            "-ERR this command writes more than one key, which Mimir refuses until Dannan's atomic commit across replica sets (ruling 35)\r\n");
 }
 
 cluster::Record string_record(const std::string& value) {
@@ -400,7 +401,8 @@ TEST(CommandAgreement, AWatchedKeyNobodyWroteLetsTheExecCommit) {
 
 TEST(CommandAgreement, ATransactionOverSeveralKeysIsRefused) {
   AgreementBed bed;
-  const std::string several = "-ERR this command writes more than one key, which Mimir refuses until Dannan 0.10.0's atomic commit (ruling 35)\r\n";
+  const std::string several =
+      "-ERR this command writes more than one key, which Mimir refuses until Dannan's atomic commit across replica sets (ruling 35)\r\n";
   EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
   EXPECT_EQ(bed.run({"SET", "a", "1"}), "+QUEUED\r\n");
   EXPECT_EQ(bed.run({"SET", "b", "2"}), "+QUEUED\r\n");

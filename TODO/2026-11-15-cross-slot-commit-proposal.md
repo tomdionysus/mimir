@@ -7,7 +7,8 @@ harness's next phase, the file-system interface and the hybrid clock (the mainta
 order). Ruling 29 (the maintainer) settled the merge-class question: (a).
 
 Status on 2026-11-19: not built. Dannan 0.9.0 shipped without it and moved
-it to 0.10.0. Until then Mimir refuses every write naming more than one key
+it to 0.10.0; Dannan's plan of 2026-11-20 renumbered its minors and has it
+as item 26, in its third minor. Until then Mimir refuses every write naming more than one key
 (ruling 35), in one slot as across slots.
 
 ## Kvasir's review, taken (2026-11-15)
