@@ -211,7 +211,8 @@ The deb follows the stack's convention (the stack's coordinating session,
 Dagda's debian/, first):
 - debhelper (compat 13) from debian/, driving the CMake build, with CMake
   install() rules; dh_installsystemd and dh_installsysusers;
-  scripts/build-deb.sh; built on a claimed build server and in CI's package step;
+  tools/build-deb.sh (Dannan's is the reference layout); built on a claimed
+  build server and in CI's package step;
   lintian clean.
 - Dannan from libdannan0.9 through ${shlibs:Depends}: CMake finds an
   installed Dannan first and fetches only when none is found. The Lua
@@ -222,7 +223,10 @@ Dagda's debian/, first):
   never shipped; /var/lib/mimir; mimir.service as the mimir user, installed
   disabled; /usr/share/mimir/dashboard later.
 - Version from git describe; the tag must equal project(VERSION); only tag
-  builds are released. docs/packaging.md for packaging.
+  builds are released. An untagged build is <tree version>+git.g<hash>, as
+  Dannan's script makes it.
+- Hosted CI installs libclang-rt-19-dev: trixie's clang leaves out the
+  runtimes libFuzzer and the sanitizers need. docs/packaging.md for packaging.
 - The registrar's install under /opt/mimir moves to the package at the
   first release. The claim board depends on it on all four build servers: keep port
   6390 on all interfaces, the `registrar` and `reader` users and their
