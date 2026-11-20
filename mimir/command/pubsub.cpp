@@ -117,6 +117,21 @@ void PubSub::set_interest(Interest interest) {
   _interest = std::move(interest);
 }
 
+void PubSub::set_prepare(Prepare prepare) {
+  dannan::contract::Lock lock(_mutex);
+  _prepare = std::move(prepare);
+}
+
+bool PubSub::prepare(Kind kind, const std::vector<std::string>& names, std::function<void()> done) {
+  Prepare prepare;
+  {
+    dannan::contract::Lock lock(_mutex);
+    prepare = _prepare;
+  }
+  // Asked outside the hub's lock: the fan-out takes its own.
+  return !prepare || prepare(kind, names, std::move(done));
+}
+
 size_t PubSub::publish(const std::string& channel, const std::string& text) {
   Fanout fanout;
   size_t received = 0;

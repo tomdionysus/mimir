@@ -130,6 +130,9 @@ struct Session {
   // In a cluster, the SHA an EVALSHA just looked for in the cluster's script
   // registers (ruling 39): run again, it does not look a second time.
   std::string script_looked_up;
+  // In a cluster, a SUBSCRIBE just held until the other nodes route its names
+  // here: run again, it is not held a second time.
+  bool subscribe_routed = false;
 };
 
 // MIGRATE's work off the database's lock (ruling 31): the target, the keys

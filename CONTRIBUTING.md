@@ -58,9 +58,10 @@ or `tools/ci.sh release`, which does the same. Dannan is fetched at its pinned
 tag from the sibling checkout, or from its repository. Run the test binary
 rather than `ctest`. Sanitizers run before a release, or to hunt a bug that
 cannot be pinned any other way. Hosted CI runs `tools/ci.sh`'s check, release,
-clang and coverage steps on each push, and no sanitizer step. The differential
-gate against a Valkey 8 server, and multi-node beds, run by hand on the build
-servers.
+clang, client, tidy and coverage steps on each push, and no sanitizer step.
+`tools/ci.sh client` builds `mimir_client_tests` (libhiredis-dev), which drives
+three real mimir-node processes with hiredis (ruling 44). The differential gate
+against a Valkey 8 server runs by hand on the build servers.
 
 Write tests from Valkey 8's documented behaviour, the design and the laws, not
 from the current behaviour.
@@ -70,7 +71,7 @@ from the current behaviour.
 Dannan, Dagda (from the persistence stage), Boost (Asio), OpenSSL, yaml-cpp
 (through Dannan's configuration reader), Lua 5.1 with lua-cjson, lua-cmsgpack
 and lua-bitop as system packages (scripting), plus GoogleTest for the test
-build.
+build and hiredis for the real-client gate (test-only, ruling 44).
 Prefer writing something by hand over adding a library, and say so if a
 dependency really is the right call.
 
@@ -80,7 +81,7 @@ One layout for all the projects, as `../dannan/CONTRIBUTING.md` "Layout" gives
 it, with `<p>` = `mimir`: the library target `mimir` in `mimir/`, public headers
 in `mimir/include/mimir/`, subsystems in `mimir/<subsystem>/` (`resp`,
 `keyspace`, `command`, `cluster`, `server`), tests in `mimir/test/` (one binary
-`mimir_tests`), fuzz targets in `mimir/fuzz/` (the RESP request parser first),
+`mimir_tests`, and `mimir_client_tests` from `mimir/test/client/`), fuzz targets in `mimir/fuzz/` (the RESP request parser first),
 tools in `tools/`. No presets.
 
 ## Shared code

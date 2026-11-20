@@ -125,8 +125,9 @@ cmake --build build
 ./build/mimir_tests
 ```
 
-Build options: `MIMIR_BUILD_TESTING`, `MIMIR_BUILD_FUZZING` (clang, libFuzzer targets for
-the RESP parser and `RESTORE`), `MIMIR_WARNINGS_AS_ERRORS`.
+Build options: `MIMIR_BUILD_TESTING`, `MIMIR_BUILD_CLIENT_TESTS` (`mimir_client_tests`:
+hiredis against a real three-node cluster; needs libhiredis-dev), `MIMIR_BUILD_FUZZING`
+(clang, libFuzzer targets for the RESP parser and `RESTORE`), `MIMIR_WARNINGS_AS_ERRORS`.
 
 ### Run a node
 

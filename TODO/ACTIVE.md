@@ -163,6 +163,9 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the build server
   libdannan), unpack to `/opt/mimir`, `systemctl restart mimir`. Entries
   come back with the registrar's next refresh.
 - It moves to one four-node cluster when stage 3's gate passes (ruling 34).
+  Each build server's state is made first with `mimir-node --cluster-state DIR
+  --init-state`, and the four printed ids go in every node's
+  `cluster.genesis`.
   That needs Dannan's atomic commit across replica sets, since the
   registrar's writes must not be refused
   by ruling 35. Do not upgrade it to a stage 3 build before then without
@@ -179,11 +182,6 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the build server
 - Coverage toward 100% (the maintainer, 2026-11-20: "You will maintain ~100% code
   coverage on all code"). 91.9% of lines on 2026-11-20 (10112 of 11000),
   uploaded to Codecov with the repository's token.
-- A real-client gate (ruling 44): hiredis in GoogleTest against a real
-  three-node cluster on the build servers. Needs libhiredis-dev on the build servers and in
-  hosted CI (a note on the board before installing), a CMake option for the
-  test-only link, and its own test binary or filter so the unit suite stays
-  self-contained.
 - No single-node special case (the maintainer, 2026-11-20): done 2026-11-20, see
   COMPLETED.md. Known limits left: a flush, SWAPDB and SORT ... STORE name
   the keys of this node's view (a key written elsewhere and not yet seen
@@ -204,7 +202,12 @@ libmimir, the systemd unit and a default config.yaml, depending on the
 Debian packages it links); the full tests once on the cluster (release,
 ASan, TSan, the differential, and the fuzz targets for a bounded time);
 then develop merged to main, tagged x.y.z, both pushed. The release badge
-is in the README already.
+is in the README already. The first release (0.1.0) is built on Dannan
+0.10.0: repinned and rebuilt against it, since 0.9.2's agreement leaks, and
+reads a freed node, when a node stops with a store completion in flight
+(Dannan's fix/agreement-lifetime). Its release gate's ASan client run must be
+clean. The packaging and the README for installation and use are on
+`feature/packaging`, squashed with the repin.
 
 The deb follows the stack's convention (the stack's coordinating session,
 2026-11-20; read Manannan's docs/packaging.md and debian/, and Dannan's and
