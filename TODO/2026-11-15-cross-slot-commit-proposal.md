@@ -1,4 +1,4 @@
-# Atomic commit across slots: Mimir's proposal to Dannan (0.9 plan, item 7)
+# Atomic commit across slots: Mimir's proposal to Dannan (0.9.0 plan, item 7)
 
 Mimir, 2026-11-15. For Dannan to design in beside `transfer()`, and for Kvasir
 to review against its own needs. Status: Proposed; reviewed by Kvasir; noted
@@ -176,5 +176,5 @@ across them and the same rules hold, with the intents laid as the reads go.
    intent costs a strict read of another slot (one more round)? It is rare
    under the older-wins rule and only on contended names.
 3. Deadlines across the parts: the transaction's deadline bounds the client's
-   wait; the record's own expiry (by the hybrid clock, 0.9's) is when others
+   wait; the record's own expiry (by the hybrid clock, 0.9.0's) is when others
    may abort it. Same value, or the record's longer?
