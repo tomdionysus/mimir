@@ -1,7 +1,7 @@
 # Mimir - Active Work
 
 Last updated: 2026-11-20. `COMPLETED.md` is the record, with gate counts. The
-design is `TODO/2026-11-15-mimir-design.md`: Tom's rulings (1 to 43), the two
+design is `TODO/2026-11-15-mimir-design.md`: Tom's rulings (1 to 44), the two
 classes of command, agreement in Dannan, durability, and the order.
 
 ## Resume here
@@ -177,6 +177,11 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the Pis run mimi
 - Coverage toward 100% (Tom, 2026-11-20: "You will maintain ~100% code
   coverage on all code"). 91.9% of lines on 2026-11-20 (10112 of 11000),
   uploaded to Codecov with the repository's token.
+- A real-client gate (ruling 44): hiredis in GoogleTest against a real
+  three-node cluster on the Pis. Needs libhiredis-dev on the Pis and in
+  hosted CI (a note on the board before installing), a CMake option for the
+  test-only link, and its own test binary or filter so the unit suite stays
+  self-contained.
 - No single-node special case (Tom, 2026-11-20): the lone node's
   immediate vote in mimir-node goes, and the database's no-cluster path
   goes. Agreements become mandatory, the multi-key refusal moves into
