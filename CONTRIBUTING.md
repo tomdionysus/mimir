@@ -62,8 +62,27 @@ clang and coverage steps on each push, and no sanitizer step. The differential
 gate against a Valkey 8 server, and multi-node beds, run by hand on the build
 servers.
 
+The tests need GoogleTest (`libgtest-dev`). Build options: `MIMIR_BUILD_TESTING`,
+`MIMIR_BUILD_FUZZING` (clang, libFuzzer targets for the RESP parser and
+`RESTORE`), `MIMIR_WARNINGS_AS_ERRORS`, and `MIMIR_FETCH_DANNAN` (on by default:
+fetch Dannan when no installed release of its minor is found).
+
 Write tests from Valkey 8's documented behaviour, the design and the laws, not
 from the current behaviour.
+
+### The differential gate
+
+The `Differential.*` cases send the same commands to Mimir and to a Valkey 8
+server on loopback and compare the replies byte for byte. `tools/differential.sh
+[build directory]` runs each case against a freshly started node (while
+multi-key writes are refused, a case cannot clear the node with `FLUSHALL`), and
+prints the count of differing replies. By hand:
+
+```
+LC_ALL=C valkey-server --port 7379 --bind 127.0.0.1 --save "" --appendonly no --daemonize yes
+./build/mimir-node --listen 127.0.0.1 --port 7380 --databases 16 --auth-plaintext --seconds 200 &
+MIMIR_DIFF_MIMIR_PORT=7380 MIMIR_DIFF_VALKEY_PORT=7379 ./build/mimir_tests --gtest_filter='Differential.*'
+```
 
 ## Dependencies
 
@@ -81,7 +100,9 @@ it, with `<p>` = `mimir`: the library target `mimir` in `mimir/`, public headers
 in `mimir/include/mimir/`, subsystems in `mimir/<subsystem>/` (`resp`,
 `keyspace`, `command`, `cluster`, `server`), tests in `mimir/test/` (one binary
 `mimir_tests`), fuzz targets in `mimir/fuzz/` (the RESP request parser first),
-tools in `tools/`. No presets.
+tools in `tools/`, the Debian packaging in `debian/` with the packaged settings
+and unit in `packaging/` (`docs/packaging.md`), the manual page in `docs/man/`,
+and the design, the plan and the record in `TODO/`. No presets.
 
 ## Shared code
 
