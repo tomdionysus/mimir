@@ -21,8 +21,9 @@ State on 2026-11-20:
   differing replies, all accounted for: ruling 35 refusals (157 replies
   carry its words), 4 undeclared-key script writes (ruling 36), and the
   rest cases whose setup used a refused command.
-- Dannan is pinned at 0.9.1. Dannan has since tagged 0.9.2; nothing here
-  needs it yet, and the pin moves only for a stated reason.
+- Dannan is pinned at 0.9.2 (2026-11-20), the stack's version. On a build server,
+  clone `build/dannan-full-0.9.1.bundle`, then fetch
+  `build/dannan-0.9.2.bundle`'s tag.
 - The build servers were wiped to bare OS on 2026-11-18. The work tree is back on
   node-c only (`/root/mimir-work`, with Dannan, the Lua dev
   packages and Valkey 8.1.1). Another build server needs the same: see "How work is

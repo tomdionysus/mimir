@@ -2,6 +2,31 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-20: Dannan 0.9.2, and the stack audits
+
+- Pin moved from 0.9.1 to 0.9.2, so the stack is on one version. 0.9.2's
+  fix is that a node now sends its record to each peer it meets first, so
+  an advert set at start reaches peers met later (Mimir's `mimir` capability
+  advert is one). The ABI is 0.9.0's. No command path changed, so the
+  differential was not rerun. Gate on node-c (-j2, a full rebuild):
+  release 361 passed.
+- The maintainer asked the stack for two audits, negotiated through the stack's coordinating
+  session (`../stack-coordinator/TODO/2026-11-20-cluster-stack-placement.md`):
+  duplicated functionality (`TODO/2026-11-20-duplication-audit.md`) and
+  special roles and nodes (`TODO/2026-11-20-no-special-node-audit.md`).
+  Mimir's answers, given there:
+  - catch-up, commit notices, exactly-once ids and ballot versions belong
+    in Dannan's agreement;
+  - an in-memory AcceptorStore goes in dannan::agree, and Mimir drops
+    `mimir/cluster/store.*` when it lands;
+  - SHA-1 belongs in Dannan's crypto;
+  - pub/sub interest is Mimir subscribing by prefix on Dannan Channels;
+  - Mimir needs no lock manager;
+  - AUTH is throttled per client address, with the keyed bucket in Dannan;
+  - the genesis set as every shard's replicas is the one special set, and
+    keeping replica sets whole as nodes join and retire belongs in Dannan.
+  Nothing moves until the plan converges and the maintainer decides.
+
 ## 2026-11-20: Stage 3: scripts and function libraries by agreement (ruling 39)
 
 - `eb8eb94`. The cluster's own registers share database number 0xFFFF:
