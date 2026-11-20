@@ -166,6 +166,25 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the build server
   by ruling 35. Do not upgrade it to a stage 3 build before then without
   checking every command the claim board sends.
 
+## Owed, not waiting on anyone
+
+- The Status/Admin dashboard (the maintainer, 2026-11-20): designed in
+  `TODO/2026-11-20-admin-dashboard.md`. Waits on Dannan's HTTP core and on
+  where the shared React shell lives; Mimir's API and screens are designed.
+- CONFIG SET of a setting that must hold cluster-wide (notify-keyspace-events
+  first) becomes cluster state by agreement, as ACL and functions did (no
+  special node).
+- Coverage toward 100% (the maintainer, 2026-11-20: "You will maintain ~100% code
+  coverage on all code"). 91.9% of lines on 2026-11-20 (10112 of 11000),
+  uploaded to Codecov with the repository's token.
+- No single-node special case (the maintainer, 2026-11-20): the lone node's
+  immediate vote in mimir-node goes, and the database's no-cluster path
+  goes. Agreements become mandatory, the multi-key refusal moves into
+  cluster::Agreements, and the unit tests run through an in-process
+  agreement stand-in that commits several keys at once.
+- The refusal text and documents name "Dannan's atomic commit across
+  replica sets" (Dannan's item 26, its third minor), not "0.10.0".
+
 ## Waiting on the maintainer
 
 - `decided` for a merging write (the design's "Durability", Proposed): a
