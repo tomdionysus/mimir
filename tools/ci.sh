@@ -15,6 +15,10 @@
 #   tools/ci.sh tsan       ThreadSanitizer
 #   tools/ci.sh coverage   a coverage build's tests; lcov report build-ci/coverage.info
 #   tools/ci.sh client     hiredis against a real three-node cluster (ruling 44)
+#   tools/ci.sh client-asan  the same, every node under ASan and UBSan
+#
+#   The sanitizer steps build Dannan from source with their flags, never an
+#   installed copy, and fail unless it carries the sanitizer's symbols.
 #   tools/ci.sh package    Dannan's packages at the pinned tag, then Mimir's, linted
 #   tools/ci.sh tidy       clang-tidy's bugprone-use-after-move over every source
 #                          and Mimir's headers, warnings as errors
@@ -50,6 +54,28 @@ configure() {
   cmake --build "$out/$dir" -j "$jobs"
 }
 
+# A sanitizer build instruments every stack library it links: each one built
+# from source under $out/<dir>/_deps must carry the sanitizer's symbols, or
+# the step fails before its tests run.
+instrumented() {
+  dir="$1"
+  symbol="$2"
+  found=0
+  for lib in "$out/$dir"/_deps/*-build/*/lib*.so*; do
+    [ -f "$lib" ] && [ ! -L "$lib" ] || continue
+    found=1
+    if ! nm -D "$lib" | grep -q " $symbol"; then
+      echo "not instrumented ($symbol): $lib" >&2
+      exit 1
+    fi
+    echo "instrumented ($symbol): $lib"
+  done
+  [ "$found" = 1 ] || {
+    echo "no stack library built from source under $out/$dir/_deps" >&2
+    exit 1
+  }
+}
+
 case "$step" in
   check)
     cd "$top"
@@ -74,11 +100,13 @@ case "$step" in
   asan)
     flags="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
     configure asan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMIMIR_WARNINGS_AS_ERRORS=OFF -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
+    instrumented asan __asan_
     ASAN_OPTIONS=detect_stack_use_after_return=1 UBSAN_OPTIONS=print_stacktrace=1 "$out/asan/mimir_tests"
     ;;
   tsan)
     flags="-fsanitize=thread -fno-omit-frame-pointer"
     configure tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMIMIR_WARNINGS_AS_ERRORS=OFF -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
+    instrumented tsan __tsan_
     TSAN_OPTIONS="halt_on_error=1 second_deadlock_stack=1" "$out/tsan/mimir_tests"
     ;;
   coverage)
@@ -95,6 +123,23 @@ case "$step" in
   client)
     configure client -DCMAKE_BUILD_TYPE=Release -DMIMIR_BUILD_TESTING=OFF -DMIMIR_BUILD_CLIENT_TESTS=ON
     "$out/client/mimir_client_tests"
+    ;;
+  client-asan)
+    # The nodes' own reports go to $out/client-asan/reports (a node's log
+    # goes with its test's directory); any report fails the step.
+    flags="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
+    configure client-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMIMIR_BUILD_TESTING=OFF -DMIMIR_BUILD_CLIENT_TESTS=ON -DMIMIR_WARNINGS_AS_ERRORS=OFF \
+      -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
+    instrumented client-asan __asan_
+    reports="$out/client-asan/reports"
+    rm -rf "$reports"
+    mkdir -p "$reports"
+    ASAN_OPTIONS="detect_stack_use_after_return=1:log_path=$reports/asan" UBSAN_OPTIONS="print_stacktrace=1:log_path=$reports/ubsan" \
+      "$out/client-asan/mimir_client_tests"
+    if [ -n "$(ls "$reports")" ]; then
+      cat "$reports"/* >&2
+      exit 1
+    fi
     ;;
   package)
     # Dannan's packages at the pinned tag, by Dannan's own step, then Mimir's
@@ -119,7 +164,7 @@ case "$step" in
     "$tidy" -p "$out/tidy" -j "$jobs" -quiet -checks='-*,bugprone-use-after-move' -warnings-as-errors='*' -header-filter="$ours" "$ours"
     ;;
   *)
-    echo "usage: tools/ci.sh check|release|clang|asan|tsan|coverage|client|package|tidy" >&2
+    echo "usage: tools/ci.sh check|release|clang|asan|tsan|coverage|client|client-asan|package|tidy" >&2
     exit 2
     ;;
 esac

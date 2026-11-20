@@ -41,10 +41,10 @@ find_library(MIMIR_LUA51_CMSGPACK NAMES lua5.1-cmsgpack liblua5.1-cmsgpack.so.0 
 include(GNUInstallDirs)
 
 # Dannan, the network layer, at its pinned release. An installed release of
-# that minor (libdannan-dev) is used first; otherwise, unless
-# MIMIR_FETCH_DANNAN is off (the package build), the tag is cloned into the
-# build tree from the sibling checkout or a URL, so building Mimir never
-# touches ../dannan.
+# that minor (libdannan-dev) is used first, but never by a sanitizer build;
+# otherwise, unless MIMIR_FETCH_DANNAN is off (the package build), the tag is
+# cloned into the build tree from the sibling checkout or a URL, and built
+# with this build's flags, so building Mimir never touches ../dannan.
 # A string, not a PATH: CMake makes a PATH absolute, and a URL (hosted CI's
 # https://github.com/...) then becomes a directory under the source tree.
 set(MIMIR_DANNAN_REPOSITORY "${CMAKE_CURRENT_SOURCE_DIR}/../dannan" CACHE STRING "Dannan's repository: a path or a URL")
@@ -52,7 +52,13 @@ option(MIMIR_FETCH_DANNAN "Fetch Dannan at its tag when no installed release of 
 # Not a cache variable: a moved pin must take effect in a build tree that
 # already exists.
 set(MIMIR_DANNAN_TAG "0.9.2")
-if(NOT TARGET dannan::dannan)
+# A sanitizer build instruments every stack library it links, so it always
+# builds Dannan from source with the same flags, never an installed copy.
+set(MIMIR_SANITIZED OFF)
+if(CMAKE_CXX_FLAGS MATCHES "-fsanitize=")
+  set(MIMIR_SANITIZED ON)
+endif()
+if(NOT TARGET dannan::dannan AND NOT MIMIR_SANITIZED)
   if(MIMIR_FETCH_DANNAN)
     find_package(dannan ${MIMIR_DANNAN_TAG} CONFIG QUIET)
   else()
