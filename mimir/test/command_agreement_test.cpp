@@ -20,6 +20,7 @@
 #include "dannan/test/fixtures/stepped_time.h"
 #include "mimir/command/agreements.h"
 #include "mimir/command/database.h"
+#include "mimir/test/fixtures/bed.h"
 
 namespace mimir::command {
 namespace {
@@ -61,6 +62,16 @@ class Registers final : public Agreements {
   }
 
   void on_committed(Committed told) override { committed = std::move(told); }
+
+  // As Mimir's cluster is until Dannan's atomic commit: several keys refused.
+  void change_keys(std::vector<Name>, ChangeKeys, std::function<void(KeysOutcome)> done) override {
+    boost::asio::post(_io, [done = std::move(done)] {
+      KeysOutcome refused;
+      refused.why = "a change of several keys waits for Dannan's atomic commit across replica sets (ruling 35)";
+      done(refused);
+    });
+  }
+  bool several_keys() const override { return false; }
 
   void read(size_t db, const std::string& key, std::function<void(Outcome)> done) override {
     ++reads;
@@ -110,6 +121,16 @@ class Registers final : public Agreements {
   uint64_t _next = 1;
   uint64_t _commits = 0;
 };
+
+// A string's DUMP payload, made by a node of its own.
+std::string dump_of(const std::string& value) {
+  test::Bed scratch;
+  scratch.run({"SET", "x", value});
+  const std::string out = scratch.run({"DUMP", "x"});
+  // The DUMP payload is the bulk string's body.
+  const auto start = out.find("\r\n") + 2;
+  return out.substr(start, out.size() - start - 2);
+}
 
 class AgreementBed {
  public:
@@ -171,15 +192,7 @@ TEST(CommandAgreement, AWriteRunsOnTheValueTheClusterHolds) {
   EXPECT_EQ(bed.run({"INCR", "n"}), ":1\r\n");
   // Another node's write, committed and not yet seen here.
   auto& record = bed.registers->record(0, "n");
-  Database other(dannan::contract::system_wall_clock());
-  Session session;
-  std::string out;
-  other.execute(session, {"SET", "n", "41"}, out);
-  out.clear();
-  other.execute(session, {"DUMP", "n"}, out);
-  // The DUMP payload is the bulk string's body.
-  const auto start = out.find("\r\n") + 2;
-  record.payload = out.substr(start, out.size() - start - 2);
+  record.payload = dump_of("41");
   EXPECT_EQ(bed.run({"INCR", "n"}), ":42\r\n");
   EXPECT_EQ(bed.run({"GET", "n"}), "$2\r\n42\r\n");
 }
@@ -332,16 +345,8 @@ TEST(CommandAgreement, ABlockingPopOverSeveralKeysIsRefused) {
 }
 
 cluster::Record string_record(const std::string& value) {
-  // A string's DUMP payload, made by a database of its own.
-  Database scratch(dannan::contract::system_wall_clock());
-  Session session;
-  std::string out;
-  scratch.execute(session, {"SET", "x", value}, out);
-  out.clear();
-  scratch.execute(session, {"DUMP", "x"}, out);
-  const auto start = out.find("\r\n") + 2;
   cluster::Record record;
-  record.payload = out.substr(start, out.size() - start - 2);
+  record.payload = dump_of(value);
   return record;
 }
 

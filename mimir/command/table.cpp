@@ -36,6 +36,14 @@ std::vector<std::string_view> numkeys_from(const std::vector<std::string>& args,
 }
 std::vector<std::string_view> numkeys_first(const std::vector<std::string>& args) { return numkeys_from(args, 1); }
 std::vector<std::string_view> numkeys_second(const std::vector<std::string>& args) { return numkeys_from(args, 2); }
+// ZUNIONSTORE's, ZINTERSTORE's and ZDIFFSTORE's: the destination, then the
+// sources that follow numkeys.
+std::vector<std::string_view> destination_and_numkeys(const std::vector<std::string>& args) {
+  std::vector<std::string_view> keys;
+  if (args.size() > 1) keys.push_back(args[1]);
+  for (const auto key : numkeys_from(args, 2)) keys.push_back(key);
+  return keys;
+}
 
 // XREAD's and XREADGROUP's keys: the first half of what follows STREAMS.
 std::vector<std::string_view> after_streams(const std::vector<std::string>& args) {
@@ -185,9 +193,9 @@ const std::array specs{
     Spec{"zunion", -3, "readonly", 0, 0, 0, Class::read, zsets::zunion},
     Spec{"zinter", -3, "readonly", 0, 0, 0, Class::read, zsets::zinter},
     Spec{"zdiff", -3, "readonly", 0, 0, 0, Class::read, zsets::zdiff},
-    Spec{"zunionstore", -4, "write denyoom", 1, 1, 1, Class::agreement, zsets::zunionstore},
-    Spec{"zinterstore", -4, "write denyoom", 1, 1, 1, Class::agreement, zsets::zinterstore},
-    Spec{"zdiffstore", -4, "write denyoom", 1, 1, 1, Class::agreement, zsets::zdiffstore},
+    Spec{"zunionstore", -4, "write denyoom", 1, 1, 1, Class::agreement, zsets::zunionstore, nullptr, destination_and_numkeys},
+    Spec{"zinterstore", -4, "write denyoom", 1, 1, 1, Class::agreement, zsets::zinterstore, nullptr, destination_and_numkeys},
+    Spec{"zdiffstore", -4, "write denyoom", 1, 1, 1, Class::agreement, zsets::zdiffstore, nullptr, destination_and_numkeys},
     Spec{"zintercard", -3, "readonly", 0, 0, 0, Class::read, zsets::zintercard},
     // Keys.
     Spec{"del", -2, "write", 1, -1, 1, Class::merge, generic::del},

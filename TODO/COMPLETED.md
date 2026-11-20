@@ -2,6 +2,56 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-20: One path: every write by agreement, on every node (Tom: no single-node case)
+
+- Tom, 2026-11-20: "there shall be NO special case code for a single node."
+  Built on `feature/one-path`, squashed onto develop.
+- mimir-node: a lone node no longer votes at once after a restart; every
+  node that restarts catches up first.
+- `command::Agreements` gained change_keys (several keys at once) and
+  several_keys(), the cluster's capability. cluster::Agreements answers
+  false and refuses, until Dannan's atomic commit across replica sets
+  (item 26); the database refuses a multi-key write with ruling 35's words
+  where the cluster cannot take it. That is a capability of the cluster, not
+  a node's.
+- Database: agreements are required; the no-cluster execute path is gone.
+  A write names its keys (names_locked):
+  - MOVE's and COPY ... DB's other database;
+  - every key of this node's view for FLUSHALL, FLUSHDB and SWAPDB;
+  - an EXEC's queue and watches across SELECT;
+  - a script's declared keys;
+  - SORT ... STORE's pattern keys.
+  It is speculated over a scratch keyspace per database holding only those
+  keys (speculate_keys). db_locked and swap_locked answer the scratch while
+  speculating. SORT without STORE runs on the view as a read.
+- MIGRATE removes each moved key by a conditional agreement (only while it
+  holds what moved), and answers once the removals are decided.
+- Fixed on the way, each found by a test that now passes through agreement:
+  - ZUNIONSTORE, ZINTERSTORE and ZDIFFSTORE named only their destination
+    (the table now names their sources);
+  - CLIENT REPLY OFF and SKIP did not silence a reply given later by
+    agreement;
+  - CLIENT UNBLOCK could not end a pop parked by agreement;
+  - a transaction's reads were not tracked for its caller;
+  - a woken pop on a key now of another type answered WRONGTYPE (it now
+    waits on, and is retried only when a key it waits on is written again,
+    by version);
+  - a large hash, set or sorted set lost its SCAN numbers when a committed
+    value was installed (each now adopts the numbers of the value it
+    replaces, ruling 30);
+  - restoring a key into a speculation announced it "new".
+- Tests: every command test runs through agreement on an in-process cluster
+  of one that commits several keys at once (`test/fixtures/
+  local_agreements.h`; Bed drives it and reruns a postponed command). No
+  test was deleted. Five script tests now declare the keys they write
+  (ruling 36). Beds that waited for an immediate reply now wait for the
+  agreement.
+- Gate on corvus-neptune (-j1): release 363 passed; ASan 363 and TSan 363,
+  no sanitizer report. Differential 233, unchanged in total. 163 replies now
+  carry ruling 35's words (from 157), since the sorted-set STOREs now name
+  all their keys and are refused as multi-key writes by mimir-node's
+  cluster, instead of running wrongly on their destination alone.
+
 ## 2026-11-20: MIMIR NODES lists every node's client address (ruling 40)
 
 - The first feature built on a branch (`feature/node-list`) and squashed

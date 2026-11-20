@@ -230,7 +230,6 @@ int main(int argc, char** argv) {
     const auto self = dannan::identity::load_or_create_node_id(node_config.state_path);
     if (genesis.empty() && bootstrap.empty()) genesis.push_back(self);
     const bool founder = std::find(genesis.begin(), genesis.end(), self) != genesis.end();
-    const bool alone = genesis.size() == 1 && founder && bootstrap.empty();
     node_config.advertise_host = settings.text("cluster.advertise").value_or("");
     node_config.bootstrap = bootstrap;
     node_config.node_name = settings.text("cluster.name").value_or("");
@@ -239,7 +238,10 @@ int main(int argc, char** argv) {
     node_config.log = sink;
     node_config.agreement_slots = shards;
     node_config.agreement_genesis = genesis;
-    if (!fresh && !alone) logger.warn("this node restarted without its acceptor state: it does not vote until it has caught up, which stage 3 does not do yet");
+    // One rule for every node, a cluster of one included (Tom, 2026-11-20: no
+    // special case for a single node): a node whose state is not new restarted
+    // without its acceptor state, and does not vote until it has caught up.
+    if (!fresh) logger.info("this node restarted without its acceptor state: it catches up before it votes");
 
     signal(SIGPIPE, SIG_IGN);
     asio::io_context io;
@@ -250,7 +252,7 @@ int main(int argc, char** argv) {
     node.emplace(io, node_config);
     mimir::cluster::Agreements::register_types(node->context());
     node->start();
-    auto space = std::make_unique<mimir::cluster::Space>(node->context(), fresh || alone);
+    auto space = std::make_unique<mimir::cluster::Space>(node->context(), fresh);
     if (founder)
       space->found(10s, [](dannan::agree::Outcome outcome) {
         say(std::string("{\"event\":\"founded\",\"committed\":") + (outcome.committed ? "true" : "false") + "}");

@@ -219,4 +219,12 @@ size_t SortedSet::count_below_score(double score, bool inclusive) const {
   return count;
 }
 
+void SortedSet::adopt_numbers(const SortedSet& before) {
+  _order.resume_from(before._order.reached());
+  for (auto& [member, entry] : _scores) {
+    const auto found = before._scores.find(member);
+    entry.number = found != before._scores.end() ? found->second.number : _order.next();
+  }
+}
+
 }  // namespace mimir::keyspace

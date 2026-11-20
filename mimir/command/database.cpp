@@ -235,6 +235,9 @@ Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings set
       _started_ms(wall.unix_ms()),
       _random(std::random_device{}()),
       _scripting(ScriptingNames{_settings.server_name, _settings.compatible_version, _settings.redis_version}) {
+  // Every write commits by agreement (ruling 34): a database without the
+  // cluster's agreements cannot be made.
+  if (!_settings.agreements) throw std::invalid_argument("a database needs the cluster's agreements: every write commits by agreement");
   const size_t count = std::max<size_t>(1, _settings.databases);
   for (size_t i = 0; i < count; ++i) _dbs.push_back(std::make_unique<keyspace::Keyspace>(wall));
   // What CONFIG GET answers, in Valkey's names: no persistence of Valkey's
@@ -272,9 +275,8 @@ Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings set
   }
   if (!set_notify_flags_locked(_settings.notify_keyspace_events))
     throw std::invalid_argument("notify keyspace events: not Valkey's letters: " + _settings.notify_keyspace_events);
-  if (_settings.agreements)
-    _settings.agreements->on_committed(
-        [this](size_t db, const std::string& key, const std::string& version, const cluster::Record& record) { install_committed(db, key, version, record); });
+  _settings.agreements->on_committed(
+      [this](size_t db, const std::string& key, const std::string& version, const cluster::Record& record) { install_committed(db, key, version, record); });
 }
 
 void Database::welcome_locked(Session& session) {
@@ -317,7 +319,7 @@ void Database::bind_listeners() {
       // in Valkey's order (before the miss of the read that found it).
       notify_locked(i, 'x', "expired", key);
       invalidate_locked(key, nullptr);
-      if (_settings.agreements && !_writing_lookup) expire_by_agreement_locked(i, key);
+      if (!_writing_lookup) expire_by_agreement_locked(i, key);
     };
     listener.created = [this, i](std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
       if (!_installing) notify_locked(i, 'n', "new", key);
@@ -344,7 +346,7 @@ void Database::notify_locked(size_t db, char cls, std::string_view event, std::s
 
 void Database::look_up_keys(const Spec& spec, const std::vector<std::string>& args, size_t db) {
   if (!(_notify_flags & (notify_keyspace | notify_keyevent)) || !reads_its_keys(spec)) return;
-  keyspace::Keyspace& keys = _speculating && db == _scratch_db ? *_scratch : *_dbs[db];
+  keyspace::Keyspace& keys = _speculating && _scratches.count(db) ? *_scratches.at(db) : *_dbs[db];
   for (auto key : keys_of(spec, args)) {
     if (!keys.find(key)) notify_locked(db, 'm', "keymiss", key);
   }
@@ -385,10 +387,16 @@ std::string Database::timeout_reply(resp::Protocol protocol, bool null_bulk) {
 
 Executed Database::execute(Session& session, const std::vector<std::string>& args, std::string& out, Wake wake) {
   const size_t before = out.size();
-  Executed executed = execute_one(session, args, out, std::move(wake));
   // CLIENT REPLY: OFF drops every reply; SKIP drops the reply of the command
   // after the one that set it. Read without the lock: only this connection's
-  // own commands change them.
+  // own commands change them. A reply given later (by agreement) is silenced
+  // as one given now.
+  const bool silent = session.reply_off || session.reply_skip;
+  if (silent && wake) {
+    auto given = std::move(wake);
+    wake = [given = std::move(given)](std::string reply) { given(reply.empty() ? std::move(reply) : std::string()); };
+  }
+  Executed executed = execute_one(session, args, out, std::move(wake));
   if (session.reply_off || session.reply_skip) out.resize(before);
   session.reply_skip = false;
   if (session.reply_skip_next) {
@@ -447,8 +455,10 @@ bool Database::paused_locked(const Spec& spec, const Session& session) {
 bool Database::unblock_locked(int64_t client, bool error) {
   for (auto& [id, waiter] : _waiters) {
     // A write waiting for its agreement is not blocked: it is answered by its
-    // commit.
-    if (waiter.proposal || !waiter.session || waiter.session->id != client || waiter.postponed) continue;
+    // commit. A blocking pop parked on its keys is, unless an attempt of it is
+    // in flight, whose outcome it then waits for.
+    const bool parked = waiter.blocked && !waiter.in_flight;
+    if ((waiter.proposal && !parked) || !waiter.session || waiter.session->id != client || waiter.postponed) continue;
     std::string bytes;
     if (error) {
       resp::Reply reply(waiter.session->protocol);
@@ -773,10 +783,11 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
     ++session.commands;
     // The database the command ran in, before it may change it (SELECT).
     const size_t db = session.db;
-    // In a cluster (stage 3) a write naming one key commits by agreement; the
-    // connection waits for it. Keyless writes (FUNCTION, SCRIPT) hold this
-    // node's own state and run here.
-    if (_settings.agreements) {
+    // Every write naming a key commits by agreement, on every node, a
+    // cluster of one included (ruling 34; no single-node path); the
+    // connection waits for it. Keyless writes (CONFIG, SCRIPT FLUSH) hold this
+    // node's own state and run here, as reads run on this node's view.
+    {
       if (auto refused = cluster_refusal_locked(*spec, args, session)) {
         if (spec->name == "exec") {
           session.in_multi = false;
@@ -888,31 +899,46 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         after.fn = [this, wait, db, named = std::move(named), args]() mutable { read_strictly(wait, db, std::move(named), args); };
         return executed;
       }
-      // An EXEC whose writes and watches all name one key commits whole by
-      // agreement; one that only reads runs here.
-      std::string exec_key;
-      if (spec->name == "exec" && session.in_multi && !session.multi_failed) {
-        const auto named = exec_key_locked(session);
-        if (named.writes) exec_key = named.key;
-      }
-      // A script that declares one key (perhaps more than once) commits whole
-      // by agreement on it.
+      // A write commits by agreement on every key it names, an EXEC that
+      // writes on every key its queue and watches name, and a script on the
+      // keys it declares (ruling 36). A write naming no key (CONFIG, SCRIPT
+      // FLUSH, a flush of an empty view), a script declaring none, and an
+      // EXEC that only reads run here.
       const bool script = spec->name == "eval" || spec->name == "evalsha" || spec->name == "fcall";
-      if (script && keys.size() > 1) keys.resize(1);
-      if (((has_flag(spec->flags, "write") || script) && keys.size() == 1) || !exec_key.empty()) {
+      const bool exec = spec->name == "exec" && session.in_multi && !session.multi_failed && exec_key_locked(session).writes;
+      std::vector<Agreements::Name> names;
+      // MIGRATE runs here: it reads what it moves, and each key it moved is
+      // removed by agreement once the target has it (finish_migrate).
+      // SORT without STORE only reads (its BY and GET read other keys), and
+      // runs here as reads do.
+      bool sort_reads = spec->name == "sort";
+      for (size_t i = 2; sort_reads && i < args.size(); ++i) sort_reads = !iequals(args[i], "STORE");
+      if (spec->name != "migrate" && !sort_reads && (exec || has_flag(spec->flags, "write") || (script && !keys.empty())))
+        names = names_locked(*spec, args, session, db);
+      if (!names.empty()) {
+        if (!wake && has_flag(spec->flags, "blocking")) {
+          // Nowhere to wait: with nothing to take in this node's view, the
+          // timeout's answer at once, as Valkey answers where it cannot block.
+          bool empty = true;
+          for (const auto& named : names) empty = empty && !_dbs[named.db]->contains(named.key);
+          if (empty) {
+            const auto blocking = blocking_locked(*spec, args, session, db);
+            out.append(timeout_reply(session.protocol, blocking.null_bulk));
+            return executed;
+          }
+        }
         if (!wake) {
           reply.error("ERR this write needs a connection that can wait for its agreement");
           out.append(reply.bytes());
           return executed;
         }
-        const std::string key = exec_key.empty() ? std::string(keys[0]) : exec_key;
         look_up_keys(*spec, args, db);
         feed_monitors(session, *spec, args, db);
         // An expired key is found here, as Valkey's write finds it: its
         // "expired" is this node's to announce, once, before the write's own.
         // The write's own agreement takes it out of the record.
         _writing_lookup = true;
-        _dbs[db]->find(key);
+        for (const auto& named : names) _dbs[named.db]->find(named.key);
         _writing_lookup = false;
         publish_events();
         auto proposal = std::make_shared<Proposal>();
@@ -921,8 +947,11 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         proposal->spec = spec;
         proposal->args = args;
         proposal->db = db;
-        proposal->key = key;
-        if (!exec_key.empty()) {
+        proposal->key = names.front().key;
+        // One key in this database: a change of one register; otherwise a
+        // change of several at once.
+        if (names.size() > 1 || names.front().db != db) proposal->names = names;
+        if (exec) {
           // The transaction is the agreement's now: this connection's ends.
           session.in_multi = false;
           session.multi_failed = false;
@@ -934,8 +963,8 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         proposal->deadline_ms = proposal->issued_ms + proposal_deadline_ms;
         Waiter waiter{&session, args, {}, false, std::move(wake), false, true};
         executed.wait_seconds = 0;
-        if (exec_key.empty() && has_flag(spec->flags, "blocking")) {
-          // A blocking pop waits on its key with its own timeout; while an
+        if (!exec && has_flag(spec->flags, "blocking")) {
+          // A blocking pop waits on its keys with its own timeout; while an
           // attempt is proposed a timeout waits for it.
           const auto blocking = blocking_locked(*spec, args, session, db);
           if (!blocking.error.empty()) {
@@ -943,13 +972,14 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
             out.append(reply.bytes());
             return executed;
           }
-          waiter.keys = {scoped(db, key)};
+          for (const auto& named : names) waiter.keys.push_back(scoped(named.db, named.key));
           waiter.null_bulk = blocking.null_bulk;
           waiter.blocked = proposal;
           waiter.in_flight = true;
-          _waiting_on[waiter.keys.front()].push_back(proposal->wait);
+          for (const auto& key : waiter.keys) _waiting_on[key].push_back(proposal->wait);
           executed.wait_seconds = blocking.seconds;
         }
+        proposal->seen = versions_of_locked(*proposal);
         _waiters.emplace(proposal->wait, std::move(waiter));
         executed.wait = proposal->wait;
         after.fn = [this, proposal] { propose(proposal); };
@@ -1019,6 +1049,8 @@ void Database::repropose_locked(const std::shared_ptr<Proposal>& proposal) {
   proposal->operation = _settings.agreements->operation_id();
   proposal->issued_ms = _wall.unix_ms();
   proposal->deadline_ms = proposal->issued_ms + proposal_deadline_ms;
+  proposal->woken = true;
+  proposal->seen = versions_of_locked(*proposal);
   _pending.push_back(proposal);
 }
 
@@ -1094,8 +1126,17 @@ std::optional<std::string> Database::cluster_refusal_locked(const Spec& spec, co
   static const std::string several =
       "ERR this command writes more than one key, which Mimir refuses until Dannan's atomic commit across replica sets (ruling 35)";
   const std::string_view name = spec.name;
-  // A script runs by agreement on the one key it declares (none: it runs
-  // here, reading only).
+  if (name == "exec" && session.in_multi && !session.multi_failed) {
+    for (const auto& queued : session.queued) {
+      if (changes_users(queued)) return "ERR in a cluster ACL SETUSER and DELUSER commit on their own, not inside MULTI (ruling 27)";
+      if (changes_functions(queued)) return "ERR in a cluster FUNCTION's changes commit on their own, not inside MULTI (ruling 39)";
+    }
+  }
+  // Several keys commit together only where the cluster can commit them so:
+  // a capability of the cluster, not of a node (ruling 35).
+  if (_settings.agreements->several_keys()) return std::nullopt;
+  // A script runs by agreement on the keys it declares (none: it runs here,
+  // reading only).
   if (name == "eval" || name == "evalsha" || name == "fcall") {
     const auto keys = spec.find_keys ? spec.find_keys(args) : keys_of(spec, args);
     if (std::set<std::string_view>(keys.begin(), keys.end()).size() > 1) return several;
@@ -1103,11 +1144,6 @@ std::optional<std::string> Database::cluster_refusal_locked(const Spec& spec, co
   }
   if (name == "exec") {
     if (!session.in_multi || session.multi_failed) return std::nullopt;
-    for (const auto& queued : session.queued)
-      if (changes_users(queued))
-        return "ERR in a cluster ACL SETUSER and DELUSER commit on their own, not inside MULTI (ruling 27)";
-      else if (changes_functions(queued))
-        return "ERR in a cluster FUNCTION's changes commit on their own, not inside MULTI (ruling 39)";
     if (exec_key_locked(session).several) return several;
     return std::nullopt;
   }
@@ -1120,37 +1156,77 @@ std::optional<std::string> Database::cluster_refusal_locked(const Spec& spec, co
 }
 
 Agreements::Changed Database::speculate(const Proposal& proposal, const cluster::Record& base) {
-  // Applied already, by an attempt an earlier round took: its result again.
-  if (const auto* applied = base.find(proposal.operation)) return {base, applied->reply};
+  auto changed = speculate_keys(proposal, {base});
+  return {changed.records.empty() ? base : std::move(changed.records.front()), std::move(changed.result)};
+}
+
+Agreements::ChangedKeys Database::speculate_keys(const Proposal& proposal, const std::vector<cluster::Record>& bases) {
+  const auto unchanged = [&bases](std::string result) { return Agreements::ChangedKeys{bases, std::move(result)}; };
+  // A write of one key names it as the proposal does.
+  const std::vector<Agreements::Name> one{{proposal.db, proposal.key}};
+  const auto& named = proposal.names.empty() ? one : proposal.names;
+  // Applied already, by an attempt an earlier round took: its result again
+  // (every record it changed notes it; the first is looked at).
+  if (!bases.empty())
+    if (const auto* applied = bases.front().find(proposal.operation)) return unchanged(applied->reply);
   dannan::contract::Lock lock(_mutex);
   FixedClock clock(proposal.issued_ms);
-  keyspace::Keyspace scratch(clock);
-  if (base.payload) {
+  // A keyspace of each database the command names, holding only its named
+  // keys as the agreement holds them.
+  std::map<size_t, std::unique_ptr<keyspace::Keyspace>> scratches;
+  const auto scratch_of = [&](size_t db) -> keyspace::Keyspace& {
+    auto& made = scratches[db];
+    if (!made) made = std::make_unique<keyspace::Keyspace>(clock);
+    return *made;
+  };
+  scratch_of(proposal.db);
+  // FLUSHALL empties every database, and SWAPDB exchanges two, empty or not.
+  const std::string_view command = proposal.spec ? proposal.spec->name : std::string_view();
+  if (command == "flushall")
+    for (size_t i = 0; i < _dbs.size(); ++i) scratch_of(i);
+  if (command == "swapdb" && proposal.args.size() > 2) {
+    const auto a = parse_integer(proposal.args[1]);
+    const auto b = parse_integer(proposal.args[2]);
+    if (a && b && *a >= 0 && *b >= 0 && static_cast<size_t>(*a) < _dbs.size() && static_cast<size_t>(*b) < _dbs.size()) {
+      scratch_of(static_cast<size_t>(*a));
+      scratch_of(static_cast<size_t>(*b));
+    }
+  }
+  std::set<std::string> names;
+  std::map<std::string, uint64_t> serials;
+  for (size_t i = 0; i < named.size() && i < bases.size(); ++i) {
+    const auto& [db, key] = named[i];
+    const auto& base = bases[i];
+    keyspace::Keyspace& scratch = scratch_of(db);
+    names.insert(scoped(db, key));
+    serials[scoped(db, key)] = base.serial;
+    if (!base.payload) continue;
     auto restored = keyspace::rdb::restore(*base.payload);
     auto* entry = std::get_if<keyspace::Entry>(&restored);
-    if (!entry) return {base, encode_result("-ERR this key's stored value cannot be read\r\n", {})};
+    if (!entry) return unchanged(encode_result("-ERR this key's stored value cannot be read\r\n", {}));
     entry->expires_at = base.expires_at;
-    scratch.put(proposal.key, std::move(*entry));
+    scratch.put(key, std::move(*entry));
+  }
+  // Keys that come to be are announced from here on, not those restored.
+  for (auto& [db, scratch] : scratches) {
+    keyspace::Keyspace::Listener listener;
+    listener.created = [this, db](std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS { notify_locked(db, 'n', "new", key); };
+    scratch->set_listener(std::move(listener));
   }
   const size_t before = _events.size();
-  // An expiry is announced by the live keyspace, where the write found it;
-  // here it is only taken out.
-  keyspace::Keyspace::Listener listener;
-  listener.created = [this, db = proposal.db](std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS { notify_locked(db, 'n', "new", key); };
-  scratch.set_listener(std::move(listener));
   // This attempt's own session, clock and random choices: every attempt of
-  // one operation chooses alike. An EXEC's queued commands run against the
-  // scratch keyspace too, and nothing they do leaves it but by the result.
+  // one operation chooses alike. An EXEC's queued commands and a script's
+  // calls run against the scratch keyspaces too, and nothing they do leaves
+  // them but by the result.
   Session session = proposal.session;
   const auto saved = _random;
   _random.seed(std::hash<std::string>{}(proposal.operation));
   _speculating = true;
-  _scratch = &scratch;
-  _scratch_db = proposal.db;
-  _scratch_serial = base.serial;
-  _scratch_key = proposal.key;
+  for (auto& [db, scratch] : scratches) _scratches[db] = scratch.get();
+  _scratch_names = std::move(names);
+  _scratch_serials = std::move(serials);
   resp::Reply reply(session.protocol);
-  Call call{session, *this, scratch, reply, proposal.args};
+  Call call{session, *this, *_scratches.at(proposal.db), reply, proposal.args};
   call.db = proposal.db;
   try {
     proposal.spec->handler(call);
@@ -1159,39 +1235,59 @@ Agreements::Changed Database::speculate(const Proposal& proposal, const cluster:
     reply = resp::Reply(session.protocol);
     reply.error(e.what());
   }
+  // SWAPDB exchanged the scratch keyspaces: what each database holds now.
+  std::map<size_t, keyspace::Keyspace*> held = _scratches;
   _speculating = false;
-  _scratch = nullptr;
+  _scratches.clear();
+  _scratch_names.clear();
+  _scratch_serials.clear();
   _random = saved;
-  // A blocking pop that found nothing changes nothing: it waits for its key.
+  // A blocking pop woken by a write to a key now of another type finds
+  // nothing there, as Valkey's waiter stays blocked.
+  if (proposal.woken && reply.bytes().rfind("-WRONGTYPE", 0) == 0) call.blocked = true;
+  // A blocking pop that found nothing changes nothing: it waits for its keys.
   if (call.blocked) {
     _events.erase(_events.begin() + static_cast<std::ptrdiff_t>(before), _events.end());
-    return {base, encode_result(timeout_reply(session.protocol, call.block_null_bulk), {}, false, true)};
+    return unchanged(encode_result(timeout_reply(session.protocol, call.block_null_bulk), {}, false, true));
   }
   // A write that ran counts against WATCH; an error or an aborted EXEC does not.
   const std::string& bytes = reply.bytes();
   const bool exec = proposal.spec->name == "exec";
   const bool wrote = !bytes.empty() && bytes[0] != '-' && !(exec && (bytes == "*-1\r\n" || bytes == "_\r\n"));
-  cluster::Record out;
-  out.applied = base.applied;
-  out.serial = base.serial + (wrote ? 1 : 0);
-  if (const keyspace::Entry* entry = scratch.find(proposal.key)) {
-    out.payload = keyspace::rdb::dump(*entry);
-    out.expires_at = entry->expires_at;
-  }
   std::vector<Raised> raised;
   for (size_t i = before; i < _events.size(); ++i) raised.emplace_back(_events[i].db, _events[i].event, _events[i].key);
   _events.erase(_events.begin() + static_cast<std::ptrdiff_t>(before), _events.end());
   std::string result = encode_result(bytes, raised, wrote);
-  if (!cluster::note_applied(out, {proposal.operation, proposal.issued_ms, result}))
-    return {base, encode_result("-ERR too many writes to this key are in flight; try again\r\n", {})};
-  return {std::move(out), std::move(result)};
+  Agreements::ChangedKeys out;
+  for (size_t i = 0; i < named.size() && i < bases.size(); ++i) {
+    const auto& [db, key] = named[i];
+    cluster::Record record;
+    record.applied = bases[i].applied;
+    record.serial = bases[i].serial + (wrote ? 1 : 0);
+    if (const keyspace::Entry* entry = held.at(db)->find(key)) {
+      record.payload = keyspace::rdb::dump(*entry);
+      record.expires_at = entry->expires_at;
+    }
+    if (!cluster::note_applied(record, {proposal.operation, proposal.issued_ms, result}))
+      return unchanged(encode_result("-ERR too many writes to this key are in flight; try again\r\n", {}));
+    out.records.push_back(std::move(record));
+  }
+  out.result = std::move(result);
+  return out;
 }
 
 void Database::propose(std::shared_ptr<Proposal> proposal) {
+  if (!proposal->names.empty()) {
+    _settings.agreements->change_keys(
+        proposal->names, [this, proposal](const std::vector<cluster::Record>& bases) { return speculate_keys(*proposal, bases); },
+        [this, proposal](Agreements::KeysOutcome outcome) { decided_keys(proposal, std::move(outcome)); });
+    return;
+  }
   _settings.agreements->change(
       proposal->db, proposal->key,
       [this, proposal](const cluster::Record& base) {
         if (proposal->expiry) return speculate_expiry(*proposal, base);
+        if (proposal->remove_if) return speculate_removal(*proposal, base);
         if (proposal->acl) return speculate_acl(*proposal, base);
         if (proposal->functions) return speculate_functions(*proposal, base);
         if (proposal->script) return speculate_script(*proposal, base);
@@ -1207,13 +1303,13 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
   Woken woken;
   Wake wake;
   std::string bytes;
-  if (proposal->expiry) {
+  if (proposal->expiry || proposal->remove_if) {
     {
       dannan::contract::Lock lock(_mutex);
       // Committed: what the record now is becomes the view (a later EXPIRE
       // elsewhere puts the key back). Refused: the record keeps the key
       // until a later write or expiry finds it.
-      _expiring.erase(scoped(proposal->db, proposal->key));
+      if (proposal->expiry) _expiring.erase(scoped(proposal->db, proposal->key));
       if (outcome.committed) {
         Session* const previous = _current;
         _current = nullptr;
@@ -1221,6 +1317,9 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
         const auto result = decode_result(outcome.result);
         if (install_locked(proposal->db, proposal->key, outcome.version, outcome.record) && result && result->wrote)
           touch_key_locked(proposal->db, proposal->key, nullptr);
+        // A removal's "del" is announced by the committing node.
+        if (result && proposal->remove_if)
+          for (const auto& [db, event, key] : result->raised) _events.push_back(Event{db, event, key});
         if (!_waiters.empty()) serve_ready(woken);
         publish_events();
         flush_tracking_locked(nullptr);
@@ -1228,6 +1327,7 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
       }
     }
     for (auto& [wake_one, reply] : woken) wake_one(std::move(reply));
+    if (proposal->finished) proposal->finished();
     start_pending();
     return;
   }
@@ -1244,7 +1344,8 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
       // was written meanwhile, its turn comes round at once.
       found->second.in_flight = false;
       _touched.clear();
-      if (_dbs[proposal->db]->contains(proposal->key)) _touched.push_back(scoped(proposal->db, proposal->key));
+      if (versions_of_locked(*proposal) != proposal->seen && _dbs[proposal->db]->contains(proposal->key))
+        _touched.push_back(scoped(proposal->db, proposal->key));
       serve_ready(woken);
     } else if (result && result->blocked) {
       // Its time ran out while it was proposed: the timeout's reply.
@@ -1267,8 +1368,24 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
       _current = session;
       _own_invalidations.clear();
       _touched.clear();
-      if (result->wrote && proposal->db != system_db) touch_key_locked(proposal->db, proposal->key, session);
+      // A transaction's reads are its caller's to track (they ran in its
+      // speculation, which tracks nothing), before its own writes are told.
+      if (session && proposal->spec && proposal->spec->name == "exec")
+        for (const auto& queued : proposal->session.queued)
+          if (const Spec* each = find_spec(queued[0])) track_reads_locked(*session, *each, queued);
+      if (result->wrote && proposal->db != system_db) {
+        // A flush breaks its databases' watches and tells every tracking
+        // connection once, as a flush here does.
+        if (proposal->spec && (proposal->spec->name == "flushall" || proposal->spec->name == "flushdb"))
+          touch(*proposal->spec, proposal->args, proposal->db, session);
+        touch_key_locked(proposal->db, proposal->key, session);
+      }
       bytes = result->reply;
+      // This connection is answered: its wait ends before others are served.
+      if (found != _waiters.end() && !result->blocked) {
+        wake = std::move(found->second.wake);
+        forget_waiter(proposal->wait);
+      }
       if (!_waiters.empty()) serve_ready(woken);
       publish_events();
       flush_tracking_locked(session ? &bytes : nullptr);
@@ -1279,8 +1396,8 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
       bytes = "-CLUSTERDOWN " + one_line(outcome.why.empty() ? "the write could not be agreed" : outcome.why) + "\r\n";
     }
     const bool waits_on = result && result->blocked && found != _waiters.end() && found->second.blocked && !found->second.timed_out;
-    if (found != _waiters.end() && !waits_on) {
-      wake = std::move(found->second.wake);
+    if (!wake && _waiters.count(proposal->wait) && !waits_on) {
+      wake = std::move(_waiters.at(proposal->wait).wake);
       forget_waiter(proposal->wait);
     }
   }
@@ -1445,7 +1562,7 @@ void Database::find_script(uint64_t wait, std::string sha) {
         // Not one this node flushed since it was last loaded anywhere.
         uint64_t newest = 0;
         for (const auto& applied : outcome.record.applied) newest = std::max(newest, applied.issued_ms);
-        if (newest >= _scripts_flushed_ms) _scripting.load(*outcome.record.payload);
+        if (_scripts_flushed_ms == 0 || newest > _scripts_flushed_ms) _scripting.load(*outcome.record.payload);
       }
       found->second.session->script_looked_up = sha;
       wake = std::move(found->second.wake);
@@ -1465,6 +1582,208 @@ bool Database::install_functions_locked(const std::string& version, const cluste
   if (!codes || _scripting.replace_libraries(*codes)) return false;
   known = version;
   return true;
+}
+
+void Database::decided_keys(const std::shared_ptr<Proposal>& proposal, Agreements::KeysOutcome outcome) {
+  // Whether it took effect is not known: proposed again, it finds its own
+  // operation if it did, and is applied once.
+  if (!outcome.committed && outcome.unknown && _wall.unix_ms() < proposal->deadline_ms) return propose(proposal);
+  Woken woken;
+  Wake wake;
+  std::string bytes;
+  {
+    dannan::contract::Lock lock(_mutex);
+    const auto found = _waiters.find(proposal->wait);
+    Session* session = found != _waiters.end() ? found->second.session : nullptr;
+    const auto result = outcome.committed ? decode_result(outcome.result) : std::nullopt;
+    const bool waiting = found != _waiters.end() && found->second.blocked && !found->second.timed_out;
+    if (result && result->blocked && waiting) {
+      // A blocking pop that found nothing waits for its keys again; if one
+      // was written meanwhile, its turn comes round at once.
+      found->second.in_flight = false;
+      _touched.clear();
+      if (versions_of_locked(*proposal) != proposal->seen)
+        for (const auto& [db, key] : proposal->names)
+          if (_dbs[db]->contains(key)) _touched.push_back(scoped(db, key));
+      serve_ready(woken);
+    } else if (result && result->blocked) {
+      bytes = result->reply;
+    } else if (result) {
+      for (size_t i = 0; i < proposal->names.size() && i < outcome.records.size() && i < outcome.versions.size(); ++i)
+        install_locked(proposal->names[i].db, proposal->names[i].key, outcome.versions[i], outcome.records[i]);
+      for (const auto& [db, event, key] : result->raised) _events.push_back(Event{db, event, key});
+      Session* const previous = _current;
+      _current = session;
+      _own_invalidations.clear();
+      _touched.clear();
+      // A transaction's reads are its caller's to track (they ran in its
+      // speculation, which tracks nothing), before its own writes are told.
+      if (session && proposal->spec->name == "exec")
+        for (const auto& queued : proposal->session.queued)
+          if (const Spec* each = find_spec(queued[0])) track_reads_locked(*session, *each, queued);
+      if (result->wrote) {
+        const std::string_view command = proposal->spec->name;
+        // A flush breaks its databases' watches and tells every tracking
+        // connection once, as a flush here does.
+        if (command == "flushall" || command == "flushdb") touch(*proposal->spec, proposal->args, proposal->db, session);
+        for (const auto& [db, key] : proposal->names) touch_key_locked(db, key, session);
+      }
+      bytes = result->reply;
+      // This connection is answered: its wait ends before others are served.
+      if (found != _waiters.end()) {
+        wake = std::move(found->second.wake);
+        forget_waiter(proposal->wait);
+      }
+      if (!_waiters.empty()) serve_ready(woken);
+      publish_events();
+      flush_tracking_locked(session ? &bytes : nullptr);
+      _current = previous;
+    } else if (outcome.committed) {
+      bytes = "-ERR the write committed, but its reply cannot be read\r\n";
+    } else {
+      bytes = "-CLUSTERDOWN " + one_line(outcome.why.empty() ? "the write could not be agreed" : outcome.why) + "\r\n";
+    }
+    if (!wake && _waiters.count(proposal->wait) && !(result && result->blocked && waiting)) {
+      wake = std::move(_waiters.at(proposal->wait).wake);
+      forget_waiter(proposal->wait);
+    }
+  }
+  for (auto& [wake_one, reply] : woken) wake_one(std::move(reply));
+  if (wake) wake(std::move(bytes));
+  start_pending();
+}
+
+Agreements::Changed Database::speculate_removal(const Proposal& proposal, const cluster::Record& base) {
+  // Applied already, by an attempt an earlier round took: its result again.
+  if (const auto* applied = base.find(proposal.operation)) return {base, applied->reply};
+  // Written since it was moved: the target has the value it had, and the
+  // key stays here.
+  if (!base.payload || *base.payload != *proposal.remove_if) return {base, encode_result("", {}, false)};
+  cluster::Record out;
+  out.applied = base.applied;
+  out.serial = base.serial + 1;
+  std::string result = encode_result("", {{proposal.db, "del", proposal.key}}, true);
+  if (!cluster::note_applied(out, {proposal.operation, proposal.issued_ms, result})) return {base, encode_result("", {}, false)};
+  return {std::move(out), std::move(result)};
+}
+
+std::vector<Agreements::Name> Database::names_locked(const Spec& spec, const std::vector<std::string>& args, const Session& session, size_t db) {
+  std::vector<Agreements::Name> out;
+  std::set<std::pair<size_t, std::string>> seen;
+  const auto add = [&](size_t in, std::string key) {
+    if (in < _dbs.size() && seen.emplace(in, key).second) out.push_back({in, std::move(key)});
+  };
+  const auto every_key = [&](size_t in) {
+    if (in < _dbs.size())
+      for (auto& key : _dbs[in]->keys()) add(in, std::move(key));
+  };
+  const std::string_view name = spec.name;
+  if (name == "flushall") {
+    for (size_t i = 0; i < _dbs.size(); ++i) every_key(i);
+    return out;
+  }
+  if (name == "flushdb") {
+    every_key(db);
+    return out;
+  }
+  if (name == "swapdb") {
+    const auto a = args.size() > 1 ? parse_integer(args[1]) : std::nullopt;
+    const auto b = args.size() > 2 ? parse_integer(args[2]) : std::nullopt;
+    if (!a || !b || *a < 0 || *b < 0) return out;
+    // Every key of either, in both: each database's keys become the other's.
+    std::set<std::string> keys;
+    for (const size_t in : {static_cast<size_t>(*a), static_cast<size_t>(*b)})
+      if (in < _dbs.size())
+        for (auto& key : _dbs[in]->keys()) keys.insert(std::move(key));
+    for (const auto& key : keys) {
+      add(static_cast<size_t>(*a), key);
+      add(static_cast<size_t>(*b), key);
+    }
+    return out;
+  }
+  if (name == "exec") {
+    // Every key its queue names, in the database each runs in, and those it
+    // watches.
+    size_t at = db;
+    for (const auto& queued : session.queued) {
+      const Spec* each = find_spec(queued[0]);
+      if (!each) continue;
+      if (each->name == "select" && queued.size() > 1) {
+        if (const auto chosen = parse_integer(queued[1]); chosen && *chosen >= 0) at = static_cast<size_t>(*chosen);
+        continue;
+      }
+      if (!has_flag(each->flags, "write") && each->name != "eval" && each->name != "evalsha" && each->name != "fcall" && !reads_its_keys(*each)) continue;
+      for (auto& named : names_locked(*each, queued, session, at)) add(named.db, std::move(named.key));
+    }
+    for (const auto& [watched, existed] : session.watched) {
+      const auto [in, key] = unscoped(watched);
+      add(in, std::string(key));
+    }
+    return out;
+  }
+  // SORT ... STORE writes its destination, and its BY and GET patterns read
+  // other keys: each pattern with each of the source's elements, as this
+  // node's view holds them (an element added elsewhere meanwhile is not
+  // named, and reads as missing).
+  if (name == "sort" && args.size() > 1) {
+    add(db, args[1]);
+    std::vector<std::string> patterns;
+    for (size_t i = 2; i + 1 < args.size(); ++i) {
+      if (iequals(args[i], "STORE")) add(db, args[i + 1]);
+      if (iequals(args[i], "BY") && args[i + 1].find('*') != std::string::npos) patterns.push_back(args[i + 1]);
+      if (iequals(args[i], "GET") && args[i + 1] != "#") patterns.push_back(args[i + 1]);
+    }
+    if (!patterns.empty() && db < _dbs.size()) {
+      // The source's elements, unsorted.
+      Session reader;
+      resp::Reply reply(resp::Protocol::resp2);
+      const std::vector<std::string> elements_args{"SORT", args[1], "BY", "nosort"};
+      Call call{reader, *this, *_dbs[db], reply, elements_args};
+      call.db = db;
+      try {
+        spec.handler(call);
+      } catch (const CommandError&) {
+      }
+      const std::string bytes = reply.take();
+      std::vector<std::string> elements;
+      for (size_t at = 0; (at = bytes.find('$', at)) != std::string::npos;) {
+        const size_t end = bytes.find("\r\n", at);
+        if (end == std::string::npos) break;
+        const auto length = parse_integer(std::string_view(bytes).substr(at + 1, end - at - 1));
+        if (!length || *length < 0) {
+          at = end;
+          continue;
+        }
+        elements.push_back(bytes.substr(end + 2, static_cast<size_t>(*length)));
+        at = end + 2 + static_cast<size_t>(*length);
+      }
+      for (const auto& pattern : patterns) {
+        const std::string key_part = pattern.substr(0, pattern.find("->"));
+        const size_t star = key_part.find('*');
+        if (star == std::string::npos) {
+          add(db, key_part);
+          continue;
+        }
+        for (const auto& element : elements) add(db, key_part.substr(0, star) + element + key_part.substr(star + 1));
+      }
+    }
+    return out;
+  }
+  // COPY ... DB writes its destination in another database.
+  if (name == "copy" && args.size() > 2) {
+    size_t target = db;
+    for (size_t i = 3; i + 1 < args.size(); ++i)
+      if (iequals(args[i], "DB"))
+        if (const auto chosen = parse_integer(args[i + 1]); chosen && *chosen >= 0) target = static_cast<size_t>(*chosen);
+    add(db, args[1]);
+    add(target, args[2]);
+    return out;
+  }
+  for (const auto key : spec.find_keys ? spec.find_keys(args) : keys_of(spec, args)) add(db, std::string(key));
+  // MOVE names its key in the target database too.
+  if (name == "move" && args.size() > 2)
+    if (const auto target = parse_integer(args[2]); target && *target >= 0) add(static_cast<size_t>(*target), args[1]);
+  return out;
 }
 
 void Database::install_committed(size_t db, const std::string& key, const std::string& version, const cluster::Record& record) {
@@ -1499,13 +1818,29 @@ void Database::touch_key_locked(size_t db, const std::string& key, const Session
   if (!_waiting_on.empty()) _touched.push_back(std::move(named));
 }
 
+std::vector<std::string> Database::versions_of_locked(const Proposal& proposal) {
+  std::vector<std::string> out;
+  const auto version = [this](size_t db, const std::string& key) {
+    const auto found = _versions.find(scoped(db, key));
+    return found == _versions.end() ? std::string() : found->second;
+  };
+  if (proposal.names.empty()) {
+    out.push_back(version(proposal.db, proposal.key));
+  } else {
+    for (const auto& [db, key] : proposal.names) out.push_back(version(db, key));
+  }
+  return out;
+}
+
 Database::ExecKey Database::exec_key_locked(const Session& session) {
   ExecKey out;
   std::set<std::string> named;
   for (const auto& queued : session.queued) {
     const Spec* spec = find_spec(queued[0]);
     if (!spec) continue;
-    if (has_flag(spec->flags, "write")) out.writes = true;
+    // A script that declares keys may write them (ruling 36).
+    const bool script = spec->name == "eval" || spec->name == "evalsha" || spec->name == "fcall";
+    if (has_flag(spec->flags, "write") || (script && !(spec->find_keys ? spec->find_keys(queued) : keys_of(*spec, queued)).empty())) out.writes = true;
     // These name keys in two databases, or every key there is.
     if (spec->name == "flushall" || spec->name == "flushdb" || spec->name == "swapdb" || spec->name == "move" || spec->name == "copy" || spec->name == "select")
       out.several = true;
@@ -1631,6 +1966,16 @@ bool Database::install_locked(size_t db, const std::string& key, const std::stri
     auto restored = keyspace::rdb::restore(*record.payload);
     if (auto* entry = std::get_if<keyspace::Entry>(&restored)) {
       entry->expires_at = record.expires_at;
+      // A large hash, set or sorted set keeps the scan numbers its elements
+      // had here (ruling 30), so a scan begun before this write goes on.
+      if (const keyspace::Entry* before = live.find(key)) {
+        if (auto* set = std::get_if<keyspace::Set>(&entry->value))
+          if (const auto* old = std::get_if<keyspace::Set>(&before->value)) set->adopt_numbers(*old);
+        if (auto* hash = std::get_if<keyspace::Hash>(&entry->value))
+          if (const auto* old = std::get_if<keyspace::Hash>(&before->value)) hash->adopt_numbers(*old);
+        if (auto* zset = std::get_if<keyspace::SortedSet>(&entry->value))
+          if (const auto* old = std::get_if<keyspace::SortedSet>(&before->value)) zset->adopt_numbers(*old);
+      }
       live.put(key, std::move(*entry));
     }
   } else {
@@ -1645,29 +1990,27 @@ void Database::run_locked(Session& session, const std::vector<std::string>& args
   const Spec* spec = find_spec(args[0]);
   resp::Reply reply(session.protocol);
   const size_t db = session.db;
-  if (_settings.agreements) {
-    const auto keys = spec->find_keys ? spec->find_keys(args) : keys_of(*spec, args);
-    if (_speculating) {
-      // A script or an EXEC by agreement touches its one key, in its one
-      // database, and nothing else.
-      for (const auto key : keys)
-        if (key != _scratch_key || db != _scratch_db) {
-          out.error("ERR Mimir runs a script or a transaction by agreement on its one key, and this command names another: '" + std::string(key) + "'");
-          return;
-        }
-      if (db != _scratch_db && has_flag(spec->flags, "write")) {
-        out.error("ERR Mimir runs a script or a transaction by agreement in its one database");
+  const auto keys = spec->find_keys ? spec->find_keys(args) : keys_of(*spec, args);
+  if (_speculating) {
+    // A script or an EXEC by agreement touches the keys it names, and
+    // nothing else (ruling 36: a script declares every key it writes).
+    for (const auto key : keys)
+      if (!_scratch_names.count(scoped(db, key))) {
+        out.error("ERR Mimir runs a script or a transaction by agreement on the keys it names, and this command names another: '" + std::string(key) + "'");
         return;
       }
-    } else if (has_flag(spec->flags, "write") && !keys.empty()) {
-      // A script that declared no key runs here, on this node's view: it
-      // reads, and a write must be made by agreement on a declared key.
-      out.error("ERR a script that writes a key must declare it: Mimir commits the write by agreement on that key");
+    if (!_scratches.count(db) && has_flag(spec->flags, "write")) {
+      out.error("ERR Mimir runs a script or a transaction by agreement in the databases it names");
       return;
     }
+  } else if (has_flag(spec->flags, "write") && !keys.empty()) {
+    // A script that declared no key runs here, on this node's view: it
+    // reads, and a write must be made by agreement on a declared key.
+    out.error("ERR a script that writes a key must declare it: Mimir commits the write by agreement on that key");
+    return;
   }
-  // An EXEC by agreement runs its queue against its own keyspace.
-  Call call{session, *this, _speculating && db == _scratch_db ? *_scratch : *_dbs[db], reply, args};
+  // An EXEC or a script by agreement runs against its own keyspaces.
+  Call call{session, *this, _speculating && _scratches.count(db) ? *_scratches.at(db) : *_dbs[db], reply, args};
   call.db = db;
   look_up_keys(*spec, args, db);
   feed_monitors(session, *spec, args, db);
@@ -1752,6 +2095,13 @@ void Database::touch(const Spec& spec, const std::vector<std::string>& args, siz
 }
 
 void Database::swap_locked(size_t a, size_t b) {
+  // SWAPDB by agreement exchanges its own keyspaces; the live ones take the
+  // commit.
+  if (_speculating) {
+    if (!_scratches.count(a) || !_scratches.count(b)) throw CommandError("ERR Mimir runs SWAPDB by agreement on the databases it names");
+    std::swap(_scratches.at(a), _scratches.at(b));
+    return;
+  }
   std::swap(_dbs.at(a), _dbs.at(b));
   bind_listeners();
   for (auto& [key, sessions] : _watchers) {
@@ -1786,8 +2136,10 @@ bool Database::watch_broken_locked(Session& session) {
   // An EXEC by agreement: a watched key is broken when its write count, as
   // the agreement found it, is not the one read at WATCH.
   if (_speculating) {
-    for (const auto& [named, serial] : session.watched_serials)
-      if (serial != _scratch_serial) return true;
+    for (const auto& [named, serial] : session.watched_serials) {
+      const auto found = _scratch_serials.find(named);
+      if (found == _scratch_serials.end() || found->second != serial) return true;
+    }
     return false;
   }
   if (session.watch_touched) return true;
@@ -1891,59 +2243,93 @@ void Database::serve_ready(Woken& woken) {
   }
 }
 
-std::string Database::finish_migrate(Session& session, const MigrateJob& job, const MigrateOutcome& outcome) {
+void Database::finish_migrate(Session& session, const MigrateJob& job, const MigrateOutcome& outcome, std::function<void(std::string reply)> done) {
   resp::Reply reply(session.protocol);
   if (outcome.unreachable) {
     reply.error("IOERR error or timeout writing to target instance");
-    return reply.take();
+    done(reply.take());
+    return;
   }
-  dannan::contract::Lock lock(_mutex);
-  _current = &session;
-  _own_invalidations.clear();
-  // AUTH's and SELECT's replies first; an error there is the target's
-  // answer for every key, and none is removed.
-  const size_t preamble = (job.password ? 1 : 0) + 1;
-  std::optional<std::string> refused;
-  for (size_t i = 0; i < preamble && i < outcome.replies.size(); ++i)
-    if (!outcome.replies[i].empty() && outcome.replies[i][0] == '-') refused = outcome.replies[i].substr(1);
-  std::vector<std::string> changed;
-  if (job.source_db < _dbs.size()) {
-    keyspace::Keyspace& keys = *_dbs[job.source_db];
-    const Spec* del = find_spec("del");
-    for (size_t i = 0; i < job.items.size() && preamble + i < outcome.replies.size(); ++i) {
-      const std::string& answer = outcome.replies[preamble + i];
-      if (!answer.empty() && answer[0] == '-') {
-        if (!refused) refused = answer.substr(1);
-        continue;
-      }
-      if (refused || job.copy) continue;
-      const auto& item = job.items[i];
-      keyspace::Entry* entry = keys.find(item.key);
-      if (!entry) continue;
-      // Changed while it was moving: the target has what it was, and it
-      // stays here (Valkey, which stops the world to move it, cannot see this).
-      if (keyspace::rdb::dump(*entry) != item.payload) {
-        changed.push_back(item.key);
-        continue;
-      }
-      keys.erase(item.key);
-      notify_locked(job.source_db, 'g', "del", item.key);
-      touch(*del, {"DEL", item.key}, job.source_db, &session);
+  // The reply goes once every removal is decided.
+  struct Gathered {
+    std::mutex mutex;
+    size_t left = 1;
+    std::string reply;
+    std::function<void(std::string)> done;
+  };
+  auto gathered = std::make_shared<Gathered>();
+  gathered->done = std::move(done);
+  const auto one_decided = [gathered] {
+    std::function<void(std::string)> finish;
+    {
+      std::lock_guard guard(gathered->mutex);
+      if (--gathered->left > 0) return;
+      finish = std::move(gathered->done);
     }
+    if (finish) finish(std::move(gathered->reply));
+  };
+  {
+    dannan::contract::Lock lock(_mutex);
+    _current = &session;
+    _own_invalidations.clear();
+    // AUTH's and SELECT's replies first; an error there is the target's
+    // answer for every key, and none is removed.
+    const size_t preamble = (job.password ? 1 : 0) + 1;
+    std::optional<std::string> refused;
+    for (size_t i = 0; i < preamble && i < outcome.replies.size(); ++i)
+      if (!outcome.replies[i].empty() && outcome.replies[i][0] == '-') refused = outcome.replies[i].substr(1);
+    std::vector<std::string> changed;
+    if (job.source_db < _dbs.size()) {
+      keyspace::Keyspace& keys = *_dbs[job.source_db];
+      for (size_t i = 0; i < job.items.size() && preamble + i < outcome.replies.size(); ++i) {
+        const std::string& answer = outcome.replies[preamble + i];
+        if (!answer.empty() && answer[0] == '-') {
+          if (!refused) refused = answer.substr(1);
+          continue;
+        }
+        if (refused || job.copy) continue;
+        const auto& item = job.items[i];
+        keyspace::Entry* entry = keys.find(item.key);
+        if (!entry) continue;
+        // Changed while it was moving: the target has what it was, and it
+        // stays here (Valkey, which stops the world to move it, cannot see this).
+        if (keyspace::rdb::dump(*entry) != item.payload) {
+          changed.push_back(item.key);
+          continue;
+        }
+        // Removed by agreement, only while it still holds what was moved.
+        auto removal = std::make_shared<Proposal>();
+        removal->remove_if = item.payload;
+        removal->db = job.source_db;
+        removal->key = item.key;
+        removal->operation = _settings.agreements->operation_id();
+        removal->issued_ms = _wall.unix_ms();
+        removal->deadline_ms = removal->issued_ms + proposal_deadline_ms;
+        removal->finished = one_decided;
+        {
+          std::lock_guard guard(gathered->mutex);
+          ++gathered->left;
+        }
+        _pending.push_back(std::move(removal));
+      }
+    }
+    if (outcome.read_failed && !refused) {
+      reply.error("IOERR error or timeout reading to target instance");
+    } else if (refused) {
+      reply.error("ERR Target instance replied with error: " + *refused);
+    } else if (!changed.empty()) {
+      reply.error("ERR MIGRATE: key '" + changed.front() + "' changed while it was moving; the target has its earlier value and it is kept here");
+    } else {
+      reply.simple("OK");
+    }
+    std::string bytes = reply.take();
+    publish_events();
+    flush_tracking_locked(&bytes);
+    std::lock_guard guard(gathered->mutex);
+    gathered->reply = std::move(bytes);
   }
-  if (outcome.read_failed && !refused) {
-    reply.error("IOERR error or timeout reading to target instance");
-  } else if (refused) {
-    reply.error("ERR Target instance replied with error: " + *refused);
-  } else if (!changed.empty()) {
-    reply.error("ERR MIGRATE: key '" + changed.front() + "' changed while it was moving; the target has its earlier value and it is kept here");
-  } else {
-    reply.simple("OK");
-  }
-  std::string out = reply.take();
-  publish_events();
-  flush_tracking_locked(&out);
-  return out;
+  start_pending();
+  one_decided();
 }
 
 std::optional<std::string> Database::cancel_wait(uint64_t id) {

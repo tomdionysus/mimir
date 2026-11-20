@@ -272,9 +272,16 @@ class Connection : public std::enable_shared_from_this<Connection> {
   }
 
   void migrated(const command::MigrateJob& job, const command::MigrateOutcome& outcome) {
+    // Finished whether or not the client is still here: what moved is removed
+    // by agreement, and the answer comes once it is.
+    auto self = shared_from_this();
+    _server->_database.finish_migrate(_session, job, outcome, [self](std::string reply) {
+      boost::asio::post(self->_stream->get_executor(), [self, reply = std::move(reply)]() mutable { self->answered_migrate(std::move(reply)); });
+    });
+  }
+
+  void answered_migrate(std::string reply) {
     _migrating = false;
-    // Finished whether or not the client is still here: what moved is gone.
-    std::string reply = _server->_database.finish_migrate(_session, job, outcome);
     if (_closing) return;
     if (!_session.reply_off) _stream->send(std::move(reply));
     process();

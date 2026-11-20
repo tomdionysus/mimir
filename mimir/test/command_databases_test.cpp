@@ -18,27 +18,17 @@
 namespace mimir::test {
 namespace {
 
-struct Sixteen {
-  dannan::test::SteppedWall wall;
-  command::Database database{wall, settings()};
-  command::Session session = make();
+struct Sixteen : Bed {
+  Sixteen() : Bed(settings()) {}
 
   static command::DatabaseSettings settings() {
     command::DatabaseSettings s;
     s.databases = 16;
     return s;
   }
-  command::Session make() {
-    command::Session s;
-    s.id = database.next_client_id();
-    return s;
-  }
-  std::string run(command::Session& on, std::vector<std::string> args) {
-    std::string out;
-    database.execute(on, args, out);
-    return out;
-  }
-  std::string run(std::vector<std::string> args) { return run(session, std::move(args)); }
+  command::Session make() { return make_session(); }
+  std::string run(command::Session& on, std::vector<std::string> args) { return run_as(on, std::move(args)); }
+  std::string run(std::vector<std::string> args) { return run_as(session, std::move(args)); }
 };
 
 TEST(CommandDatabases, OneByDefault) {

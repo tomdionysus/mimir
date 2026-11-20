@@ -43,11 +43,18 @@ struct Waiter {
     made.id = bed.database.next_client_id();
     return made;
   }
-  // Runs a command that may park; its immediate reply, if any.
+  // Runs a command that may park; its reply once its agreement is decided,
+  // if it has one, or none while it waits.
   std::string run(std::vector<std::string> args) {
     std::string out;
+    woken.reset();
     auto executed = bed.database.execute(session, args, out, [this](std::string reply) { woken = std::move(reply); });
     wait = executed.wait;
+    bed.settle();
+    if (wait && woken) {
+      wait.reset();
+      return *std::exchange(woken, std::nullopt);
+    }
     return out;
   }
 };
@@ -63,8 +70,8 @@ TEST(CommandBlocking, AnswersAtOnceWhenSomethingIsThere) {
 
 TEST(CommandBlocking, WithNowhereToWaitItAnswersItsTimeoutAtOnce) {
   Bed bed;
-  EXPECT_EQ(bed.run({"BLPOP", "empty", "0"}), "*-1\r\n");
-  EXPECT_EQ(bed.run({"BLMOVE", "empty", "dst", "LEFT", "RIGHT", "1"}), nil());
+  EXPECT_EQ(bed.run_unwaited({"BLPOP", "empty", "0"}), "*-1\r\n");
+  EXPECT_EQ(bed.run_unwaited({"BLMOVE", "empty", "dst", "LEFT", "RIGHT", "1"}), nil());
   EXPECT_EQ(bed.database.waiting(), 0u);
 }
 

@@ -25,6 +25,7 @@
 #include "dannan/contract/time_source.h"
 #include "mimir/command/acl.h"
 #include "mimir/command/agreements.h"
+#include "mimir/command/args.h"
 #include "mimir/command/pubsub.h"
 #include "mimir/command/scripting.h"
 #include "mimir/command/table.h"
@@ -74,10 +75,9 @@ struct DatabaseSettings {
   // thread under the database's lock: it must only post the stop. None: a
   // client cannot stop this node.
   std::function<void()> shutdown;
-  // The cluster (stage 3): every write naming one key commits by agreement,
-  // and one naming more is refused until Dannan's atomic commit across replica
-  // sets (ruling 35). None: the
-  // database runs every command on its own keyspace.
+  // The cluster: every write commits by agreement (ruling 34). Required; a
+  // write of several keys is refused where the agreements cannot commit
+  // several at once (ruling 35).
   std::shared_ptr<Agreements> agreements;
   // Every active node's client address, this one's included (MIMIR NODES,
   // ruling 40). Called under the database's lock: it must only read. None:
@@ -131,10 +131,12 @@ class Database {
   Executed execute(Session& session, const std::vector<std::string>& args, std::string& out, Wake wake = nullptr);
 
   // MIGRATE's end, once its connection has talked with the target: each key
-  // the target took is removed here (unless COPY), but only if it has not
-  // changed since it was read, and the reply's bytes are returned, as Valkey
-  // answers. Thread-safe.
-  std::string finish_migrate(Session& session, const MigrateJob& job, const MigrateOutcome& outcome);
+  // the target took is removed by agreement (unless COPY), but only while it
+  // holds what was moved, and `done` is given the reply's bytes once every
+  // removal is decided, as Valkey answers only once the keys are gone. `done`
+  // is called on the thread that decides the last, or at once when there is
+  // none; the caller posts it on. Thread-safe.
+  void finish_migrate(Session& session, const MigrateJob& job, const MigrateOutcome& outcome, std::function<void(std::string reply)> done);
 
   // Ends wait `id` at its timeout or its connection's close: the timeout
   // reply's bytes when it was still parked; none when a write served it first
@@ -172,7 +174,13 @@ class Database {
   // The databases, for SELECT, MOVE, SWAPDB, COPY ... DB, FLUSHALL and INFO.
   // Fixed at construction, so read without the lock.
   size_t databases() const noexcept DANNAN_NO_THREAD_SAFETY_ANALYSIS { return _dbs.size(); }
-  keyspace::Keyspace& db_locked(size_t index) DANNAN_REQUIRES(_mutex) { return *_dbs.at(index); }
+  // During a speculative run, its own keyspace of that database; one it does
+  // not name is refused.
+  keyspace::Keyspace& db_locked(size_t index) DANNAN_REQUIRES(_mutex) {
+    if (!_speculating) return *_dbs.at(index);
+    if (!_scratches.count(index)) throw CommandError("ERR Mimir runs this by agreement on the databases it names");
+    return *_scratches.at(index);
+  }
   // SWAPDB: the two exchange their keys; watches on either break.
   void swap_locked(size_t a, size_t b) DANNAN_REQUIRES(_mutex);
   // The lock the transaction commands are called under, for their annotations.
@@ -252,6 +260,23 @@ class Database {
     std::string operation;
     uint64_t issued_ms = 0;
     uint64_t deadline_ms = 0;
+    // Every key it names, in its databases, when it names more than one (a
+    // change of several keys: rulings 22 and 29); empty for one, `db` and
+    // `key` then naming it.
+    std::vector<Agreements::Name> names;
+    // MIGRATE's removal of a key it moved: only while the key still holds
+    // this payload (a write since keeps it). No spec, no waiter.
+    std::optional<std::string> remove_if;
+    // Called once it is decided, whatever the outcome (MIGRATE's answer
+    // waits for its removals).
+    std::function<void()> finished;
+    // A blocking pop proposed again because a write made one of its keys
+    // ready: a key now of another type serves it nothing, and it waits on.
+    bool woken = false;
+    // Each key's committed version in this node's view when this attempt was
+    // made: a blocking pop that finds nothing is tried again at once only if
+    // one of its keys has been written since.
+    std::vector<std::string> seen;
     // Not a client's command: the deletion of a key this node's view found
     // expired, which commits only if the key is expired at `issued_ms` in
     // the agreed record (a later EXPIRE elsewhere wins). No spec, no waiter.
@@ -339,6 +364,20 @@ class Database {
   // its own: the record it leaves and the result (its reply and the
   // notifications it would raise). Nothing outside it changes.
   Agreements::Changed speculate(const Proposal& proposal, const cluster::Record& base) DANNAN_EXCLUDES(_mutex);
+  // The same over every key it names, each in a keyspace of its database
+  // holding only the named keys (`bases` in the order named).
+  Agreements::ChangedKeys speculate_keys(const Proposal& proposal, const std::vector<cluster::Record>& bases) DANNAN_EXCLUDES(_mutex);
+  // MIGRATE's removal of a moved key: the key deleted while it still holds
+  // the payload moved, otherwise nothing changed.
+  Agreements::Changed speculate_removal(const Proposal& proposal, const cluster::Record& base);
+  // The keys a write names, in their databases: its own, MOVE's and COPY's
+  // target, every key of this node's view for the flushes and SWAPDB, and an
+  // EXEC's queue's and watches'.
+  std::vector<Agreements::Name> names_locked(const Spec& spec, const std::vector<std::string>& args, const Session& session, size_t db) DANNAN_REQUIRES(_mutex);
+  // The versions this node's view holds of a proposal's keys, now.
+  std::vector<std::string> versions_of_locked(const Proposal& proposal) DANNAN_REQUIRES(_mutex);
+  // The outcome of a change of several keys.
+  void decided_keys(const std::shared_ptr<Proposal>& proposal, Agreements::KeysOutcome outcome);
   // Proposes it, and answers its connection once it is decided.
   void propose(std::shared_ptr<Proposal> proposal) DANNAN_EXCLUDES(_mutex);
   void decided(const std::shared_ptr<Proposal>& proposal, Agreements::Outcome outcome) DANNAN_EXCLUDES(_mutex);
@@ -489,12 +528,11 @@ class Database {
   // Set while a write looks its own key up before proposing: an expiry it
   // finds is its own speculation's to take out, not a separate proposal's.
   bool _writing_lookup DANNAN_GUARDED_BY(_mutex) = false;
-  keyspace::Keyspace* _scratch DANNAN_GUARDED_BY(_mutex) = nullptr;
-  size_t _scratch_db DANNAN_GUARDED_BY(_mutex) = 0;
-  uint64_t _scratch_serial DANNAN_GUARDED_BY(_mutex) = 0;
-  // The one key a speculative run may touch: a script's or an EXEC's command
-  // naming another is refused.
-  std::string _scratch_key DANNAN_GUARDED_BY(_mutex);
+  // A speculative run's own keyspace of each database it names, the keys it
+  // may touch (scoped), and each one's write count as the agreement found it.
+  std::map<size_t, keyspace::Keyspace*> _scratches DANNAN_GUARDED_BY(_mutex);
+  std::set<std::string> _scratch_names DANNAN_GUARDED_BY(_mutex);
+  std::map<std::string, uint64_t> _scratch_serials DANNAN_GUARDED_BY(_mutex);
 };
 
 }  // namespace mimir::command

@@ -28,8 +28,8 @@ using Args = std::vector<std::string>;
 
 // A node whose AUTH is taken on plaintext connections, as the differential
 // runs it, with sessions made on it.
-struct AclBed {
-  explicit AclBed(command::DatabaseSettings settings = plaintext()) : database(wall, std::move(settings)) { session = make(); }
+struct AclBed : Bed {
+  explicit AclBed(command::DatabaseSettings settings = plaintext()) : Bed(std::move(settings)) {}
 
   static command::DatabaseSettings plaintext() {
     command::DatabaseSettings s;
@@ -39,22 +39,7 @@ struct AclBed {
 
   // Welcomed by its first command, where it then lives: the database keeps
   // its address, so a session is never welcomed and then moved.
-  command::Session make() {
-    command::Session made;
-    made.id = database.next_client_id();
-    return made;
-  }
-
-  std::string run(Args args) { return run_as(session, std::move(args)); }
-  std::string run_as(command::Session& who, Args args) {
-    std::string out;
-    database.execute(who, args, out);
-    return out;
-  }
-
-  dannan::test::SteppedWall wall;
-  command::Database database;
-  command::Session session;
+  command::Session make() { return make_session(); }
 };
 
 // ACL LIST's line for one user.
@@ -429,8 +414,7 @@ TEST(Acl, UsersAreSeededFromTheSettings) {
   EXPECT_EQ(bed.run_as(fresh, {"SET", "app:x", "1"}), error("NOPERM User alice has no permissions to run the 'set' command"));
   command::DatabaseSettings bad;
   bad.users = {"user bob bogus"};
-  dannan::test::SteppedWall wall;
-  EXPECT_THROW({ command::Database refused(wall, bad); }, std::invalid_argument);
+  EXPECT_THROW({ Bed refused(bad); }, std::invalid_argument);
 }
 
 TEST(Acl, EveryCommandHasCategories) {

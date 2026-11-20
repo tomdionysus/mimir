@@ -24,11 +24,9 @@ namespace {
 
 using namespace std::chrono_literals;
 
-struct World {
-  dannan::test::SteppedWall wall;
-  command::Database database{wall, settings()};
-  command::Session client = make();
-  command::Session listener = make();
+struct World : Bed {
+  command::Session& client = session;
+  command::Session listener = make_session();
   std::vector<std::string> events;
 
   static command::DatabaseSettings settings() {
@@ -36,12 +34,8 @@ struct World {
     s.databases = 16;
     return s;
   }
-  command::Session make() {
-    command::Session s;
-    s.id = database.next_client_id();
-    return s;
-  }
-  World() {
+  command::Session make() { return make_session(); }
+  World() : Bed(settings()) {
     // Each pushed pattern message as "channel message".
     listener.push = [this](std::string bytes) {
       std::vector<std::string> parts;
@@ -53,13 +47,7 @@ struct World {
       }
       if (parts.size() == 4 && parts[0] == "pmessage") events.push_back(parts[2] + " " + parts[3]);
     };
-    std::string out;
-    database.execute(listener, {"PSUBSCRIBE", "__key*@*__:*"}, out);
-  }
-  std::string run(std::vector<std::string> args) {
-    std::string out;
-    database.execute(client, args, out);
-    return out;
+    run_as(listener, {"PSUBSCRIBE", "__key*@*__:*"});
   }
   std::vector<std::string> take() { return std::exchange(events, {}); }
 };
