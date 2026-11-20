@@ -9,7 +9,7 @@
 [![Platform: Linux x86-64 and arm64](https://img.shields.io/badge/platform-Linux%20x86--64%20%7C%20arm64-lightgrey.svg)](.github/workflows/ci.yml)
 [![Protocol: RESP2 and RESP3](https://img.shields.io/badge/protocol-RESP2%20%7C%20RESP3-informational.svg)](#use-it-from-a-client)
 [![Compatibility: Valkey 8](https://img.shields.io/badge/compatible-Valkey%208-informational.svg)](docs/overview.md)
-[![Built on Dannan](https://img.shields.io/badge/built%20on-Dannan%200.9.2-informational.svg)](https://github.com/tomdionysus/dannan)
+[![Built on Dannan](https://img.shields.io/badge/built%20on-Dannan%200.10.0-informational.svg)](https://github.com/tomdionysus/dannan)
 
 Mimir is a distributed database for a cluster of trusted machines that speaks the Redis
 protocol. A client connects to any node, over RESP2 or RESP3, and every command works,
@@ -31,7 +31,7 @@ on Dannan's `libdannan` package and Debian's Lua libraries
 ([docs/packaging.md](docs/packaging.md)). With both packages in hand:
 
 ```
-sudo apt install ./libdannan0.9_*.deb ./mimir_*.deb
+sudo apt install ./libdannan0.10_*.deb ./mimir_*.deb
 ```
 
 The package installs `/usr/bin/mimir-node`, the manual page `mimir-node(1)`,

@@ -12,8 +12,6 @@
 
 #include "mimir/command/scripting.h"
 
-#include <openssl/evp.h>
-
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -22,6 +20,8 @@
 #include <utility>
 #include <vector>
 
+#include "dannan/encoding/base.h"
+#include "dannan/identity/crypto.h"
 #include "mimir/command/args.h"
 #include "mimir/command/database.h"
 #include "mimir/command/handlers.h"
@@ -44,16 +44,7 @@ int luaopen_cmsgpack(lua_State* L);
 namespace mimir::command {
 
 std::string sha1_hex(std::string_view bytes) {
-  unsigned char digest[EVP_MAX_MD_SIZE];
-  unsigned int length = 0;
-  EVP_Digest(bytes.data(), bytes.size(), digest, &length, EVP_sha1(), nullptr);
-  std::string out;
-  char hex[3];
-  for (unsigned int i = 0; i < length; ++i) {
-    std::snprintf(hex, sizeof(hex), "%02x", digest[i]);
-    out += hex;
-  }
-  return out;
+  return dannan::encoding::hex(dannan::identity::sha1(std::span(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size())));
 }
 
 namespace {

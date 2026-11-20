@@ -63,6 +63,6 @@ target_include_directories(mimir
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
 )
 target_link_libraries(mimir
-  PUBLIC dannan::dannan Boost::headers OpenSSL::SSL OpenSSL::Crypto Threads::Threads
+  PUBLIC dannan::dannan Boost::headers Threads::Threads
   PRIVATE mimir_warnings PkgConfig::LUA51 PkgConfig::LUA51_CJSON PkgConfig::LUA51_BITOP ${MIMIR_LUA51_CMSGPACK}
 )

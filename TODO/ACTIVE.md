@@ -10,15 +10,16 @@ The stack's placement plan has converged (2026-11-20; Mimir agreed). Mimir's
 list is "The converged plan" -> "Mimir" in
 `../stack-coordinator/TODO/2026-11-20-cluster-stack-placement.md`:
 
-1. Pin 0.9.2. Done.
+1. Pin 0.9.2. Done. Pin 0.10.0, Dannan's next minor: done with the
+   packaging (see "Release" below for what it changed).
 2. `mimir/cluster/store.*` onto Dannan's in-memory AcceptorStore when it
    lands (all six of Mimir's conditions accepted); Dagda's durable
    value-less form at stage 5.
 3. Routes 600 and 601, operation ids and `version_of` onto Dannan's
    register layer when it lands (held(slot) becomes a catch_up exchange).
 4. Pub/sub subscribes by prefix. Done (`0ff90ef`).
-5. SHA-1 and hex onto Dannan's; AUTH throttled per client address on
-   Dannan's keyed map. Both wait on Dannan.
+5. SHA-1 and hex onto Dannan's: done with the 0.10.0 pin. AUTH throttled
+   per client address on Dannan's keyed map: waits on Dannan.
 6. Stage 3 step 4 (placement by transfer) is not written by Mimir: replica
    sets kept whole come from Dannan. Expiry on the bounded hybrid clock.
 7. The node binary onto Dannan's helper; fuzz onto Dannan's export.
@@ -43,9 +44,8 @@ State on 2026-11-20:
   runs: `SMOVE s s2 b` is refused (ruling 35), so Mimir's `s` holds "b" and
   "c" where Valkey's holds "c", and the next `SPOP s` picks at random. A
   knock-on of the refusal, not a defect; it goes with the atomic commit.
-- Dannan is pinned at 0.9.2 (2026-11-20), the stack's version. On a build server,
-  clone `build/dannan-full-0.9.1.bundle`, then fetch
-  `build/dannan-0.9.2.bundle`'s tag.
+- Dannan is pinned at 0.10.0 (2026-11-20, tag e893cad). On a build server,
+  fetch it from its GitHub repository (`MIMIR_DANNAN_REPOSITORY`).
 - The build servers were wiped to bare OS on 2026-11-18. The work tree is back on
   node-c only (`/root/mimir-work`, with Dannan, the Lua dev
   packages and Valkey 8.1.1). Another build server needs the same: see "How work is
@@ -209,12 +209,18 @@ reads a freed node, when a node stops with a store completion in flight
 clean. The packaging and the README for installation and use are on
 `feature/packaging`, squashed with the repin.
 
-The repin reviewed against Dannan's 0.10.0 changelog (develop e9aac3d, read
-before the tag; check again at the tag that fix/agreement-lifetime is in it):
+The repin, reviewed against Dannan 0.10.0's changelog and its "Adopting
+0.10.0" (tag e893cad, which carries fix/agreement-lifetime):
 - `identity::sha1`: replaces Mimir's own `sha1_hex` (scripting.cpp, OpenSSL's
-  EVP directly), with `identity::hex`. That was Mimir's only direct use of
-  OpenSSL, so `OpenSSL::SSL OpenSSL::Crypto` leave mimir's link line and
-  `find_package(OpenSSL)` goes; Dannan brings them. Change in the repin.
+  EVP directly), with `encoding::hex`. That was Mimir's only direct use of
+  OpenSSL, so `OpenSSL::SSL OpenSSL::Crypto` leave mimir's link line,
+  `find_package(OpenSSL)` goes and libssl-dev leaves Build-Depends; Dannan
+  brings them (libdannan-dev depends on libssl-dev). Done.
+- Deleted, as "Adopting 0.10.0" says: mimir-node's two posted turns before
+  the agreements and the node go, which kept them alive until the store's
+  completions had run. The order Mimir's own objects go in (agreements
+  before the space they hold by reference) stays. The ASan client run is
+  the check.
 - `agree::MemoryStore`: the same store as Mimir's `cluster::Store`, which
   should go (no duplication). Not yet: Mimir reads `held(slot)` (every name a
   slot holds, with its state) for catch-up and to fill a node's view, and
@@ -226,7 +232,7 @@ before the tag; check again at the tag that fix/agreement-lifetime is in it):
   shifts the indices and a peer catching up would miss one.
 - `durable_sync_directory`: --init-state's marker removal uses
   `posix_file_system().remove` and `sync_directory`; equivalent, but the
-  stack's helper is the one to use. Change in the repin.
+  stack's helper is the one to use. Done.
 - `encoding/base.h`: `valid_hash` (acl.cpp) checks 64 lower hex digits by
   hand; kept, since Valkey requires lower-case hex there and a decoder's
   question (does it decode) is not that one.
@@ -235,7 +241,9 @@ before the tag; check again at the tag that fix/agreement-lifetime is in it):
   before its first line already); `RetryPolicy::unbounded`, `RandomId`,
   `dannan::testing` (no use here: RANDOMKEY's generator is not a secret, and
   the fuzz targets are libFuzzer's); `Prefix::parse` (Mimir parses no
-  prefixes).
+  prefixes); `test::RecordingSink` (Mimir's tests capture no log lines by
+  scope). The packages' CI step already uses `install-debs`, and the
+  sanitizer steps already pass `DANNAN_SANITIZE` and check the symbols.
 
 The deb follows the stack's convention (the stack's coordinating session,
 2026-11-20; read Manannan's docs/packaging.md and debian/, and Dannan's and
@@ -245,7 +253,7 @@ Dagda's debian/, first):
   tools/build-deb.sh (Dannan's is the reference layout); built on a claimed
   build server and in CI's package step;
   lintian clean.
-- Dannan from libdannan0.9 through ${shlibs:Depends}: CMake finds an
+- Dannan from libdannan0.10 through ${shlibs:Depends}: CMake finds an
   installed Dannan first and fetches only when none is found. The Lua
   libraries likewise.
 - Package `mimir` only (no headers, so no mimir-dev): libmimir is built

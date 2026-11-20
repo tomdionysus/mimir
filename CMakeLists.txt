@@ -25,7 +25,6 @@ option(MIMIR_BUILD_CLIENT_TESTS "Build mimir_client_tests: hiredis against a rea
 option(MIMIR_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
 find_package(Boost 1.83 CONFIG REQUIRED COMPONENTS headers)
-find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto SSL)
 find_package(Threads REQUIRED)
 # Scripting's interpreter: Debian's Lua 5.1 (ruling 20), the version Valkey's
 # scripts are written for.
@@ -51,7 +50,7 @@ set(MIMIR_DANNAN_REPOSITORY "${CMAKE_CURRENT_SOURCE_DIR}/../dannan" CACHE STRING
 option(MIMIR_FETCH_DANNAN "Fetch Dannan at its tag when no installed release of its minor is found" ON)
 # Not a cache variable: a moved pin must take effect in a build tree that
 # already exists.
-set(MIMIR_DANNAN_TAG "0.9.2")
+set(MIMIR_DANNAN_TAG "0.10.0")
 # A sanitizer build instruments every stack library it links, so it always
 # builds Dannan from source with the same flags, never an installed copy.
 set(MIMIR_SANITIZED OFF)
