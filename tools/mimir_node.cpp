@@ -22,6 +22,12 @@
 // temporary state directory, its cluster port on loopback, removed at exit.
 // Without `genesis`, a node with no bootstrap peers founds the cluster alone.
 //
+// A cluster of several founders names each in every founder's `genesis`, so
+// each founder's id is made first: `mimir-node --cluster-state DIR
+// --init-state` makes DIR and the node's id, prints
+// {"event":"initialised","id":"..."} and exits. Its state stays new (its
+// acceptors vote at once) until its first start, and never again after.
+//
 // Every setting is also a key in a YAML file (--config PATH, $MIMIR_CONFIG, or
 // /usr/local/etc/mimir/config.yaml when it exists), in secrets.yaml beside
 // it, or a MIMIR_* variable, the flags winning: `--port 6379` is
@@ -34,6 +40,7 @@
 //   mimir-node [--listen ADDR] [--port N] [--databases N] [--tls-port N --tls-certificate PEM --tls-key PEM]
 //              [--tls-client-ca PEM] [--auth-plaintext] [--user LINE]... [--seconds N] [--log-level LEVEL]
 //              [--log-format text|json]
+//   mimir-node --cluster-state DIR --init-state
 //   mimir-node --version
 
 #include <signal.h>
@@ -63,10 +70,12 @@
 #include "dannan/config/config.h"
 #include "dannan/identity/cluster_key.h"
 #include "dannan/identity/crypto.h"
+#include "dannan/identity/durable_file.h"
 #include "dannan/identity/node_identity.h"
 #include "dannan/listen/listener.h"
 #include "dannan/node.h"
 #include "dannan/status/log.h"
+#include "dannan/storage/file_system.h"
 #include "mimir/cluster/agreements.h"
 #include "mimir/cluster/fanout.h"
 #include "mimir/cluster/space.h"
@@ -109,10 +118,15 @@ dannan::config::Reader reader() {
       Setting{"seconds", Setting::Kind::value, "--seconds", "", "seconds to run, 0 for ever"},
       Setting{"log.level", Setting::Kind::value, "--log-level", "MIMIR_LOG_LEVEL", "ALL, DEBUG, INFO, WARN or ERROR"},
       Setting{"log.format", Setting::Kind::value, "--log-format", "MIMIR_LOG_FORMAT", "text or json"},
+      Setting{"init_state", Setting::Kind::toggle, "--init-state", "", "make cluster.state and the node's id, print the id, and exit"},
       Setting{"version", Setting::Kind::toggle, "--version", "", "print the version and exit"},
   };
   return r;
 }
+
+// Beside the node id of a state made by --init-state and never started: the
+// node is new, and votes at once, on its first start alone.
+inline constexpr const char* never_started = "never-started";
 
 std::mutex output;
 
@@ -181,6 +195,17 @@ int main(int argc, char** argv) {
       std::cout << "mimir-node " << mimir::version << std::endl;
       return 0;
     }
+    if (settings.toggle("init_state").value_or(false)) {
+      const auto state = settings.path_of("cluster.state");
+      if (!state) throw dannan::config::ConfigError("--init-state needs cluster.state");
+      if (std::filesystem::exists(*state / "node-id")) throw dannan::config::ConfigError("cluster.state already holds a node id: " + state->string());
+      // The id first: a crash between the two leaves a node that counts as
+      // restarted, which catches up before it votes, never the reverse.
+      const auto id = dannan::identity::load_or_create_node_id(*state);
+      dannan::identity::durable_replace_file(*state / never_started, "");
+      std::cout << "{\"event\":\"initialised\",\"id\":\"" << dannan::identity::to_string(id) << "\"}" << std::endl;
+      return 0;
+    }
     const auto level = dannan::status::parse_log_level(settings.text("log.level").value_or("INFO"));
     const auto format = dannan::status::parse_log_format(settings.text("log.format").value_or("text"));
     auto sink = std::make_shared<dannan::status::AsyncSink>(dannan::status::console_sink(format, level));
@@ -225,9 +250,18 @@ int main(int argc, char** argv) {
       node_config.listen_host = "127.0.0.1";
       node_config.port = 0;
     }
-    // A node whose state is new never voted, so its acceptors may vote at once.
-    const bool fresh = !std::filesystem::exists(node_config.state_path / "node-id");
+    // A node whose state is new never voted, so its acceptors may vote at once:
+    // one with no id yet, or one made by --init-state and never started.
+    const auto unstarted = node_config.state_path / never_started;
+    const bool fresh = !std::filesystem::exists(node_config.state_path / "node-id") || std::filesystem::exists(unstarted);
     const auto self = dannan::identity::load_or_create_node_id(node_config.state_path);
+    // Spent, durably, before this node can vote: started once, it is never new
+    // again.
+    if (std::filesystem::exists(unstarted)) {
+      auto& fs = dannan::storage::posix_file_system();
+      if (!fs.remove(unstarted) || !fs.sync_directory(node_config.state_path))
+        throw std::runtime_error("cannot remove " + unstarted.string() + ": the node would vote as new at its next start");
+    }
     if (genesis.empty() && bootstrap.empty()) genesis.push_back(self);
     const bool founder = std::find(genesis.begin(), genesis.end(), self) != genesis.end();
     node_config.advertise_host = settings.text("cluster.advertise").value_or("");
