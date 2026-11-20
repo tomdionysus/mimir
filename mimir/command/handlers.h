@@ -8,10 +8,13 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "mimir/command/acl.h"
 #include "mimir/command/table.h"
 
 // The commands' handlers, one file per group, gathered by the table. Internal
@@ -327,6 +330,10 @@ std::string client_line(const Session& session, uint64_t now_ms);
 
 namespace acl {
 void acl(Call&);
+// A user's channel permissions narrowed from `before` to `after`: those of
+// its subscribed connections whose subscriptions the new permissions refuse,
+// which are closed, as Valkey closes them. Under the database's lock.
+std::vector<Session*> refused_subscribers(Database& database, const std::map<int64_t, Session*>& sessions, const Acl::User& before, const Acl::User& after);
 }  // namespace acl
 
 }  // namespace mimir::command
