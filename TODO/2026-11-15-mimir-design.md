@@ -206,8 +206,16 @@ next, is `TODO/ACTIVE.md`.
     `redis_version:7.2.4` and `valkey_version:8.1.1` as Valkey 8.1.1 does,
     plus `mimir_version`. Scripts see SERVER_NAME "mimir".
 
+43. **Mimir's persistence layer is Dagda** (2026-11-20, the maintainer: "Your
+    persistence layer must be Dagda from now on"). Everything Mimir keeps
+    across a restart is kept in Dagda: acceptor state, checkpoints of
+    values, and anything later. Mimir writes no durable file, log or format
+    of its own. Dannan keeps its own node state (identity, roster), which is
+    not Mimir's. Until stage 5, Mimir keeps nothing durable at all.
+
 Settled from the group's direction, not ruled (the maintainer, 2026-11-20: "You
-should be able to answer this from the group direction"):
+should be able to answer this from the group direction"), and now under
+ruling 43:
 - **Persistence (stage 5): Dagda's durable AcceptorStore in its value-less
   form.** Dagda keeps ballots, summaries and deltas in one fenced,
   group-committed log per space; Mimir keeps the values in its keyspace and

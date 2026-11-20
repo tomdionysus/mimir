@@ -1,7 +1,7 @@
 # Mimir - Active Work
 
 Last updated: 2026-11-20. `COMPLETED.md` is the record, with gate counts. The
-design is `TODO/2026-11-15-mimir-design.md`: The maintainer's rulings (1 to 42), the two
+design is `TODO/2026-11-15-mimir-design.md`: The maintainer's rulings (1 to 43), the two
 classes of command, agreement in Dannan, durability, and the order.
 
 ## Resume here
@@ -180,8 +180,13 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the build server
   slot table to change its count, which goes to the stack plan.
 - HELLO, INFO and SERVER_NAME as ruling 42 says: check what is built
   against it.
-- Stage 5 on Dagda's value-less durable store (the design, after ruling
-  42).
+- Stage 5 on Dagda's value-less durable store. Ruling 43 (the maintainer,
+  2026-11-20): Mimir's persistence layer is Dagda; Mimir writes no durable
+  file, log or format of its own.
+- From the stack plan, the maintainer's answers (2026-11-20): DNS for client addresses
+  is Dannan's responder (Mimir's part is MIMIR NODES); retiring a node stays
+  an operator command; registers order by the hybrid clock (stage 4's merge
+  rule already says so).
 
 ## What stage 3 rests on
 
