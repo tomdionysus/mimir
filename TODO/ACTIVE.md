@@ -261,7 +261,7 @@ Dagda's debian/, first):
 ## What stage 3 rests on
 
 Settled with Dannan in review (the record is in `COMPLETED.md`, "The Dannan
-0.9 reviews"); what the code relies on:
+0.9.0 reviews"); what the code relies on:
 
 - Agreement is per slot. Mimir's shard is Valkey's slot (CRC16 of the hash
   tag or key) mapped onto the shard count in contiguous ranges, so tagged

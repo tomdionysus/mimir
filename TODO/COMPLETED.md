@@ -309,12 +309,12 @@ The record, newest first. Each entry says what landed, with its gate counts.
   `/root/mimir-work` went, with the build trees and the per-case
   differential's runner.
 - Documents: `ACTIVE.md` rewritten as the plan and the resume note; its
-  history of the Dannan 0.9 reviews moved to the entry below; the design's
+  history of the Dannan 0.9.0 reviews moved to the entry below; the design's
   stale statements corrected against the rulings; `README.md`,
   `CONTRIBUTING.md` and `CLAUDE.md` brought up to stage 3. No code changed,
   and nothing was built.
 
-## 2026-11-16 to 2026-11-17: The Dannan 0.9 reviews
+## 2026-11-16 to 2026-11-17: The Dannan 0.9.0 reviews
 
 Moved from `ACTIVE.md` on 2026-11-19. What Mimir asked of Dannan's agreement
 while it was built, and what Dannan took. The designs are in `../dannan/TODO/`.

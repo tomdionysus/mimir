@@ -354,7 +354,7 @@ What Mimir needs, as behaviour:
 Built: it shipped in Dannan 0.9.0 (2026-11-17), with everything below except
 several registers committing atomically, which is Dannan's item 26. How Mimir uses it
 is `TODO/ACTIVE.md`, "What stage 3 rests on"; the reviews are in
-`TODO/COMPLETED.md`, "The Dannan 0.9 reviews". The rest of this section is
+`TODO/COMPLETED.md`, "The Dannan 0.9.0 reviews". The rest of this section is
 the history of the request.
 
 Dannan's answer (2026-11-15; the maintainer confirmed ruling 6 to it directly): built in
