@@ -2,6 +2,37 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-20: The real-client gate: hiredis against a three-node cluster (ruling 44)
+
+- Built on `feature/hiredis-gate`, squashed onto develop.
+- `mimir_client_tests` (`-DMIMIR_BUILD_CLIENT_TESTS=ON`, Debian's
+  libhiredis-dev, test-only, never linked into mimir-node) starts three
+  mimir-node processes on loopback, every one a founder, through Dannan's
+  ChildProcess, TempDir and free_port fixtures, and drives them with hiredis:
+  - HELLO 3's map, and CLIENT SETINFO shown by CLIENT INFO;
+  - 200 pipelined writes answered in order, then read on both other nodes
+    under CLIENT STRICT ON (ruling 37);
+  - RESP3 maps, sets and doubles;
+  - PUBLISH on one node pushed to a RESP3 subscriber on another, and to a
+    RESP2 subscriber in subscribed mode, which refuses GET;
+  - MIMIR NODES naming all three, one of them self (ruling 40);
+  - WRONGTYPE, an unknown command and ruling 35's refusal as errors;
+  - a client whose node is killed (SIGKILL) reconnecting to another, which
+    reads its write and takes a new one, read on the third.
+- `tools/ci.sh client`, and a `client` job in hosted CI.
+- mimir-node `--init-state`: a cluster of several founders names each in
+  every founder's genesis, so each id is made first. It makes the state and
+  the id, prints `{"event":"initialised","id":"..."}`, and leaves a
+  `never-started` marker: that state votes as new on its first start alone,
+  the marker removed durably before the node can vote. Before this, a
+  multi-founder cluster could not be started from the command line (a state
+  with an id counted as restarted, and founders that all catch up first
+  never vote). The four-node registrar migration needs it too.
+- Gate: 8 of 8 on node-a (release, arm64). Also on 2026-11-20:
+  clang-tidy's bugprone-use-after-move over all 84 translation units and
+  Mimir's headers found 0, and runs in CI as the `tidy` job, warnings as
+  errors.
+
 ## 2026-11-20: One path: every write by agreement, on every node (the maintainer: no single-node case)
 
 - The maintainer, 2026-11-20: "there shall be NO special case code for a single node."
