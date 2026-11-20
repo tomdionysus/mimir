@@ -173,6 +173,21 @@ next, is `TODO/ACTIVE.md`.
     refused on a minority side. OFF, the default, gives ruling 32's plain
     reads. CLIENT INFO and CLIENT LIST show it.
 
+38. **No special nodes** (2026-11-20): asked whether a node outside a key's
+    replica set should forward, answer MOVED, or look like Valkey's cluster,
+    Tom: "There are no 'special' nodes. This is true for every function."
+    Every node answers every command for every key itself, as ruling 1 has
+    it: a node that holds no replica of a key forwards to one, and the
+    client never sees it. No MOVED, no client-visible topology; INFO keeps
+    `cluster_enabled:0`.
+
+39. **Scripts and functions are cluster state, by agreement** (2026-11-20):
+    FUNCTION LOAD, DELETE, FLUSH and RESTORE commit on one register, as the
+    users do (ruling 27). SCRIPT LOAD, and EVAL's caching, write the script
+    to a register named by its SHA; an EVALSHA that misses on its node reads
+    that register before answering NOSCRIPT. SCRIPT FLUSH clears its node's
+    cache only, and SCRIPT EXISTS answers for its node.
+
 ## Waiting on Tom
 
 `TODO/ACTIVE.md` keeps the list ("Waiting on Tom" and "Proposed, not yet put
@@ -191,8 +206,8 @@ to Tom"), so it is in one place.
   and held in memory on its replica set, which lives in the slot's own
   acceptors and moves only by Dannan's transfer(), proposed by placement
   (`placement::by_capacity` among nodes advertising `mimir`) as nodes join
-  and leave. A node outside the set forwards with `Routes::call`, or answers
-  `MOVED` to a cluster-aware client.
+  and leave. A node outside the set forwards with `Routes::call` (ruling 38:
+  never MOVED).
 - **Work classes** (Agreed, Dannan). A client command is foreground and runs on
   the connection's strand; replication a client's write waits on is foreground;
   catch-up is loader; checkpointing, eviction scans and anti-entropy are
