@@ -52,7 +52,8 @@ dannan::identity::ClusterKey cluster_key() {
 // run by two threads.
 class Cluster {
  public:
-  explicit Cluster(size_t size) : _work(boost::asio::make_work_guard(_io)) {
+  // `page`: how many names a node gives a catching-up peer at a time.
+  explicit Cluster(size_t size, size_t page = shard_names_page) : _page(page), _work(boost::asio::make_work_guard(_io)) {
     for (int i = 0; i < 2; ++i) _threads.emplace_back([this] { _io.run(); });
     std::vector<dannan::identity::NodeId> genesis;
     for (size_t i = 0; i < size; ++i) {
@@ -93,7 +94,7 @@ class Cluster {
     Agreements::register_types(nodes[i]->context());
     nodes[i]->start();
     spaces[i] = std::make_unique<Space>(nodes[i]->context(), ready);
-    agreements[i] = std::make_shared<Agreements>(*spaces[i]);
+    agreements[i] = std::make_shared<Agreements>(*spaces[i], std::chrono::seconds(5), _page);
     command::DatabaseSettings settings;
     settings.agreements = agreements[i];
     settings.notify_keyspace_events = "KA";
@@ -223,6 +224,7 @@ class Cluster {
     return got.get();
   }
 
+  const size_t _page;
   boost::asio::io_context _io;
   boost::asio::executor_work_guard<boost::asio::io_context::executor_type> _work;
   std::vector<std::thread> _threads;
@@ -459,6 +461,23 @@ TEST(ClusterDatabase, ANodeRestartedWithoutItsStateCatchesUpBeforeItVotes) {
     EXPECT_EQ(cluster.run(2, {"GET", "key:" + std::to_string(i)}), "$" + std::to_string(std::to_string(i).size()) + "\r\n" + std::to_string(i) + "\r\n") << i;
   EXPECT_EQ(cluster.run(2, {"INCR", "key:3"}), ":4\r\n");
   EXPECT_TRUE(cluster.eventually(0, {"GET", "key:3"}, "$1\r\n4\r\n"));
+}
+
+TEST(ClusterDatabase, ACatchUpOverManyPagesGathersEveryName) {
+  // Three names a page: each shard's names come in several pages, each
+  // resumed after the last name given.
+  Cluster cluster(3, 3);
+  ASSERT_TRUE(cluster.converged());
+  ASSERT_TRUE(cluster.found(0).committed);
+  constexpr int keys = 60;
+  for (int i = 0; i < keys; ++i) ASSERT_EQ(cluster.run(i % 2, {"SET", "key:" + std::to_string(i), std::to_string(i)}), "+OK\r\n");
+  cluster.restart(2);
+  ASSERT_TRUE(cluster.converged());
+  auto caught = std::make_shared<std::promise<void>>();
+  cluster.agreements[2]->recover([caught] { caught->set_value(); });
+  ASSERT_EQ(caught->get_future().wait_for(30s), std::future_status::ready);
+  for (int i = 0; i < keys; ++i)
+    EXPECT_EQ(cluster.run(2, {"GET", "key:" + std::to_string(i)}), "$" + std::to_string(std::to_string(i).size()) + "\r\n" + std::to_string(i) + "\r\n") << i;
 }
 
 TEST(ClusterDatabase, AnExpiryIsHeardOnceWhereverItIsFound) {

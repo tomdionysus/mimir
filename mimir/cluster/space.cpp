@@ -17,7 +17,7 @@
 
 namespace mimir::cluster {
 
-Space::Space(dannan::Context& context, bool ready) : _context(context), _store(std::make_shared<Store>(context.time().executor(), ready)) {
+Space::Space(dannan::Context& context, bool ready) : _context(context), _store(std::make_shared<dannan::agree::MemoryStore>(context.time().executor(), ready)) {
   const std::string version(mimir::version);
   _context.nodes().advertise(std::string(space), dannan::net::Bytes(version.begin(), version.end()));
   _context.agreement().serve(std::string(space), std::string(space), _store);

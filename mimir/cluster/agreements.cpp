@@ -8,6 +8,7 @@
 #include "mimir/cluster/agreements.h"
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -50,7 +51,8 @@ void Agreements::register_types(dannan::Context& context) {
   context.routes().add(shard_names, names);
 }
 
-Agreements::Agreements(Space& served, std::chrono::milliseconds deadline) : _space(served), _deadline(deadline) {
+Agreements::Agreements(Space& served, std::chrono::milliseconds deadline, size_t page)
+    : _space(served), _deadline(deadline), _page(std::clamp<size_t>(page, 1, shard_names_page)) {
   _space.context().routes().bind(commit_notice,
                                  [hook = _hook](const dannan::membership::NodeRecord&, dannan::sched::FrameType, const dannan::net::Message& request) {
                                    // Untrusted bytes: every length is bounded before anything is kept.
@@ -79,21 +81,29 @@ Agreements::Agreements(Space& served, std::chrono::milliseconds deadline) : _spa
                                    }
                                  });
   // A restarted peer's catch-up: a page of the names this node holds in a
-  // shard. A node catching up itself has none to give.
+  // shard, after the last name the peer was given. A page resumes from a name,
+  // not an index, so a name removed between pages cannot shift one past the
+  // peer. A node catching up itself has none to give.
   _space.context().routes().bind(shard_names, [this](const dannan::membership::NodeRecord&, dannan::sched::FrameType, const dannan::net::Message& request) {
     try {
       dannan::net::Reader in(request.payload);
       const uint32_t slot = in.u32();
-      const uint32_t from = in.u32();
+      std::optional<agree::Name> after;
+      if (in.u8() != 0) after = in.bytes(max_key + 2);
       in.finish();
       if (!_space.store().ready()) return dannan::net::Handled::failed(503, "not_ready", "this node is catching up itself");
-      const auto held = _space.store().held(slot);
-      const size_t start = std::min<size_t>(from, held.size());
-      const size_t end = std::min(held.size(), start + shard_names_page);
+      // One past a page: whether there are more.
+      std::vector<agree::Name> page;
+      _space.store().each_held(slot, after, [this, &page](const agree::Name& name, const agree::AcceptorState&) {
+        page.push_back(name);
+        return page.size() <= _page;
+      });
+      const bool more = page.size() > _page;
+      if (more) page.pop_back();
       dannan::net::Writer out;
-      out.u8(end < held.size() ? 1 : 0);
-      out.u32(static_cast<uint32_t>(end - start));
-      for (size_t i = start; i < end; ++i) out.bytes(held[i].first);
+      out.u8(more ? 1 : 0);
+      out.u32(static_cast<uint32_t>(page.size()));
+      for (const auto& name : page) out.bytes(name);
       return dannan::net::Handled::processed(dannan::net::Message{dannan::net::message::ok, out.take(), {}});
     } catch (const dannan::net::DecodeError&) {
       return dannan::net::Handled::failed(400, "bad_request", "the request cannot be read");
@@ -123,10 +133,10 @@ void Agreements::recover(std::function<void()> done) {
 void Agreements::recover_shard(std::shared_ptr<Recovery> recovery) {
   if (recovery->shard >= _space.shards()) return finish_recovery(recovery);
   recovery->names.clear();
-  gather_names(std::move(recovery), 0, 0);
+  gather_names(std::move(recovery), 0);
 }
 
-void Agreements::gather_names(std::shared_ptr<Recovery> recovery, size_t asked, uint32_t from) {
+void Agreements::gather_names(std::shared_ptr<Recovery> recovery, size_t asked) {
   auto& context = _space.context();
   const auto& peer = recovery->peers[(recovery->peer + asked) % recovery->peers.size()];
   std::optional<dannan::membership::NodeRecord> record;
@@ -140,9 +150,11 @@ void Agreements::gather_names(std::shared_ptr<Recovery> recovery, size_t asked, 
   if (!record) return retry();
   dannan::net::Writer out;
   out.u32(recovery->shard);
-  out.u32(from);
+  // After the last name gathered, if any.
+  out.u8(recovery->names.empty() ? 0 : 1);
+  if (!recovery->names.empty()) out.bytes(recovery->names.back());
   (void)context.routes().call(*record, shard_names, out.take(), dannan::sched::FrameType::control, std::chrono::seconds(5), context.time().executor(),
-                              [this, recovery, asked, from, retry](dannan::net::CallOutcome outcome) {
+                              [this, recovery, asked, retry](dannan::net::CallOutcome outcome) {
                                 if (!outcome.reply || dannan::net::refusal_of(*outcome.reply)) return retry();
                                 try {
                                   dannan::net::Reader in(outcome.reply->payload);
@@ -151,7 +163,7 @@ void Agreements::gather_names(std::shared_ptr<Recovery> recovery, size_t asked, 
                                   if (count > shard_names_page) return retry();
                                   for (uint32_t i = 0; i < count; ++i) recovery->names.push_back(in.bytes(max_key + 2));
                                   in.finish();
-                                  if (more) return gather_names(recovery, asked, from + count);
+                                  if (more) return gather_names(recovery, asked);
                                 } catch (const dannan::net::DecodeError&) {
                                   return retry();
                                 }
@@ -175,12 +187,20 @@ void Agreements::finish_recovery(const std::shared_ptr<Recovery>& recovery) {
     dannan::contract::Lock lock(_hook->mutex);
     committed = _hook->committed;
   }
-  for (uint32_t shard = 0; shard < _space.shards() && committed; ++shard)
-    for (const auto& [name, state] : _space.store().held(shard)) {
+  for (uint32_t shard = 0; shard < _space.shards() && committed; ++shard) {
+    // Copied out under the store's lock, applied after it: the view's hook
+    // takes the database's lock, never inside the store's.
+    std::vector<std::pair<agree::Name, agree::AcceptorState>> held;
+    _space.store().each_held(shard, std::nullopt, [&held](const agree::Name& name, const agree::AcceptorState& state) {
+      held.emplace_back(name, state);
+      return true;
+    });
+    for (const auto& [name, state] : held) {
       const auto parsed = parse_name(name);
       const auto record = decode_value(state.value);
       if (parsed && record) committed(parsed->first, parsed->second, version_of(state.accepted), *record);
     }
+  }
   _space.store().set_ready();
   if (recovery->done) _space.context().time().after(std::chrono::milliseconds(0), recovery->done);
 }

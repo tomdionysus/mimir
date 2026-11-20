@@ -16,17 +16,20 @@
 #include <vector>
 
 #include "dannan/agree/agreement.h"
+#include "dannan/agree/memory_store.h"
 #include "dannan/net/message.h"
 #include "mimir/cluster/register.h"
-#include "mimir/cluster/store.h"
 
 namespace mimir::cluster {
 namespace {
 
 namespace agree = dannan::agree;
 using namespace std::chrono_literals;
+// The store Mimir serves its space from (Dannan's, from 0.10.1): these hold
+// it to what Mimir relies on, its summary above all.
+using Store = agree::MemoryStore;
 
-// Real Agreements, one per node, each serving the space from its own Store,
+// Real Agreements, one per node, each serving the space from its own store,
 // their calls carried through one io context with nothing lost.
 class Bed {
  public:

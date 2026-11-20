@@ -14,7 +14,6 @@ add_library(mimir STATIC
   cluster/fanout.cpp
   cluster/register.cpp
   cluster/space.cpp
-  cluster/store.cpp
   command/acl.cpp
   command/acl_commands.cpp
   command/args.cpp

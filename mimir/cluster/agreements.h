@@ -31,7 +31,7 @@ namespace mimir::cluster {
 // The commit notice's wire type (Dannan's user types start at 512).
 inline constexpr dannan::net::MessageType commit_notice{600};
 // A page of the names a node holds in a shard, for a restarted peer's
-// catch-up: asked with the shard and where the page starts.
+// catch-up: asked with the shard and the last name already given, if any.
 inline constexpr dannan::net::MessageType shard_names{601};
 inline constexpr size_t shard_names_page = 1000;
 // A record larger than this is not carried by a notice: its replicas stay
@@ -43,8 +43,9 @@ class Agreements final : public command::Agreements {
   // The notice's type, on a node not yet started (routes are frozen at start).
   static void register_types(dannan::Context& context);
 
-  // Takes the notice's handler.
-  explicit Agreements(Space& served, std::chrono::milliseconds deadline = std::chrono::seconds(5));
+  // Takes the notice's handler. `page`: how many names this node gives a
+  // catching-up peer at a time, at most shard_names_page (smaller in tests).
+  explicit Agreements(Space& served, std::chrono::milliseconds deadline = std::chrono::seconds(5), size_t page = shard_names_page);
   ~Agreements() override;
 
   std::string operation_id() override;
@@ -66,12 +67,13 @@ class Agreements final : public command::Agreements {
  private:
   struct Recovery;
   void recover_shard(std::shared_ptr<Recovery> recovery);
-  void gather_names(std::shared_ptr<Recovery> recovery, size_t peer, uint32_t from);
+  void gather_names(std::shared_ptr<Recovery> recovery, size_t peer);
   void finish_recovery(const std::shared_ptr<Recovery>& recovery);
   void notify(size_t db, const std::string& key, const std::string& version, const cluster::Record& record);
 
   Space& _space;
   const std::chrono::milliseconds _deadline;
+  const size_t _page;
   std::atomic<uint64_t> _next{1};
   // Shared with the handler, so a notice racing the destructor finds none.
   struct Hook {
