@@ -58,11 +58,6 @@ jobs:
   coverage:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    # Codecov takes the upload on GitHub's OIDC token: the repository has no
-    # CODECOV_TOKEN secret, and Codecov refuses a tokenless upload.
-    permissions:
-      contents: read
-      id-token: write
     container:
       image: debian:trixie
     steps:
@@ -87,6 +82,6 @@ jobs:
         with:
           files: build-ci/coverage.info
           disable_search: true
-          use_oidc: true
+          token: ${{ secrets.CODECOV_TOKEN }}
           # A failed upload fails the job: coverage that never arrives is not seen.
           fail_ci_if_error: true
