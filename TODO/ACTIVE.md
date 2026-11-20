@@ -27,10 +27,9 @@ list is "The converged plan" -> "Mimir" in
 9. Settings names to the stack's pattern (the maintainer, 2026-11-20;
    Dannan's docs/config.md): a YAML key a.b is the flag --a-b and the
    variable <PREFIX>_A_B, overriding the file, and the prefix is the
-   binary's name, MIMIR_NODE. Mimir differs in three ways today: the prefix
-   is MIMIR (MIMIR_CONFIG, MIMIR_PORT), listen.host is --listen and
-   listen.port is --port. They become MIMIR_NODE_*, --listen-host and
-   --listen-port in Mimir's next minor, since a flag is part of its
+   project's name, MIMIR, as now. Mimir differs in two flags today:
+   listen.host is --listen and listen.port is --port. They become
+   --listen-host and --listen-port in Mimir's next minor, since a flag is part of its
    interface (dannan-node moves its own in 0.11.0 the same way). Done the next time mimir-node's settings are touched, after
    0.1.0, never mid-release.
 
