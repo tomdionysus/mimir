@@ -188,6 +188,33 @@ next, is `TODO/ACTIVE.md`.
     that register before answering NOSCRIPT. SCRIPT FLUSH clears its node's
     cache only, and SCRIPT EXISTS answers for its node.
 
+40. **Ruling 38 confirmed, and every node's address listed** (2026-11-20):
+    no MOVED; the CLUSTER commands answer as standalone Valkey's do. Any
+    node also lists every node's client address, so a client whose node
+    has gone can find another. It is a Mimir command, not CLUSTER SHARDS,
+    which a cluster-mode client would read as slot ownership (the Mimir
+    session's choice of where; Tom chose that it is listed).
+
+41. **The shard count: at most 8192, and resizable** (2026-11-20): one
+    value for the whole cluster, at most 8192 (Dannan's slot advert is at
+    most 1 KiB), changeable on a running cluster. Resizing moves keys
+    between shards; it is to be designed, and it needs Dannan's slot table
+    to change its count, which the stack's placement plan places.
+
+42. **What Mimir calls itself** (2026-11-20): HELLO answers server "mimir"
+    and version "8.1.1", the Valkey behaviour it implements. INFO says
+    `redis_version:7.2.4` and `valkey_version:8.1.1` as Valkey 8.1.1 does,
+    plus `mimir_version`. Scripts see SERVER_NAME "mimir".
+
+Settled from the group's direction, not ruled (Tom, 2026-11-20: "You
+should be able to answer this from the group direction"):
+- **Persistence (stage 5): Dagda's durable AcceptorStore in its value-less
+  form.** Dagda keeps ballots, summaries and deltas in one fenced,
+  group-committed log per space; Mimir keeps the values in its keyspace and
+  checkpoints them to Dagda. Durable storage is Dagda's, so Mimir writes
+  none of its own (no duplication). Deltas mean a write never costs the
+  value's size on disk, and values are not held twice in memory.
+
 ## Waiting on Tom
 
 `TODO/ACTIVE.md` keeps the list ("Waiting on Tom" and "Proposed, not yet put
