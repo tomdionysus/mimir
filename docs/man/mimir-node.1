@@ -1,0 +1,127 @@
+.\"
+.\" Mimir - The Distributed Database
+.\"
+.\" Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+.\" Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+.\"
+.TH MIMIR-NODE 1 2026-11-20 "mimir" "Mimir"
+.SH NAME
+mimir-node \- one node of a Mimir cluster, a Redis-compatible distributed database
+.SH SYNOPSIS
+.B mimir-node
+.RI [ option ...]
+.br
+.B mimir-node
+.B \-\-cluster\-state
+.I dir
+.B \-\-init\-state
+.br
+.B mimir-node \-\-version
+.SH DESCRIPTION
+.B mimir-node
+serves the Redis protocol (RESP2 and RESP3) on its port and is one node of a
+Mimir cluster. A client may connect to any node, and every command works
+whichever node it talks to: every write commits by agreement on a majority of
+the cluster, with no leader. Without a state directory the node is a
+throwaway cluster of one, its cluster port on loopback.
+.PP
+It reports what it does as one JSON object per line on standard output:
+.B listening
+(its ports and node id),
+.B founded ,
+.B caught_up
+and
+.BR stopped .
+.SH SETTINGS
+Every setting is a key in a YAML file, a
+.B MIMIR_*
+environment variable and a flag, read in that order, each overriding the one
+before. The file is
+.BR \-\-config ,
+.BR $MIMIR_CONFIG ,
+or
+.I /usr/local/etc/mimir/config.yaml
+when it exists; then
+.I secrets.yaml
+beside it. A value that cannot be used is refused at start, naming where it
+came from.
+.TP
+.BR \-\-listen " \fIaddr\fR (listen.host, MIMIR_LISTEN)"
+The address to serve clients on; 0.0.0.0 by default.
+.TP
+.BR \-\-port " \fIn\fR (listen.port, MIMIR_PORT)"
+The client port; 6379 by default.
+.TP
+.BR \-\-tls\-port " \fIn\fR, " \-\-tls\-certificate " \fIpem\fR, " \-\-tls\-key " \fIpem\fR (tls.*)"
+A TLS client port, with its certificate chain and key.
+.TP
+.BR \-\-tls\-client\-ca " \fIpem\fR (tls.client_ca)"
+Require client certificates signed by this bundle.
+.TP
+.BR \-\-databases " \fIn\fR (databases)"
+The number of databases SELECT may choose, 1 to 1024; 1 by default.
+.TP
+.BR \-\-auth\-plaintext " (auth.plaintext)"
+Take AUTH and HELLO ... AUTH on a plaintext connection. Without it a password
+is accepted only over TLS.
+.TP
+.BR \-\-user " \fIline\fR (acl.users, a list)"
+A line of a Valkey ACL file, such as
+.BR "user app on >secret ~app:* +@all" .
+Best kept in
+.IR secrets.yaml .
+.TP
+.BR \-\-notify\-keyspace\-events " \fIletters\fR (notify.keyspace_events)"
+Valkey's keyspace notification classes.
+.TP
+.BR \-\-cluster\-key " \fIfile\fR, " \-\-cluster\-state " \fIdir\fR (cluster.key, cluster.state)"
+The cluster's shared key file and this node's state directory.
+.TP
+.BR \-\-cluster\-listen " \fIaddr\fR, " \-\-cluster\-port " \fIn\fR, " \-\-cluster\-advertise " \fIhost\fR"
+Where the node listens for other nodes (0.0.0.0:16379 by default) and the
+host they dial.
+.TP
+.BR \-\-genesis " \fIid\fR (cluster.genesis, a list)"
+The founding nodes' ids. Without it, a node with no bootstrap peers founds a
+cluster alone.
+.TP
+.BR \-\-bootstrap " \fIhost:port\fR (cluster.bootstrap, a list)"
+Other nodes' cluster ports, to join through.
+.TP
+.BR \-\-shards " \fIn\fR (cluster.shards)"
+The shard count, 1 to 8192, the same on every node; 256 by default.
+.TP
+.BR \-\-cluster\-name " \fIname\fR, " \-\-cluster\-domain " \fIdomain\fR"
+This node's name and failure domain.
+.TP
+.BR \-\-log\-level " \fIlevel\fR, " \-\-log\-format " text|json"
+ALL, DEBUG, INFO, WARN or ERROR; text or JSON lines.
+.TP
+.BR \-\-seconds " \fIn\fR"
+Run for this long, 0 (the default) until SIGTERM or SIGINT.
+.TP
+.B \-\-init\-state
+Make the state directory and this node's id, print
+.B {"event":"initialised","id":"..."}
+and exit. A cluster of several founders names each founder's id in every
+founder's genesis list, so each id is made first. The state votes as new on
+its first start only.
+.TP
+.B \-\-version
+Print the version and exit.
+.SH FILES
+.TP
+.I /etc/mimir/config.yaml
+The packaged settings: a cluster of one on loopback.
+.TP
+.I /etc/mimir/secrets.yaml
+The users, mode 600.
+.TP
+.I /etc/mimir/cluster.key
+The cluster key, made by the package; every node of a cluster has the same one.
+.TP
+.I /var/lib/mimir
+The node's state directory.
+.SH SEE ALSO
+.BR redis-cli (1),
+.B https://github.com/tomdionysus/mimir

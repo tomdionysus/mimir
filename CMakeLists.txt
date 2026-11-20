@@ -37,16 +37,29 @@ pkg_check_modules(LUA51_CJSON REQUIRED IMPORTED_TARGET lua5.1-cjson)
 pkg_check_modules(LUA51_BITOP REQUIRED IMPORTED_TARGET lua5.1-bitop)
 find_library(MIMIR_LUA51_CMSGPACK NAMES lua5.1-cmsgpack liblua5.1-cmsgpack.so.0 REQUIRED)
 
-# Dannan, the network layer, at its tag, cloned from the sibling checkout into
-# the build tree, so building Mimir never touches ../dannan.
+include(GNUInstallDirs)
+
+# Dannan, the network layer, at its pinned release. An installed release of
+# that minor (libdannan-dev) is used first; otherwise, unless
+# MIMIR_FETCH_DANNAN is off (the package build), the tag is cloned into the
+# build tree from the sibling checkout or a URL, so building Mimir never
+# touches ../dannan.
 # A string, not a PATH: CMake makes a PATH absolute, and a URL (hosted CI's
 # https://github.com/...) then becomes a directory under the source tree.
 set(MIMIR_DANNAN_REPOSITORY "${CMAKE_CURRENT_SOURCE_DIR}/../dannan" CACHE STRING "Dannan's repository: a path or a URL")
+option(MIMIR_FETCH_DANNAN "Fetch Dannan at its tag when no installed release of its minor is found" ON)
 # Not a cache variable: a moved pin must take effect in a build tree that
 # already exists.
 set(MIMIR_DANNAN_TAG "0.9.2")
-include(FetchContent)
 if(NOT TARGET dannan::dannan)
+  if(MIMIR_FETCH_DANNAN)
+    find_package(dannan ${MIMIR_DANNAN_TAG} CONFIG QUIET)
+  else()
+    find_package(dannan ${MIMIR_DANNAN_TAG} CONFIG REQUIRED)
+  endif()
+endif()
+if(NOT TARGET dannan::dannan)
+  include(FetchContent)
   FetchContent_Declare(dannan GIT_REPOSITORY "${MIMIR_DANNAN_REPOSITORY}" GIT_TAG "${MIMIR_DANNAN_TAG}")
   set(DANNAN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(dannan)
@@ -65,6 +78,13 @@ configure_file(mimir/include/mimir/version.h.in ${PROJECT_BINARY_DIR}/generated/
 
 add_subdirectory(mimir)
 add_subdirectory(tools)
+
+# What a package installs beside /usr/bin/mimir-node: the settings (a
+# conffile, /etc/mimir when the prefix is /usr), the systemd unit and the
+# manual page.
+install(FILES packaging/config.yaml DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/mimir)
+install(FILES packaging/mimir.service DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/systemd/system)
+install(FILES docs/man/mimir-node.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 
 if(MIMIR_BUILD_TESTING)
   find_package(GTest 1.14 CONFIG REQUIRED)

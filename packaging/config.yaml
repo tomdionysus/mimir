@@ -1,0 +1,30 @@
+#
+# Mimir - The Distributed Database
+#
+# Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+# Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+#
+
+# The packaged settings: one node, a cluster of one, reachable from this host
+# only. Users go in secrets.yaml beside this file (mode 600, made by the
+# package), never here; with none, the default user may do everything, as
+# Valkey's does. Every setting is described in mimir-node(1).
+#
+# To join or found a cluster of several nodes, give every node the same
+# cluster key, list the founders' ids under cluster.genesis (each made first
+# with mimir-node --config /etc/mimir/config.yaml --init-state, run as the
+# mimir user before the service's first start), name the other nodes under
+# cluster.bootstrap, and listen on an address the other nodes can reach.
+
+listen:
+  host: 127.0.0.1
+  port: 6379
+databases: 16
+cluster:
+  key: /etc/mimir/cluster.key
+  state: /var/lib/mimir
+  listen: 127.0.0.1
+  port: 16379
+log:
+  level: INFO
+  format: json

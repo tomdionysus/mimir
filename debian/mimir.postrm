@@ -1,0 +1,21 @@
+#!/bin/sh
+#
+# Mimir - The Distributed Database
+#
+# Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+# Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+#
+# mimir postrm: remove keeps the settings, users, key and state; purge
+# deletes them, as Debian expects of a purge.
+
+set -e
+
+case "$1" in
+    purge)
+        rm -rf /etc/mimir /var/lib/mimir
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

@@ -14,6 +14,7 @@
 #   tools/ci.sh asan       AddressSanitizer and UndefinedBehaviorSanitizer
 #   tools/ci.sh tsan       ThreadSanitizer
 #   tools/ci.sh coverage   a coverage build's tests; lcov report build-ci/coverage.info
+#   tools/ci.sh package    Dannan's packages at the pinned tag, then Mimir's, linted
 #   tools/ci.sh tidy       clang-tidy's bugprone-use-after-move over every source
 #                          and Mimir's headers, warnings as errors
 #
@@ -90,6 +91,20 @@ case "$step" in
     rm "$out/all.info" "$out/library.info"
     lcov --summary "$out/coverage.info" --ignore-errors "$ignore"
     ;;
+  package)
+    # Dannan's packages at the pinned tag, by Dannan's own step, then Mimir's
+    # package, linted (docs/packaging.md). Needs git, dpkg-dev, lintian, apt
+    # and root or sudo.
+    tag=$(sed -n 's/^set(MIMIR_DANNAN_TAG "\(.*\)")$/\1/p' "$top/CMakeLists.txt")
+    sudo=
+    if [ "$(id -u)" -ne 0 ]; then sudo=sudo; fi
+    rm -rf "$out/dannan-package"
+    git clone --quiet --depth 1 --branch "$tag" "$MIMIR_DANNAN_REPOSITORY" "$out/dannan-package"
+    (cd "$out/dannan-package" && DANNAN_REPOSITORY="$MIMIR_DANNAN_REPOSITORY" DANNAN_CI_OUT="$out/dannan-package/build-ci" tools/ci.sh install-debs "$tag")
+    $sudo apt-get build-dep -y "$top"
+    (cd "$top" && tools/build-deb.sh)
+    lintian --fail-on error,warning "$top"/build-deb/mimir_*.changes
+    ;;
   tidy)
     # Configured, not built: clang-tidy needs only the compile database.
     tidy=$(command -v run-clang-tidy || command -v run-clang-tidy-19)
@@ -99,7 +114,7 @@ case "$step" in
     "$tidy" -p "$out/tidy" -j "$jobs" -quiet -checks='-*,bugprone-use-after-move' -warnings-as-errors='*' -header-filter="$ours" "$ours"
     ;;
   *)
-    echo "usage: tools/ci.sh check|release|clang|asan|tsan|coverage|tidy" >&2
+    echo "usage: tools/ci.sh check|release|clang|asan|tsan|coverage|package|tidy" >&2
     exit 2
     ;;
 esac

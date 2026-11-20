@@ -8,3 +8,4 @@
 # mimir-node: a node that serves RESP.
 add_executable(mimir-node mimir_node.cpp)
 target_link_libraries(mimir-node PRIVATE mimir mimir_warnings)
+install(TARGETS mimir-node RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
