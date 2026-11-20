@@ -13,6 +13,7 @@
 #include <boost/asio/post.hpp>
 #include <chrono>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -24,6 +25,7 @@
 #include "dannan/identity/cluster_key.h"
 #include "dannan/identity/node_identity.h"
 #include "dannan/node.h"
+#include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 #include "mimir/cluster/agreements.h"
 #include "mimir/cluster/fanout.h"
@@ -318,6 +320,57 @@ bool eventually_heard(Heard& heard, const std::string& part, std::chrono::millis
     std::this_thread::sleep_for(20ms);
   }
   return false;
+}
+
+TEST(ClusterSpace, EveryNodeListsWhereEveryNodeTakesClients) {
+  Cluster cluster(3);
+  ASSERT_TRUE(cluster.converged());
+  for (size_t i = 0; i < 3; ++i)
+    cluster.spaces[i]->advertise_clients("node-" + std::to_string(i), i == 2 ? "" : "10.0.0." + std::to_string(i), static_cast<uint16_t>(7000 + i),
+                                         i == 1 ? 7101 : 0);
+  // The adverts reach every node; each lists all three, itself first.
+  const auto until = std::chrono::steady_clock::now() + 10s;
+  std::vector<command::NodeAddress> listed;
+  while (std::chrono::steady_clock::now() < until) {
+    listed = cluster.spaces[0]->client_addresses();
+    if (listed.size() == 3) break;
+    std::this_thread::sleep_for(20ms);
+  }
+  ASSERT_EQ(listed.size(), 3u);
+  EXPECT_TRUE(listed[0].self);
+  EXPECT_EQ(listed[0].name, "node-0");
+  EXPECT_EQ(listed[0].host, "10.0.0.0");
+  EXPECT_EQ(listed[0].port, 7000);
+  std::map<std::string, command::NodeAddress> by_name;
+  for (const auto& node : listed) by_name[node.name] = node;
+  EXPECT_EQ(by_name["node-1"].tls_port, 7101);
+  EXPECT_FALSE(by_name["node-1"].self);
+  // No host given: the address peers dial it at.
+  EXPECT_FALSE(by_name["node-2"].host.empty());
+
+  // MIMIR NODES answers from that list, under ACL like any command.
+  dannan::test::SteppedWall wall;
+  command::DatabaseSettings settings;
+  settings.nodes = [&cluster] { return cluster.spaces[0]->client_addresses(); };
+  settings.users = {"user watcher on nopass +@all -mimir|nodes"};
+  command::Database database(wall, settings);
+  command::Session session;
+  session.id = database.next_client_id();
+  database.welcome(session);
+  std::string out;
+  database.execute(session, {"MIMIR", "NODES"}, out);
+  EXPECT_EQ(out.rfind("*3\r\n*12\r\n$2\r\nid\r\n", 0), 0u) << out;
+  EXPECT_NE(out.find("$6\r\nnode-1\r\n"), std::string::npos) << out;
+  out.clear();
+  database.execute(session, {"MIMIR", "WHAT"}, out);
+  EXPECT_EQ(out, "-ERR unknown subcommand 'WHAT'. Try MIMIR HELP.\r\n");
+  out.clear();
+  session.tls = true;
+  database.execute(session, {"AUTH", "watcher", "x"}, out);
+  ASSERT_EQ(out, "+OK\r\n");
+  out.clear();
+  database.execute(session, {"MIMIR", "NODES"}, out);
+  EXPECT_EQ(out, "-NOPERM User watcher has no permissions to run the 'mimir|nodes' command\r\n");
 }
 
 TEST(ClusterFanout, ANodeWantsThePrefixesItsSubscriptionsNeed) {

@@ -324,6 +324,8 @@ void command(Call&);
 void info(Call&);
 void time(Call&);
 void reset(Call&);
+// MIMIR NODES and MIMIR HELP: Mimir's own (ruling 40).
+void mimir(Call&);
 // One line of CLIENT LIST for `session`, as ACL LOG's client-info also shows it.
 std::string client_line(const Session& session, uint64_t now_ms);
 }  // namespace connection

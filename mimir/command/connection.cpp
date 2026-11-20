@@ -263,6 +263,46 @@ void auth(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
 }
 
 // Called under the database's lock, as every handler is.
+void mimir(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+  const std::string sub = lower(call.args[1]);
+  if (sub == "nodes") {
+    // Every node a client may use, so one whose node has gone can find
+    // another (ruling 40). No slots: every node answers every key.
+    if (call.args.size() != 2) throw CommandError("ERR wrong number of arguments for 'mimir|nodes' command");
+    const auto& list = call.database.settings().nodes;
+    const std::vector<NodeAddress> nodes = list ? list() : std::vector<NodeAddress>{};
+    call.reply.array(nodes.size());
+    for (const auto& node : nodes) {
+      call.reply.map(6);
+      call.reply.bulk("id");
+      call.reply.bulk(node.id);
+      call.reply.bulk("name");
+      call.reply.bulk(node.name);
+      call.reply.bulk("host");
+      call.reply.bulk(node.host);
+      call.reply.bulk("port");
+      call.reply.integer(node.port);
+      call.reply.bulk("tls-port");
+      call.reply.integer(node.tls_port);
+      call.reply.bulk("self");
+      call.reply.integer(node.self ? 1 : 0);
+    }
+  } else if (sub == "help") {
+    if (call.args.size() != 2) throw CommandError("ERR wrong number of arguments for 'mimir|help' command");
+    constexpr std::string_view lines[] = {
+        "MIMIR <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+        "NODES",
+        "    Return every node of the cluster a client may connect to: its id, name, host, port, TLS port, and whether it is this node.",
+        "HELP",
+        "    Print this help.",
+    };
+    call.reply.array(std::size(lines));
+    for (auto line : lines) call.reply.simple(line);
+  } else {
+    throw CommandError("ERR unknown subcommand '" + call.args[1].substr(0, 128) + "'. Try MIMIR HELP.");
+  }
+}
+
 void client(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   const std::string sub = lower(call.args[1]);
   if (sub == "id") {

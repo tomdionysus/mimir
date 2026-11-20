@@ -78,6 +78,12 @@ const Table& table() {
     auto* t = new Table;
     t->entries = {
 #include "mimir/command/acl_table.inc"
+        // Mimir's own commands and subcommands, which Valkey's table has not:
+        // without a row a command is never refused by ACL.
+        {"client|strict", "@slow @connection", {}},
+        {"mimir", "@slow @connection", {}},
+        {"mimir|help", "@slow @connection", {}},
+        {"mimir|nodes", "@slow @connection", {}},
     };
     const size_t n = t->entries.size();
     t->categories.assign(n, 0);
