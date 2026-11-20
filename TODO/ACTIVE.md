@@ -1,12 +1,13 @@
 # Mimir - Active Work
 
 Last updated: 2026-11-19. `COMPLETED.md` is the record, with gate counts. The
-design is `TODO/2026-11-15-mimir-design.md`: The maintainer's rulings (1 to 37), the two
+design is `TODO/2026-11-15-mimir-design.md`: The maintainer's rulings (1 to 39), the two
 classes of command, agreement in Dannan, durability, and the order.
 
 ## Resume here
 
-Next: routing, step 3.3 of "Ordered work" below.
+Next: scripts and functions by agreement (ruling 39), step 3.8 of "Ordered
+work" below. Routing (3.3) needs placement (3.4) first.
 
 State on 2026-11-20:
 
@@ -180,10 +181,12 @@ Settled with Dannan in review (the record is in `COMPLETED.md`, "The Dannan
    notifications across the cluster; catch-up after a restart; strict reads
    (ruling 37); expiry by agreement; ACL users by agreement (ruling 27).
    Still to do, in this order:
-   3. **Routing.** A node outside a key's set forwards the command to a
-      replica (Routes::call), or answers MOVED to a cluster-aware client.
-      CLUSTER SLOTS, SHARDS and NODES describe the cluster. With it:
-      read-your-writes when a write was forwarded.
+   3. **Routing** (ruling 38, no special nodes): a node outside a key's
+      set forwards the command to a replica (Routes::call), and the client
+      never sees it; never MOVED, and the CLUSTER commands answer as
+      standalone Valkey's do. With it: read-your-writes when a write was
+      forwarded. Only arises once placement moves slots (step 4), so it is
+      built with it.
    4. **Membership.** Placement moves slots by transfer() as nodes join and
       leave; the replicas then come from the slot's record, not the genesis
       set.
@@ -192,8 +195,8 @@ Settled with Dannan in review (the record is in `COMPLETED.md`, "The Dannan
       O(n) at the proposer.
    6. **Cluster-wide keyspace commands** (ruling 33): KEYS, SCAN, DBSIZE,
       RANDOMKEY slot by slot. The flushes wait for 0.10.0 (ruling 35).
-   8. **SCRIPT and FUNCTION libraries across the cluster**: an EVALSHA on
-      another node answers NOSCRIPT today.
+   8. **SCRIPT and FUNCTION libraries across the cluster** (ruling 39): an
+      EVALSHA on another node answers NOSCRIPT today. Next.
    9. Smaller gaps: a script that only reads but declares its key counts as
       a write for WATCH; per-channel interest for pub/sub, where every
       publication goes to every node today; ACL SETUSER and DELUSER inside
