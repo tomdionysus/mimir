@@ -219,8 +219,11 @@ before the tag; check again at the tag that fix/agreement-lifetime is in it):
   should go (no duplication). Not yet: Mimir reads `held(slot)` (every name a
   slot holds, with its state) for catch-up and to fill a node's view, and
   MemoryStore has no such reader. Dannan adds `each_held(slot, visit)` in
-  0.10.1 (a visitor under the store's lock; Mimir copies out, then applies);
-  Mimir's Store goes with the pin to 0.10.1.
+  0.10.1 (a visitor under the store's lock that returns false to stop, with
+  an optional `after` name to resume from; Mimir copies out, then applies).
+  With the pin to 0.10.1 Mimir's Store goes, and the shard-names request
+  pages by the last name sent, not an index: a name removed between pages
+  shifts the indices and a peer catching up would miss one.
 - `durable_sync_directory`: --init-state's marker removal uses
   `posix_file_system().remove` and `sync_directory`; equivalent, but the
   stack's helper is the one to use. Change in the repin.
