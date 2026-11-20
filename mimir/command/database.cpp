@@ -43,7 +43,9 @@ constexpr size_t system_db = 0xffff;
 const std::string acl_key = "acl";
 const std::string functions_key = "functions";
 
-bool changes_users(const std::vector<std::string>& args) { return args.size() >= 2 && iequals(args[0], "acl") && (iequals(args[1], "setuser") || iequals(args[1], "deluser")); }
+bool changes_users(const std::vector<std::string>& args) {
+  return args.size() >= 2 && iequals(args[0], "acl") && (iequals(args[1], "setuser") || iequals(args[1], "deluser"));
+}
 
 bool changes_functions(const std::vector<std::string>& args) {
   return args.size() >= 2 && iequals(args[0], "function") &&
@@ -1101,8 +1103,10 @@ std::optional<std::string> Database::cluster_refusal_locked(const Spec& spec, co
   if (name == "exec") {
     if (!session.in_multi || session.multi_failed) return std::nullopt;
     for (const auto& queued : session.queued)
-      if (changes_users(queued)) return "ERR in a cluster ACL SETUSER and DELUSER commit on their own, not inside MULTI (ruling 27)";
-      else if (changes_functions(queued)) return "ERR in a cluster FUNCTION's changes commit on their own, not inside MULTI (ruling 39)";
+      if (changes_users(queued))
+        return "ERR in a cluster ACL SETUSER and DELUSER commit on their own, not inside MULTI (ruling 27)";
+      else if (changes_functions(queued))
+        return "ERR in a cluster FUNCTION's changes commit on their own, not inside MULTI (ruling 39)";
     if (exec_key_locked(session).several) return several;
     return std::nullopt;
   }
