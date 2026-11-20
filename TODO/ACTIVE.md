@@ -218,8 +218,9 @@ before the tag; check again at the tag that fix/agreement-lifetime is in it):
 - `agree::MemoryStore`: the same store as Mimir's `cluster::Store`, which
   should go (no duplication). Not yet: Mimir reads `held(slot)` (every name a
   slot holds, with its state) for catch-up and to fill a node's view, and
-  MemoryStore has no such reader. Asked of Dannan for 0.10.x; Mimir's Store
-  stays until then.
+  MemoryStore has no such reader. Dannan adds `each_held(slot, visit)` in
+  0.10.1 (a visitor under the store's lock; Mimir copies out, then applies);
+  Mimir's Store goes with the pin to 0.10.1.
 - `durable_sync_directory`: --init-state's marker removal uses
   `posix_file_system().remove` and `sync_directory`; equivalent, but the
   stack's helper is the one to use. Change in the repin.
