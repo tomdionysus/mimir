@@ -2,6 +2,59 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-20: The real-client gate: hiredis against a three-node cluster (ruling 44)
+
+- Built on `feature/hiredis-gate`, squashed onto develop.
+- `mimir_client_tests` (`-DMIMIR_BUILD_CLIENT_TESTS=ON`, Debian's
+  libhiredis-dev, test-only, never linked into mimir-node) starts three
+  mimir-node processes on loopback, every one a founder, through Dannan's
+  ChildProcess, TempDir and free_port fixtures, and drives them with hiredis:
+  - HELLO 3's map, and CLIENT SETINFO shown by CLIENT INFO;
+  - 200 pipelined writes answered in order, then read on both other nodes
+    under CLIENT STRICT ON (ruling 37);
+  - RESP3 maps, sets and doubles;
+  - PUBLISH on one node pushed to a RESP3 subscriber on another, and to a
+    RESP2 subscriber in subscribed mode, which refuses GET;
+  - MIMIR NODES naming all three, one of them self (ruling 40);
+  - WRONGTYPE, an unknown command and ruling 35's refusal as errors;
+  - a client whose node is killed (SIGKILL) reconnecting to another, which
+    reads its write and takes a new one, read on the third;
+  - every node stopped by SIGTERM exiting 0 and saying `stopped`.
+- `tools/ci.sh client`, and a `client` job in hosted CI.
+- Two faults the gate found, fixed with a failing test first:
+  - SUBSCRIBE was confirmed before the other nodes routed its channels, so
+    a PUBLISH made just after it elsewhere could go nowhere (the gap noted
+    when the fan-out was built). A SUBSCRIBE whose names are not yet routed
+    now waits for the fan-out's push to be acknowledged (or its two-second
+    deadline), then runs again, as an EVALSHA waits for its script
+    (PubSub::prepare, Fanout::prepare). Test:
+    ClusterDatabase.APublishMadeAfterSubscribeIsConfirmedReachesTheSubscriberFromAnyNode,
+    red on the old code (five of five publishes lost), green after.
+  - mimir-node freed its agreement space while its database's agreements
+    still held it, so every node read freed memory as it stopped (ASan, all
+    three nodes). The database and its agreements now go first, after one
+    posted turn on each io thread. Test:
+    ClientShutdown.EveryNodeStoppedBySigtermExitsCleanly, red under ASan,
+    green after.
+- mimir-node `--init-state`: a cluster of several founders names each in
+  every founder's genesis, so each id is made first. It makes the state and
+  the id, prints `{"event":"initialised","id":"..."}`, and leaves a
+  `never-started` marker: that state votes as new on its first start alone,
+  the marker removed durably before the node can vote. Before this, a
+  multi-founder cluster could not be started from the command line (a state
+  with an id counted as restarted, and founders that all catch up first
+  never vote). The four-node registrar migration needs it too.
+- Gate on node-a (arm64), once: release 364 passed and the client gate 9 of
+  9; ASan/UBSan 364 passed; TSan 364 passed; ASan/UBSan client gate 8 of 9.
+  The one is a use-after-free inside Dannan 0.9.2 at a node's stop (a store
+  completion reaching Core::note after ~Node), with a leak from the same
+  lifetime fault: both Dannan's, fixed on its fix/agreement-lifetime for
+  0.10.0 (evidence sent to Dannan). The release gate on 0.10.0 must be clean.
+  Also on 2026-11-20:
+  clang-tidy's bugprone-use-after-move over all 84 translation units and
+  Mimir's headers found 0, and runs in CI as the `tidy` job, warnings as
+  errors.
+
 ## 2026-11-20: One path: every write by agreement, on every node (the maintainer: no single-node case)
 
 - The maintainer, 2026-11-20: "there shall be NO special case code for a single node."

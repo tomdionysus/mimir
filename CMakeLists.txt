@@ -21,6 +21,7 @@ endif()
 
 option(MIMIR_BUILD_TESTING "Build mimir_tests (GoogleTest)" OFF)
 option(MIMIR_BUILD_FUZZING "Build the libFuzzer targets in mimir/fuzz; needs a clang that ships libFuzzer" OFF)
+option(MIMIR_BUILD_CLIENT_TESTS "Build mimir_client_tests: hiredis against a real three-node cluster (ruling 44); needs libhiredis-dev" OFF)
 option(MIMIR_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
 find_package(Boost 1.83 CONFIG REQUIRED COMPONENTS headers)
@@ -89,6 +90,14 @@ install(FILES docs/man/mimir-node.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 if(MIMIR_BUILD_TESTING)
   find_package(GTest 1.14 CONFIG REQUIRED)
   add_subdirectory(mimir/test)
+endif()
+
+# A real client, hiredis, against real mimir-node processes: a test-only
+# dependency, never linked into mimir-node (ruling 44).
+if(MIMIR_BUILD_CLIENT_TESTS)
+  find_package(GTest 1.14 CONFIG REQUIRED)
+  pkg_check_modules(HIREDIS REQUIRED IMPORTED_TARGET hiredis)
+  add_subdirectory(mimir/test/client)
 endif()
 
 if(MIMIR_BUILD_FUZZING)

@@ -133,15 +133,20 @@ class Cluster {
     for (auto& thread : _threads) thread.join();
   }
 
-  // A command run on node `at`'s database, its reply once decided.
+  // A command run on node `at`'s database, its reply once decided. A
+  // postponed command woken with no bytes is run again, as a connection does.
   std::string run(size_t at, std::vector<std::string> args) {
-    auto woken = std::make_shared<std::promise<std::string>>();
-    auto reply = woken->get_future();
-    std::string out;
-    const auto executed = databases.at(at)->execute(sessions.at(at), args, out, [woken](std::string bytes) { woken->set_value(std::move(bytes)); });
-    if (!executed.wait) return out;
-    if (reply.wait_for(10s) != std::future_status::ready) return "<no reply>";
-    return reply.get();
+    for (;;) {
+      auto woken = std::make_shared<std::promise<std::string>>();
+      auto reply = woken->get_future();
+      std::string out;
+      const auto executed = databases.at(at)->execute(sessions.at(at), args, out, [woken](std::string bytes) { woken->set_value(std::move(bytes)); });
+      if (!executed.wait) return out;
+      if (reply.wait_for(10s) != std::future_status::ready) return "<no reply>";
+      auto bytes = reply.get();
+      if (executed.postponed && bytes.empty()) continue;
+      return bytes;
+    }
   }
 
   // Whether node `at` answers `args` with `expected` within five seconds:
@@ -412,6 +417,29 @@ TEST(ClusterDatabase, APublishAndANotificationReachEveryNodesSubscribers) {
   // A write on another node: its notification is raised there and heard here.
   EXPECT_EQ(cluster.run(1, {"SET", "k", "v"}), "+OK\r\n");
   EXPECT_TRUE(eventually_heard(*heard, "__keyspace@0__:k"));
+}
+
+// Valkey's promise: once SUBSCRIBE is confirmed, a PUBLISH made after it
+// reaches the subscriber, whichever node it is made on. The confirmation waits
+// until the other nodes route the channel here (as Lir holds SUBACK).
+TEST(ClusterDatabase, APublishMadeAfterSubscribeIsConfirmedReachesTheSubscriberFromAnyNode) {
+  Cluster cluster(3);
+  ASSERT_TRUE(cluster.converged());
+  ASSERT_TRUE(cluster.found(0).committed);
+  auto heard = std::make_shared<Heard>();
+  cluster.sessions[2].push = [heard](std::string bytes) {
+    std::lock_guard guard(heard->mutex);
+    heard->pushes.push_back(std::move(bytes));
+  };
+  for (int i = 0; i < 5; ++i) {
+    const std::string channel = "fresh:" + std::to_string(i);
+    const std::string message = "message-" + std::to_string(i);
+    cluster.run(2, {"SUBSCRIBE", channel});
+    ASSERT_TRUE(heard->saw(channel)) << "no confirmation for " << channel;
+    // Once, with no retry: the publisher's node must already route it.
+    EXPECT_EQ(cluster.run(static_cast<size_t>(i % 2), {"PUBLISH", channel, message}), ":0\r\n");
+    EXPECT_TRUE(eventually_heard(*heard, message)) << channel;
+  }
 }
 
 TEST(ClusterDatabase, ANodeRestartedWithoutItsStateCatchesUpBeforeItVotes) {

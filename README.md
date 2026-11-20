@@ -61,7 +61,7 @@ cmake --build build
 sudo cmake --install build
 ```
 
-Building and running the tests: [CONTRIBUTING.md](CONTRIBUTING.md).
+Building and running the tests, and the build options: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Run a node
 

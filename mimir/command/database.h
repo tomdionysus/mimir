@@ -349,6 +349,9 @@ class Database {
   // An EVALSHA's script missing here, read from its register at a majority
   // and cached; the command then runs again (its wait is a postponed one).
   void find_script(uint64_t wait, std::string sha);
+  // A held SUBSCRIBE's names are routed here by the other nodes: it runs
+  // again (its wait is a postponed one).
+  void subscribe_routed(uint64_t wait);
   // A blocking write's timeout and timeout reply, read from its arguments:
   // the error when its timeout is refused.
   struct Blocking {
