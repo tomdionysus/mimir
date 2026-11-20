@@ -15,10 +15,16 @@ Status: designed; not built. Built on shared pieces, as placed by the stack:
   built.
 - Dannan's credential helper (item 11), for username and password.
 - lugh_client's RelyingParty, for Lugh sign-in.
-- The shared React shell and styling from Lugh's admin (`../lugh/dashboard`:
-  React Router on Vite, AdminLayout, NavBar, useAPI and useLoad). Where its
-  one copy lives is before the group; nothing of the shell is built here
-  until it is answered.
+- The shared shell: Lugh's package `@lugh/admin-ui` (lugh/ui), settled
+  2026-11-20. It holds the styles, AdminLayout, NavBar, Messages, Confirm,
+  useAPI, useLoad, useAct, lib/format, and a sign-in screen with both
+  methods. Mimir fetches Lugh at a tag into its build tree and depends on
+  `"@lugh/admin-ui": "file:<fetched path>/ui"`; there is no registry. Stack:
+  React 19, React Router 7 as a static SPA, Vite 7, TypeScript 5.9, plain
+  CSS, Vitest. Lugh carves it after its P8.0. Mimir asked Lugh for generic
+  pieces (a cursor-paged table, a detail panel, useEvents over SSE, a status
+  badge, number tiles, a text editor area), and writes them itself if no
+  one else needs them.
 
 What follows is Mimir's own part: the settings, the API and the screens.
 
