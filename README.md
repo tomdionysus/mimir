@@ -299,6 +299,11 @@ What follows the cluster, in order (`TODO/ACTIVE.md`):
    acknowledgement levels, per command or per session.
 3. Eviction that works whichever node a client talks to, then the Lugh plugin.
 
+## Code of conduct
+
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md); see also
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Licence
 
 Copyright (C) 2026 Tom Cully. Licensed under the GNU GPLv3; see `LICENSE`.

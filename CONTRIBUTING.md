@@ -1,5 +1,7 @@
 # Contributing to Mimir
 
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
+
 ## Read first
 
 `TODO/ACTIVE.md` is the plan and `TODO/COMPLETED.md` is the record. Mimir is
