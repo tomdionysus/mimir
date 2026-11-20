@@ -1,9 +1,15 @@
 # Mimir - The Distributed Database
 
+[![Release](https://img.shields.io/github/v/tag/tomdionysus/mimir?sort=semver&label=release)](https://github.com/tomdionysus/mimir/tags)
 [![CI](https://github.com/tomdionysus/mimir/actions/workflows/ci.yml/badge.svg)](https://github.com/tomdionysus/mimir/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/tomdionysus/mimir/branch/develop/graph/badge.svg)](https://codecov.io/gh/tomdionysus/mimir)
 [![CodeQL](https://github.com/tomdionysus/mimir/actions/workflows/codeql.yml/badge.svg)](https://github.com/tomdionysus/mimir/actions/workflows/codeql.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](CMakeLists.txt)
+[![Platform: Linux x86-64 and arm64](https://img.shields.io/badge/platform-Linux%20x86--64%20%7C%20arm64-lightgrey.svg)](.github/workflows/ci.yml)
+[![Protocol: RESP2 and RESP3](https://img.shields.io/badge/protocol-RESP2%20%7C%20RESP3-informational.svg)](#what-it-does)
+[![Compatibility: Valkey 8](https://img.shields.io/badge/compatible-Valkey%208-informational.svg)](#the-differential-gate)
+[![Built on Dannan](https://img.shields.io/badge/built%20on-Dannan%200.9.2-informational.svg)](https://github.com/tomdionysus/dannan)
 
 Mimir is a distributed database for a cluster of trusted machines that speaks the Redis
 protocol. It is a C++20 library and a node binary that turn a set of nodes into one

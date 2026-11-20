@@ -121,6 +121,17 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the Pis run mimi
   `develop` directly. Read the completed
   hosted CI runs, not only the newest (superseded runs are cancelled); push
   no more until a run completes when a fix awaits confirmation.
+- Hosted CI is maintained (Tom, 2026-11-20: "If you have public github
+  repos, fix and maintain github CI"): read every completed run after a
+  push, and fix a red one first. Before each commit, check the whole tree's
+  format on the Pi (`clang-format-19 --dry-run -Werror` over every `.cpp`
+  and `.h`), not only the files just changed: CI's check job runs over all
+  of them (a slip in database.cpp failed it at `11183b1`).
+- No cluster cores are ever held idle (Tom, 2026-11-20: "You may NOT hold
+  cluster cores idle for any reason. Copy evidence off if needed"), and
+  nothing started for a run is left running after it: stop the Valkey
+  server and every test node a run started (a hand-run loop left Valkey
+  running on neptune on 2026-11-20).
 - A test node is stopped by its own PID, never `pkill -x mimir-node`: every
   Pi runs mimir.service.
 - ACL's table (`mimir/command/acl_table.inc`) is generated from Valkey
