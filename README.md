@@ -259,7 +259,7 @@ transactions, scripting and functions, pub/sub and keyspace notifications, and A
 
 **In progress: the cluster by agreement**, on Dannan 0.9. Every write, on every node, a
 lone node included, is committed through Dannan's leaderless agreement on a majority of
-its key's replicas (355 tests on 2026-11-20). Built so far:
+its key's replicas (358 tests on 2026-11-20). Built so far:
 
 - single-key writes, with a retried commit answering as the first did;
 - `MULTI`/`EXEC` with `WATCH`, blocking pops, and scripts, each over one key;
@@ -267,7 +267,9 @@ its key's replicas (355 tests on 2026-11-20). Built so far:
   later undone, and strict reads confirmed with a majority for a connection that asks
   with `CLIENT STRICT ON`;
 - `PUBLISH` and keyspace notifications reaching every node's subscribers;
-- a restarted node catching up before it votes.
+- a restarted node catching up before it votes;
+- an expired key deleted by agreement, so a later `EXPIRE` on another node is never
+  lost to it.
 
 Not yet, in a cluster or on a lone node:
 
@@ -278,7 +280,7 @@ Not yet, in a cluster or on a lone node:
 - Every node must be in every key's replica set: forwarding and `MOVED`, moving shards
   as nodes join and leave, and the `CLUSTER` commands are not built.
 - `KEYS`, `SCAN` and `DBSIZE` across the cluster, ACL changes and loaded
-  scripts shared between nodes, and expiry by agreement.
+  scripts shared between nodes.
 
 What follows the cluster, in order (`TODO/ACTIVE.md`):
 
