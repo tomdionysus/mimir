@@ -1091,7 +1091,8 @@ Database::Blocking Database::blocking_locked(const Spec& spec, const std::vector
 }
 
 std::optional<std::string> Database::cluster_refusal_locked(const Spec& spec, const std::vector<std::string>& args, const Session& session) {
-  static const std::string several = "ERR this command writes more than one key, which Mimir refuses until Dannan 0.10.0's atomic commit (ruling 35)";
+  static const std::string several =
+      "ERR this command writes more than one key, which Mimir refuses until Dannan's atomic commit across replica sets (ruling 35)";
   const std::string_view name = spec.name;
   // A script runs by agreement on the one key it declares (none: it runs
   // here, reading only).

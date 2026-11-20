@@ -284,7 +284,7 @@ Not yet, in a cluster or on a lone node:
 
 - **A write naming more than one key is refused**: `MSET`, `RENAME`, `LMOVE`, `SMOVE`,
   the `STORE` commands, `FLUSHALL` and `FLUSHDB`, and transactions and scripts over
-  several keys. They wait for the atomic commit across replica sets in Dannan 0.10.0.
+  several keys. They wait for Dannan's atomic commit across replica sets.
 - A script may write only the one key it declares.
 - Every node must be in every key's replica set: forwarding and `MOVED`, moving shards
   as nodes join and leave, and the `CLUSTER` commands are not built.
