@@ -1,7 +1,7 @@
 # Mimir - Active Work
 
 Last updated: 2026-11-20. `COMPLETED.md` is the record, with gate counts. The
-design is `TODO/2026-11-15-mimir-design.md`: Tom's rulings (1 to 39), the two
+design is `TODO/2026-11-15-mimir-design.md`: Tom's rulings (1 to 42), the two
 classes of command, agreement in Dannan, durability, and the order.
 
 ## Resume here
@@ -145,20 +145,20 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the Pis run mimi
 
 ## Waiting on Tom
 
-- The shard count's cap of 8192 (Dannan's advert is at most 1 KiB):
-  recommended to accept as the upper bound of "configurable" (ruling 15).
 - `decided` for a merging write (the design's "Durability", Proposed): a
   majority holds it in memory before the answer. To be asked when stage 4
   starts.
 
-## Proposed, not yet put to Tom
+## Settled 2026-11-20 (rulings 40 to 42), still to build
 
-- The shard count is one value for the whole cluster, fixed when the cluster
-  is made; a node configured with another is refused at start (Dannan
-  carries it in the cluster's identity).
-- HELLO says `server: mimir`, `version: 8.1.1`; INFO says
-  `redis_version:7.2.4` and `valkey_version:8.1.1` as Valkey 8.1.1 does, plus
-  `mimir_version`; scripts see `SERVER_NAME` "mimir".
+- A Mimir command listing every node's client address (ruling 40; the
+  plan's Mi-5).
+- Resizable shard count, at most 8192 (ruling 41): to design. Needs Dannan's
+  slot table to change its count, which goes to the stack plan.
+- HELLO, INFO and SERVER_NAME as ruling 42 says: check what is built
+  against it.
+- Stage 5 on Dagda's value-less durable store (the design, after ruling
+  42).
 
 ## What stage 3 rests on
 
