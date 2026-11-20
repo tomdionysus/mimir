@@ -161,7 +161,8 @@ class Database {
   // The lock the transaction commands are called under, for their annotations.
   dannan::contract::Mutex& lock_for_transactions() DANNAN_RETURN_CAPABILITY(_mutex) { return _mutex; }
   // The scripts' interpreter and cache, one for every database as Valkey's.
-  Scripting& scripting_locked() DANNAN_REQUIRES(_mutex) { return _scripting; }
+  // While a FUNCTION change runs speculatively (in a cluster), its own copy.
+  Scripting& scripting_locked() DANNAN_REQUIRES(_mutex) { return _scratch_scripting ? *_scratch_scripting : _scripting; }
   // The users, their permissions and the log of refusals. While an ACL change
   // runs speculatively (in a cluster), its own copy of the users.
   Acl& acl_locked() DANNAN_REQUIRES(_mutex) { return _scratch_acl ? *_scratch_acl : _acl; }
@@ -240,6 +241,12 @@ class Database {
     bool expiry = false;
     // ACL SETUSER or DELUSER, on the users' register (ruling 27).
     bool acl = false;
+    // FUNCTION LOAD, DELETE, FLUSH or RESTORE, on the libraries' register
+    // (ruling 39).
+    bool functions = false;
+    // SCRIPT LOAD, or an EVAL's script shared: on the register of its SHA
+    // (ruling 39). An EVAL's has no waiter.
+    bool script = false;
   };
   struct Waiter {
     Waiter(Session* session_, std::vector<std::string> args_, std::vector<std::string> keys_, bool null_bulk_, Wake wake_, bool postponed_ = false,
@@ -287,6 +294,19 @@ class Database {
   // connections of a user gone, or whose channels narrowed under them, are
   // closed (`own` after its reply, into `closing`). Whether it was newer.
   bool install_acl_locked(const std::string& version, const cluster::Record& record, Session* own, std::vector<Session*>& closing) DANNAN_REQUIRES(_mutex);
+  // A FUNCTION change's change, on the libraries the record holds (none
+  // before the first), and the libraries' record installed as this node's.
+  Agreements::Changed speculate_functions(const Proposal& proposal, const cluster::Record& base);
+  bool install_functions_locked(const std::string& version, const cluster::Record& record) DANNAN_REQUIRES(_mutex);
+  // A script's change: SCRIPT LOAD run here (it compiles the body, and
+  // caches it), the body its register's record.
+  Agreements::Changed speculate_script(const Proposal& proposal, const cluster::Record& base);
+  // An EVAL's script, shared with the cluster once by this node, in the
+  // background; queued for start_pending.
+  void share_script_locked(const std::string& body) DANNAN_REQUIRES(_mutex);
+  // An EVALSHA's script missing here, read from its register at a majority
+  // and cached; the command then runs again (its wait is a postponed one).
+  void find_script(uint64_t wait, std::string sha);
   // A blocking write's timeout and timeout reply, read from its arguments:
   // the error when its timeout is refused.
   struct Blocking {
@@ -439,6 +459,13 @@ class Database {
   std::vector<std::shared_ptr<Proposal>> _pending DANNAN_GUARDED_BY(_mutex);
   // An ACL change's speculative users, and the connections it may not close.
   Acl* _scratch_acl DANNAN_GUARDED_BY(_mutex) = nullptr;
+  // A FUNCTION change's speculative libraries.
+  Scripting* _scratch_scripting DANNAN_GUARDED_BY(_mutex) = nullptr;
+  // The scripts this node has shared with the cluster since its last SCRIPT
+  // FLUSH, and when that was: a script's register last written before it
+  // is not brought back here by EVALSHA.
+  std::set<std::string> _shared_scripts DANNAN_GUARDED_BY(_mutex);
+  uint64_t _scripts_flushed_ms DANNAN_GUARDED_BY(_mutex) = 0;
   std::map<int64_t, Session*> _no_sessions DANNAN_GUARDED_BY(_mutex);
   // Keys (scoped) whose expiry is proposed: one proposal each at a time.
   std::set<std::string> _expiring DANNAN_GUARDED_BY(_mutex);

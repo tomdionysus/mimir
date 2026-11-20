@@ -127,6 +127,9 @@ struct Session {
   // CLIENT STRICT ON (ruling 37): every read on this connection is confirmed
   // with a majority of its key's replicas before it is answered.
   bool strict = false;
+  // In a cluster, the SHA an EVALSHA just looked for in the cluster's script
+  // registers (ruling 39): run again, it does not look a second time.
+  std::string script_looked_up;
 };
 
 // MIGRATE's work off the database's lock (ruling 31): the target, the keys
