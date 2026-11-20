@@ -193,7 +193,8 @@ installation and use - creating deb packages, running full tests including
 sanitation and fuzzing, and tagging and merging to main, pushing. You must
 maintain a release badge."
 
-Mimir has cut no release yet (0.1.0 in CMake). The first is cut when the
+Only minor or patch versions are bumped (Tom, 2026-11-20); a major
+version is his. Mimir has cut no release yet (0.1.0 in CMake). The first is cut when the
 work above is done: README rewritten for installation and use (the design
 and status move to docs/ or TODO/); a deb package of mimir-node (binary,
 libmimir, the systemd unit and a default config.yaml, depending on the
