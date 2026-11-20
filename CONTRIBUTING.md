@@ -27,8 +27,8 @@ serves and which discipline it follows.
   states reach it by merging `develop`.
 - `develop` is where work happens.
 - Features and milestones are developed on branches off `develop` as
-  `feature/<short-name>` and merged back into `develop` on completion. Small
-  fixes and documents may go to `develop` directly.
+  `feature/<short-name>` and squashed onto `develop` as one commit on
+  completion. Small fixes and documents may go to `develop` directly.
 
 ## Tags and releases
 
