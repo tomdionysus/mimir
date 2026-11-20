@@ -206,6 +206,26 @@ ASan, TSan, the differential, and the fuzz targets for a bounded time);
 then develop merged to main, tagged x.y.z, both pushed. The release badge
 is in the README already.
 
+The deb follows the stack's convention (the stack's coordinating session,
+2026-11-20; read Manannan's docs/packaging.md and debian/, and Dannan's and
+Dagda's debian/, first):
+- debhelper (compat 13) from debian/, driving the CMake build, with CMake
+  install() rules; dh_installsystemd and dh_installsysusers;
+  scripts/build-deb.sh; built on a claimed build server and in CI's package step;
+  lintian clean.
+- Dannan from libdannan0.9 through ${shlibs:Depends}: CMake finds an
+  installed Dannan first and fetches only when none is found. The Lua
+  libraries likewise.
+- Package `mimir` only (no headers, so no mimir-dev): libmimir is built
+  static into /usr/bin/mimir-node.
+- /etc/mimir/config.yaml (conffile); secrets.yaml at 0600 made by postinst,
+  never shipped; /var/lib/mimir; mimir.service as the mimir user, installed
+  disabled; /usr/share/mimir/dashboard later.
+- Version from git describe; the tag must equal project(VERSION); only tag
+  builds are released. docs/packaging.md for packaging.
+- The registrar's install under /opt/mimir moves to the package at the
+  first release.
+
 ## Waiting on the maintainer
 
 - `decided` for a merging write (the design's "Durability", Proposed): a
