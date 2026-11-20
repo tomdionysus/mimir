@@ -2,6 +2,17 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-20: The varying differential count explained
+
+- The maintainer (2026-11-20): flaky tests are not tolerated. NotificationsCollections
+  differed by 29 or 30 replies from run to run. Five runs of that case
+  alone, each on a fresh node, gave 29, 30, 29, 29, 30. The varying reply
+  is `SPOP s`. In Valkey, `SMOVE s s2 b` leaves `s` holding only "c", so
+  its pop is fixed. Mimir refuses that SMOVE (ruling 35), so `s` holds "b"
+  and "c", and the pop picks at random (seeded by the operation id).
+- A knock-on of a known refusal, not a defect. It goes when multi-key
+  writes land (Dannan 0.10.0). No unit test varies.
+
 ## 2026-11-20: Pub/sub by prefix (the stack plan's item 7)
 
 - `0ff90ef`. Each node subscribes on Dannan's `mimir.pubsub` notify channel

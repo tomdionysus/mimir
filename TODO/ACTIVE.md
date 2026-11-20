@@ -35,8 +35,11 @@ State on 2026-11-20:
 - `develop` is pushed. Hosted CI read green at `3aee353`.
 - Last gate: release 362 passed (node-c, 2026-11-20). The per-case
   differential (`tools/differential.sh build-ci/release`) shows 233 or 234
-  differing replies. NotificationsCollections varies by one between runs:
-  a flaky test, being investigated (the maintainer: flaky tests are not tolerated), all accounted for: ruling 35 refusals (157 replies
+  differing replies. NotificationsCollections varied by one between runs;
+  investigated 2026-11-20: `SMOVE s s2 b` is refused (ruling 35), so where
+  Valkey's `s` holds only "c", Mimir's holds "b" and "c", and the next
+  `SPOP s` picks either at random. It is a knock-on of a known refusal, not
+  a Mimir defect, and goes when multi-key writes land (Dannan 0.10.0)., all accounted for: ruling 35 refusals (157 replies
   carry its words), 4 undeclared-key script writes (ruling 36), and the
   rest cases whose setup used a refused command.
 - Dannan is pinned at 0.9.2 (2026-11-20), the stack's version. On a build server,
