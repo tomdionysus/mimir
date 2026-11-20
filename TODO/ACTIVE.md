@@ -24,12 +24,15 @@ list is "The converged plan" -> "Mimir" in
    sets kept whole come from Dannan. Expiry on the bounded hybrid clock.
 7. The node binary onto Dannan's helper; fuzz onto Dannan's export.
 8. Mimir's own: eviction; listing every node's client address, plus DNS.
-9. Settings names to the stack's pattern (the maintainer, 2026-11-20): a
-   YAML key a.b is the flag --a-b and MIMIR_A_B, overriding the file. Two
-   differ today: listen.host is --listen and listen.port is --port
-   (MIMIR_PORT); they become --listen-host and --listen-port, the old names
-   kept one minor as aliases. Done the next time mimir-node's settings are
-   touched, after 0.1.0, never mid-release.
+9. Settings names to the stack's pattern (the maintainer, 2026-11-20;
+   Dannan's docs/config.md): a YAML key a.b is the flag --a-b and the
+   variable <PREFIX>_A_B, overriding the file, and the prefix is the
+   binary's name, MIMIR_NODE. Mimir differs in three ways today: the prefix
+   is MIMIR (MIMIR_CONFIG, MIMIR_PORT), listen.host is --listen and
+   listen.port is --port. They become MIMIR_NODE_*, --listen-host and
+   --listen-port in Mimir's next minor, since a flag is part of its
+   interface (dannan-node moves its own in 0.11.0 the same way). Done the next time mimir-node's settings are touched, after
+   0.1.0, never mid-release.
 
 Items 2, 3, 5, 6 and 7 wait for Dannan's next minor. Until replica sets
 ship, Dannan's operator rule holds: never retire a genesis member while
