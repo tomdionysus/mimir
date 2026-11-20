@@ -93,17 +93,17 @@ Agreements::Agreements(Space& served, std::chrono::milliseconds deadline, size_t
       in.finish();
       if (!_space.store().ready()) return dannan::net::Handled::failed(503, "not_ready", "this node is catching up itself");
       // One past a page: whether there are more.
-      std::vector<agree::Name> page;
-      _space.store().each_held(slot, after, [this, &page](const agree::Name& name, const agree::AcceptorState&) {
-        page.push_back(name);
-        return page.size() <= _page;
+      std::vector<agree::Name> given;
+      _space.store().each_held(slot, after, [this, &given](const agree::Name& name, const agree::AcceptorState&) {
+        given.push_back(name);
+        return given.size() <= _page;
       });
-      const bool more = page.size() > _page;
-      if (more) page.pop_back();
+      const bool more = given.size() > _page;
+      if (more) given.pop_back();
       dannan::net::Writer out;
       out.u8(more ? 1 : 0);
-      out.u32(static_cast<uint32_t>(page.size()));
-      for (const auto& name : page) out.bytes(name);
+      out.u32(static_cast<uint32_t>(given.size()));
+      for (const auto& name : given) out.bytes(name);
       return dannan::net::Handled::processed(dannan::net::Message{dannan::net::message::ok, out.take(), {}});
     } catch (const dannan::net::DecodeError&) {
       return dannan::net::Handled::failed(400, "bad_request", "the request cannot be read");
