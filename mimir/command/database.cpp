@@ -272,8 +272,11 @@ void Database::bind_listeners() {
   for (size_t i = 0; i < _dbs.size(); ++i) {
     keyspace::Keyspace::Listener listener;
     listener.expired = [this, i](std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+      // Announced by every node whose view finds it, to its own subscribers,
+      // in Valkey's order (before the miss of the read that found it).
       notify_locked(i, 'x', "expired", key);
       invalidate_locked(key, nullptr);
+      if (_settings.agreements && !_writing_lookup) expire_by_agreement_locked(i, key);
     };
     listener.created = [this, i](std::string_view key) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
       if (!_installing) notify_locked(i, 'n', "new", key);
@@ -788,7 +791,10 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         feed_monitors(session, *spec, args, db);
         // An expired key is found here, as Valkey's write finds it: its
         // "expired" is this node's to announce, once, before the write's own.
+        // The write's own agreement takes it out of the record.
+        _writing_lookup = true;
         _dbs[db]->find(key);
+        _writing_lookup = false;
         publish_events();
         auto proposal = std::make_shared<Proposal>();
         proposal->wait = _next_wait++;
@@ -895,6 +901,34 @@ void Database::repropose_locked(const std::shared_ptr<Proposal>& proposal) {
   proposal->issued_ms = _wall.unix_ms();
   proposal->deadline_ms = proposal->issued_ms + proposal_deadline_ms;
   _pending.push_back(proposal);
+}
+
+void Database::expire_by_agreement_locked(size_t db, std::string_view key) {
+  std::string named = scoped(db, key);
+  if (!_expiring.insert(named).second) return;
+  auto proposal = std::make_shared<Proposal>();
+  proposal->expiry = true;
+  proposal->db = db;
+  proposal->key = std::string(key);
+  proposal->operation = _settings.agreements->operation_id();
+  proposal->issued_ms = _wall.unix_ms();
+  proposal->deadline_ms = proposal->issued_ms + proposal_deadline_ms;
+  _pending.push_back(std::move(proposal));
+}
+
+Agreements::Changed Database::speculate_expiry(const Proposal& proposal, const cluster::Record& base) {
+  // Applied already, by an attempt an earlier round took: its result again.
+  if (const auto* applied = base.find(proposal.operation)) return {base, applied->reply};
+  // Gone already, or given a later expiry (or none) since: nothing to do.
+  if (!base.payload || !base.expires_at || *base.expires_at > proposal.issued_ms) return {base, encode_result("", {}, false)};
+  // Its "expired" was announced by each node's view as it found it; the
+  // deletion raises nothing more. It counts as a write, for WATCH.
+  cluster::Record out;
+  out.applied = base.applied;
+  out.serial = base.serial + 1;
+  std::string result = encode_result("", {}, true);
+  if (!cluster::note_applied(out, {proposal.operation, proposal.issued_ms, result})) return {base, encode_result("", {}, false)};
+  return {std::move(out), std::move(result)};
 }
 
 void Database::start_pending() {
@@ -1030,7 +1064,8 @@ Agreements::Changed Database::speculate(const Proposal& proposal, const cluster:
 
 void Database::propose(std::shared_ptr<Proposal> proposal) {
   _settings.agreements->change(
-      proposal->db, proposal->key, [this, proposal](const cluster::Record& base) { return speculate(*proposal, base); },
+      proposal->db, proposal->key,
+      [this, proposal](const cluster::Record& base) { return proposal->expiry ? speculate_expiry(*proposal, base) : speculate(*proposal, base); },
       [this, proposal](Agreements::Outcome outcome) { decided(proposal, std::move(outcome)); });
 }
 
@@ -1041,6 +1076,30 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
   Woken woken;
   Wake wake;
   std::string bytes;
+  if (proposal->expiry) {
+    {
+      dannan::contract::Lock lock(_mutex);
+      // Committed: what the record now is becomes the view (a later EXPIRE
+      // elsewhere puts the key back). Refused: the record keeps the key
+      // until a later write or expiry finds it.
+      _expiring.erase(scoped(proposal->db, proposal->key));
+      if (outcome.committed) {
+        Session* const previous = _current;
+        _current = nullptr;
+        _touched.clear();
+        const auto result = decode_result(outcome.result);
+        if (install_locked(proposal->db, proposal->key, outcome.version, outcome.record) && result && result->wrote)
+          touch_key_locked(proposal->db, proposal->key, nullptr);
+        if (!_waiters.empty()) serve_ready(woken);
+        publish_events();
+        flush_tracking_locked(nullptr);
+        _current = previous;
+      }
+    }
+    for (auto& [wake_one, reply] : woken) wake_one(std::move(reply));
+    start_pending();
+    return;
+  }
   {
     dannan::contract::Lock lock(_mutex);
     const auto found = _waiters.find(proposal->wait);
@@ -1581,16 +1640,20 @@ size_t Database::waiting() {
 }
 
 size_t Database::expire_step(size_t budget) {
-  dannan::contract::Lock lock(_mutex);
-  // While CLIENT PAUSE holds writes nothing expires, as Valkey's pause holds
-  // its expiry.
-  if (_pause_until_ms > _wall.unix_ms()) return 0;
-  // No connection's command runs here: every invalidation is pushed.
-  _current = nullptr;
   size_t removed = 0;
-  for (auto& db : _dbs) removed += db->expire_step(budget);
-  publish_events();
-  flush_tracking_locked(nullptr);
+  {
+    dannan::contract::Lock lock(_mutex);
+    // While CLIENT PAUSE holds writes nothing expires, as Valkey's pause holds
+    // its expiry.
+    if (_pause_until_ms > _wall.unix_ms()) return 0;
+    // No connection's command runs here: every invalidation is pushed.
+    _current = nullptr;
+    for (auto& db : _dbs) removed += db->expire_step(budget);
+    publish_events();
+    flush_tracking_locked(nullptr);
+  }
+  // In a cluster each key found is deleted by agreement.
+  start_pending();
   return removed;
 }
 

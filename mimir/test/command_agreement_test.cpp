@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "dannan/contract/time_source.h"
+#include "dannan/test/fixtures/stepped_time.h"
 #include "mimir/command/agreements.h"
 #include "mimir/command/database.h"
 
@@ -109,14 +110,23 @@ class Registers final : public Agreements {
 
 class AgreementBed {
  public:
-  AgreementBed() {
+  // On the system's wall clock, or on stepped wall time.
+  explicit AgreementBed(bool stepped = false) {
     registers = std::make_shared<Registers>(io);
     DatabaseSettings settings;
     settings.databases = 2;
     settings.agreements = registers;
-    database = std::make_unique<Database>(dannan::contract::system_wall_clock(), settings);
+    database = std::make_unique<Database>(stepped ? static_cast<const dannan::contract::WallClock&>(wall) : dannan::contract::system_wall_clock(), settings);
     session.id = database->next_client_id();
   }
+
+  // Everything proposed meanwhile, decided.
+  void settle() {
+    io.restart();
+    io.run();
+  }
+
+  dannan::test::SteppedWall wall;
 
   // The command's reply, waiting for its agreement if it has one.
   std::string run(std::vector<std::string> args) {
@@ -402,6 +412,57 @@ TEST(CommandAgreement, ANoticeBreaksAWatchOnItsKey) {
   EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
   EXPECT_EQ(bed.run({"GET", "k"}), "+QUEUED\r\n");
   EXPECT_EQ(bed.run({"EXEC"}), "*-1\r\n");
+}
+
+TEST(CommandAgreement, AnExpiredKeyIsDeletedByAgreement) {
+  using namespace std::chrono_literals;
+  AgreementBed bed(true);
+  EXPECT_EQ(bed.run({"SET", "t", "v", "PX", "100"}), "+OK\r\n");
+  const uint64_t serial = bed.registers->record(0, "t").serial;
+  bed.wall.advance(200ms);
+  // A read finds it expired here: answered at once, and its deletion is
+  // proposed, once however often it is found meanwhile.
+  EXPECT_EQ(bed.run({"GET", "t"}), "$-1\r\n");
+  EXPECT_EQ(bed.run({"EXISTS", "t"}), ":0\r\n");
+  EXPECT_EQ(bed.registers->proposals, 2);
+  bed.settle();
+  EXPECT_FALSE(bed.registers->record(0, "t").payload);
+  // The deletion counts as a write, for WATCH.
+  EXPECT_EQ(bed.registers->record(0, "t").serial, serial + 1);
+
+  // Active expiry finds one no read asked for.
+  EXPECT_EQ(bed.run({"SET", "a", "v", "PX", "100"}), "+OK\r\n");
+  bed.wall.advance(200ms);
+  EXPECT_EQ(bed.database->expire_step(100), 1u);
+  bed.settle();
+  EXPECT_FALSE(bed.registers->record(0, "a").payload);
+}
+
+TEST(CommandAgreement, AnExpiryGivenALaterOneElsewhereIsNotDeleted) {
+  using namespace std::chrono_literals;
+  AgreementBed bed(true);
+  EXPECT_EQ(bed.run({"SET", "u", "v", "PX", "100"}), "+OK\r\n");
+  // Another node's PEXPIRE committed, its notice not yet here.
+  bed.registers->record(0, "u").expires_at = bed.wall.unix_ms() + 100000;
+  bed.wall.advance(200ms);
+  EXPECT_EQ(bed.run({"GET", "u"}), "$-1\r\n");
+  bed.settle();
+  // The deletion found the later expiry and changed nothing; what it
+  // committed brought this node's view up to date.
+  ASSERT_TRUE(bed.registers->record(0, "u").payload);
+  EXPECT_EQ(bed.run({"GET", "u"}), "$1\r\nv\r\n");
+}
+
+TEST(CommandAgreement, AWriteToAnExpiredKeyTakesItOutItself) {
+  using namespace std::chrono_literals;
+  AgreementBed bed(true);
+  EXPECT_EQ(bed.run({"SET", "w", "old", "PX", "100"}), "+OK\r\n");
+  bed.wall.advance(200ms);
+  EXPECT_EQ(bed.run({"SET", "w", "new", "NX"}), "+OK\r\n");
+  bed.settle();
+  // One proposal for the write, none for the expiry it found.
+  EXPECT_EQ(bed.registers->proposals, 2);
+  EXPECT_EQ(bed.run({"GET", "w"}), "$3\r\nnew\r\n");
 }
 
 TEST(CommandAgreement, AStrictReadSeesWhatAMajorityHolds) {
