@@ -35,7 +35,8 @@ State on 2026-11-20:
 - `develop` is pushed. Hosted CI read green at `3aee353`.
 - Last gate: release 362 passed (corvus-neptune, 2026-11-20). The per-case
   differential (`tools/differential.sh build-ci/release`) shows 233 or 234
-  differing replies (NotificationsCollections varies by one), all accounted for: ruling 35 refusals (157 replies
+  differing replies. NotificationsCollections varies by one between runs:
+  a flaky test, being investigated (Tom: flaky tests are not tolerated), all accounted for: ruling 35 refusals (157 replies
   carry its words), 4 undeclared-key script writes (ruling 36), and the
   rest cases whose setup used a refused command.
 - Dannan is pinned at 0.9.2 (2026-11-20), the stack's version. On a Pi,
@@ -98,12 +99,16 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the Pis run mimi
     incremental `cmake --build build-ci/release -j2`.
 - corvus-uranus has less memory than the others (3 to 4 GB): `-j1` for heavy
   translation units, and no sanitizer builds there.
-- Sanitizer runs (ASan, UBSan, TSan) only before a release, or to hunt a
-  named bug that cannot be pinned any other way; never as a step's gate
-  (Tom, restated 2026-11-17). Name the release or the bug before starting
-  one. Mimir's gate is release plus differential. Hosted CI has four linux
-  jobs (check, release on x86-64 and arm64, clang) and coverage; its clang
-  job catches thread-safety annotations the Pis' GCC gate cannot.
+- Tom, 2026-11-20: "ASan/TSan etc are to be run only on the completion of a
+  feature or milestone before merge to develop; it is also acceptable to run
+  them to diagnose bugs where other methods have failed. ... Do not run
+  dozens of test runs, test once and be done with it. Do not tolerate flaky
+  tests. Investigate tests that randomly fail." So: sanitizers once per
+  completed feature, before the squash onto `develop` (on saturn or
+  neptune, not uranus); a gate runs once; a result that changes from run to
+  run is a defect. Mimir's gate is release plus differential. Hosted CI has
+  four linux jobs (check, release on x86-64 and arm64, clang) and coverage;
+  its clang job catches thread-safety annotations the Pis' GCC gate cannot.
 - Fuzz targets build with clang 19 and the default
   `fuzzer,address,undefined`.
 - Features and milestones go on a `feature/<name>` branch off `develop`,
