@@ -6,12 +6,12 @@ classes of command, agreement in Dannan, durability, and the order.
 
 ## Resume here
 
-Next: expiry by agreement, step 3.2 of "Ordered work" below.
+Next: routing, step 3.3 of "Ordered work" below.
 
 State on 2026-11-20:
 
 - `develop` is pushed. Hosted CI read green at `3aee353`.
-- Last gate: release 355 passed (node-c, 2026-11-20). The per-case
+- Last gate: release 358 passed (node-c, 2026-11-20). The per-case
   differential (`tools/differential.sh build-ci/release`) shows 233
   differing replies, all accounted for: ruling 35 refusals (157 replies
   carry its words), 4 undeclared-key script writes (ruling 36), and the
@@ -178,11 +178,7 @@ Settled with Dannan in review (the record is in `COMPLETED.md`, "The Dannan
    agreement; commit notices; transactions and WATCH over one key; blocking
    pops on one key; scripts on their one declared key; pub/sub and keyspace
    notifications across the cluster; catch-up after a restart; strict reads
-   (ruling 37). Still to do, in this order:
-   2. **Expiry by agreement.** Today each node expires a key in its own
-      view and raises "expired" to its own subscribers. The delete should
-      commit, so every node agrees the key is gone and the event is raised
-      once.
+   (ruling 37); expiry by agreement. Still to do, in this order:
    3. **Routing.** A node outside a key's set forwards the command to a
       replica (Routes::call), or answers MOVED to a cluster-aware client.
       CLUSTER SLOTS, SHARDS and NODES describe the cluster. With it:

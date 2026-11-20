@@ -2,6 +2,30 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-20: Stage 3: expiry by agreement
+
+- `2d42f55`. When a node's view finds a key expired (a read, or active
+  expiry), it announces "expired" to its own subscribers as before, in
+  Valkey's order, and proposes the key's deletion: one proposal per key at
+  a time, with no waiter.
+- The deletion's change deletes only if the agreed record has expired by
+  the proposal's issue time. A later expiry committed elsewhere wins: the
+  change leaves the record alone, and its commit puts the key back in this
+  node's view. The deletion counts as a write for WATCH (serial + 1) and is
+  noted with its operation id, so a retry answers as the first attempt.
+- A write that finds its key expired takes it out in its own agreement and
+  proposes no separate deletion.
+- A refused deletion leaves the record holding the key until a later write
+  or expiry on some node finds it. Known edge: with clock skew, a node may
+  announce "expired" for a key a later EXPIRE elsewhere then keeps.
+- Tests: CommandAgreement.AnExpiredKeyIsDeletedByAgreement,
+  AnExpiryGivenALaterOneElsewhereIsNotDeleted,
+  AWriteToAnExpiredKeyTakesItOutItself; the bed can run on stepped wall
+  time. They were written with the code, not run against the old code
+  first.
+- Gate on node-c (-j2): release 358 passed. Differential, per
+  case: 233 differing replies, unchanged.
+
 ## 2026-11-20: Stage 3: strict reads (ruling 37)
 
 - CLIENT STRICT ON|OFF (`fed764f`). On, a read that names keys, outside
