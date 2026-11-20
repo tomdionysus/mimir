@@ -409,9 +409,20 @@ int main(int argc, char** argv) {
     }
     finished.get_future().wait();
     // The cluster goes after the clients, while the io still runs: the node
-    // first, so no write in flight is proposed again, then the space.
+    // stops first, so no write in flight is proposed again. What its stop
+    // posted runs (one turn on each io thread); then the database and its
+    // agreements, which hold the space by reference, then the space, then the
+    // node.
     fanout.reset();
     node->stop();
+    for (int turn = 0; turn < 2; ++turn) {
+      std::promise<void> ran;
+      asio::post(io, [&ran] { ran.set_value(); });
+      ran.get_future().wait();
+    }
+    made.reset();
+    database_settings = {};
+    agreements.reset();
     space.reset();
     node.reset();
     threads.join();

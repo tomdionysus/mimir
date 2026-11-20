@@ -68,6 +68,15 @@ class PubSub {
   // subscription; it must not call back into the hub.
   using Interest = std::function<void(Kind kind, const std::string& name, bool held)>;
   void set_interest(Interest interest);
+  // The cluster's routing of a subscription: true when every other node
+  // already routes `names` of `kind` here. Otherwise the fan-out starts
+  // routing them and calls `done` once, later, on its own thread and never
+  // under the hub's lock, when the other nodes acknowledge it or its deadline
+  // passes. With no fan-out every name is routed. Set once, before the first
+  // subscription. Thread-safe.
+  using Prepare = std::function<bool(Kind kind, const std::vector<std::string>& names, std::function<void()> done)>;
+  void set_prepare(Prepare prepare);
+  bool prepare(Kind kind, const std::vector<std::string>& names, std::function<void()> done);
   // A message published on another node: delivered here, never carried on.
   size_t deliver(Kind kind, const std::string& channel, const std::string& message);
 
@@ -92,6 +101,7 @@ class PubSub {
   Table _shard DANNAN_GUARDED_BY(_mutex);
   Fanout _fanout DANNAN_GUARDED_BY(_mutex);
   Interest _interest DANNAN_GUARDED_BY(_mutex);
+  Prepare _prepare DANNAN_GUARDED_BY(_mutex);
 };
 
 }  // namespace mimir::command

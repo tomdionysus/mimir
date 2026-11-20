@@ -877,6 +877,28 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
           return executed;
         }
       }
+      // A subscription whose names the other nodes do not yet route here waits
+      // until they do (the fan-out's push acknowledged, or its deadline), then
+      // runs again: its confirmation then promises what Valkey's does, that a
+      // PUBLISH made after it, on any node, reaches it.
+      if ((spec->name == "subscribe" || spec->name == "psubscribe" || spec->name == "ssubscribe") && wake && session.push && !session.in_multi) {
+        if (session.subscribe_routed) {
+          session.subscribe_routed = false;
+        } else {
+          const auto kind = spec->name == "psubscribe" ? PubSub::Kind::pattern : spec->name == "ssubscribe" ? PubSub::Kind::shard : PubSub::Kind::channel;
+          const std::vector<std::string> names(args.begin() + 1, args.end());
+          const uint64_t id = _next_wait++;
+          // The fan-out answers later, under this lock's wait: the waiter is
+          // in place before its answer can look for it.
+          if (!_pubsub.prepare(kind, names, [this, id] { subscribe_routed(id); })) {
+            _waiters.emplace(id, Waiter{&session, args, {}, false, std::move(wake), true});
+            executed.wait = id;
+            executed.wait_seconds = 0;
+            executed.postponed = true;
+            return executed;
+          }
+        }
+      }
       auto keys = spec->find_keys ? spec->find_keys(args) : keys_of(*spec, args);
       // WATCH reads each key's write count from a majority (ruling 5's strict
       // read), so the EXEC's agreement can tell whether anything wrote it.
@@ -1571,6 +1593,20 @@ void Database::find_script(uint64_t wait, std::string sha) {
     // No bytes: the connection runs the command again.
     if (wake) wake(std::string());
   });
+}
+
+void Database::subscribe_routed(uint64_t wait) {
+  Wake wake;
+  {
+    dannan::contract::Lock lock(_mutex);
+    const auto found = _waiters.find(wait);
+    if (found == _waiters.end()) return;
+    found->second.session->subscribe_routed = true;
+    wake = std::move(found->second.wake);
+    forget_waiter(wait);
+  }
+  // No bytes: the connection runs the SUBSCRIBE again.
+  if (wake) wake(std::string());
 }
 
 bool Database::install_functions_locked(const std::string& version, const cluster::Record& record) {

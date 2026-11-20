@@ -218,6 +218,25 @@ TEST_F(ClientGate, MimirsOwnErrorsReachTheClientAsErrors) {
   EXPECT_EQ(text(several.get()), "ERR this command writes more than one key, which Mimir refuses until Dannan's atomic commit across replica sets (ruling 35)");
 }
 
+// A cluster of its own, stopped as systemd stops a node: every node exits
+// cleanly and says so, having served a write (a node that stops after
+// agreement work tears down its database, agreements and space in order).
+TEST(ClientShutdown, EveryNodeStoppedBySigtermExitsCleanly) {
+  Cluster cluster(3);
+  for (size_t i = 0; i < cluster.size(); ++i) {
+    Client client(cluster.port(i));
+    const auto set = client.command({"SET", "shutdown:" + std::to_string(i), "v"});
+    ASSERT_TRUE(set) << client.error();
+    ASSERT_EQ(text(set.get()), "OK");
+  }
+  for (size_t i = 0; i < cluster.size(); ++i) {
+    const auto stopped = cluster.stop(i);
+    ASSERT_TRUE(stopped.code) << "node " << i << " did not exit\n" << cluster.log(i);
+    EXPECT_EQ(*stopped.code, 0) << "node " << i << "\n" << cluster.log(i);
+    EXPECT_TRUE(stopped.said_stopped) << "node " << i;
+  }
+}
+
 // A cluster of its own: a node dies in it.
 TEST(ClientFailover, AClientWhoseNodeDiesReconnectsToAnotherAndFindsItsWrites) {
   Cluster cluster(3);

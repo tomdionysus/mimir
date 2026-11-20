@@ -112,6 +112,23 @@ class Cluster {
   size_t size() const noexcept { return _nodes.size(); }
   uint16_t port(size_t i) const { return _ports.at(i); }
 
+  // Node `i` is told to stop (SIGTERM), as systemd stops it: its exit code
+  // (0 when it stopped cleanly), and whether it said so with a `stopped`
+  // event; nothing if it had not exited within 20 seconds.
+  struct Stopped {
+    std::optional<int> code;
+    bool said_stopped = false;
+  };
+  Stopped stop(size_t i) {
+    Stopped out;
+    _nodes.at(i)->terminate();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (const auto line = _nodes[i]->line(deadline))
+      if (line->find("\"event\":\"stopped\"") != std::string::npos) out.said_stopped = true;
+    out.code = _nodes[i]->wait(deadline);
+    return out;
+  }
+
   // Node `i` dies at once, as a power loss would take it.
   void kill(size_t i) {
     _nodes.at(i)->signal(SIGKILL);
