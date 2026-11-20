@@ -2,6 +2,27 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-20: Stage 3: strict reads (ruling 37)
+
+- CLIENT STRICT ON|OFF (`fed764f`). On, a read that names keys, outside
+  MULTI, reads each key from a majority (Agreements::read), installs what
+  the majority holds into this node's view, then runs on it; without a
+  majority it answers CLUSTERDOWN. A read naming no key (DBSIZE, SCAN) is
+  served plain. CLIENT INFO and LIST show ` strict=1` only while it is on.
+- Test: CommandAgreement.AStrictReadSeesWhatAMajorityHolds (a value
+  committed elsewhere seen, several keys each read, refused without a
+  majority, OFF again, a bad argument).
+- `tools/differential.sh` (`17cf4d2`): the per-case differential, kept in
+  the repository after the wipe took the Pi's copy.
+- The work tree was put back on corvus-neptune after the wipe: Dannan from
+  `build/dannan-full-0.9.1.bundle`; liblua5.1-0-dev, lua-cjson-dev,
+  lua-bitop-dev and valkey-server 8.1.1 installed (service disabled, a note
+  on the board first).
+- Gate on corvus-neptune (-j2): release 355 passed. Differential, per
+  case: 233 differing replies, as before. The runner counts 157 replies
+  carrying the ruling 35 refusal and 4 undeclared script keys; the rest
+  follow from a refused setup command.
+
 ## 2026-11-19: Handoff, and the documents brought up to date
 
 - Where it stands: `develop` at `903f59a`, pushed. Last gate, 2026-11-18 on

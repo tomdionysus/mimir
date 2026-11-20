@@ -6,44 +6,22 @@ classes of command, agreement in Dannan, durability, and the order.
 
 ## Resume here
 
-1. **Strict reads are written, not built, not committed** (ruling 37, CLIENT
-   STRICT ON|OFF). They are in the working tree on `develop`:
-   - `mimir/command/connection.cpp`: CLIENT STRICT ON|OFF; CLIENT INFO and
-     LIST append ` strict=1` only while it is on.
-   - `mimir/command/table.h`: `Session::strict`.
-   - `mimir/command/database.{h,cpp}`: `Database::read_strictly` parks the
-     read, reads each key at a majority (Agreements::read), installs what the
-     majority holds, runs the handler on the view and wakes the connection;
-     no majority answers CLUSTERDOWN. execute_one calls it for a read that
-     names keys, outside MULTI, on a strict session.
-   - `mimir/test/command_agreement_test.cpp`:
-     CommandAgreement.AStrictReadSeesWhatAMajorityHolds, and `refuse_reads`
-     on the Registers fake.
+Next: expiry by agreement, step 3.2 of "Ordered work" below.
 
-   Next: claim cores, sync, `clang-format -i` those files, build, run the
-   suite (354 expected to become 355) and the per-case differential, then
-   commit ("Ask for strict reads with CLIENT STRICT"), push, and record it in
-   `COMPLETED.md`. A second test is owed with it: a strict read refused
-   without a majority.
-2. Then the rest of stage 3, in "Ordered work" below.
+State on 2026-11-20:
 
-State on 2026-11-19:
-
-- `develop` is pushed and level with `origin/develop`, apart from the
-  strict-read files above. The last code commit is `ffd3131`; everything
-  after it is documents. Hosted CI was last read green at `494ff46`, so
-  `ffd3131` has not been read green: read the newest completed run before
-  the next push.
-- Last gate: release 354 passed (corvus-jupiter, 2026-11-18). The per-case
-  differential shows 233 or 234 differences, all accounted for: 143 are
-  ruling 35 refusals, 4 are undeclared-key script writes (ruling 36), and
-  the rest are cases whose setup used a refused command.
+- `develop` is pushed. Hosted CI read green at `3aee353`.
+- Last gate: release 355 passed (corvus-neptune, 2026-11-20). The per-case
+  differential (`tools/differential.sh build-ci/release`) shows 233
+  differing replies, all accounted for: ruling 35 refusals (157 replies
+  carry its words), 4 undeclared-key script writes (ruling 36), and the
+  rest cases whose setup used a refused command.
 - Dannan is pinned at 0.9.1. Dannan has since tagged 0.9.2; nothing here
   needs it yet, and the pin moves only for a stated reason.
-- The Pis were wiped to bare OS on 2026-11-18 (Tom). `/root/mimir-work` and
-  everything in it is gone: the build trees, the Dannan checkout and tags,
-  the ACL generator's copy, and the per-case differential's runner. See "How
-  work is done" for what to put back.
+- The Pis were wiped to bare OS on 2026-11-18. The work tree is back on
+  corvus-neptune only (`/root/mimir-work`, with Dannan, the Lua dev
+  packages and Valkey 8.1.1). Another Pi needs the same: see "How work is
+  done".
 
 ## The differential gate
 
@@ -62,15 +40,12 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the Pis run mimi
 - Valkey's own answers are the expected values: probe it first, write the
   case, then the code.
 - Since stage 3, FLUSHALL is refused (ruling 35), so the cases cannot share
-  one node. The per-case run starts a fresh mimir-node for each case
-  (`--gtest_list_tests`, then one `--gtest_filter` per case, the node killed
-  by its PID after each) and counts the differences by cause. The loop was a
-  shell script on the Pi and went with the wipe; write it again under
-  `tools/` so it is kept. Earlier logs are `build/diff8each.log` and its
-  neighbours.
-- Valkey 8.1.1 was installed on jupiter and uranus with its service
-  disabled. Whether it survived the wipe is not checked: look before the
-  next run, and post a note on the board before installing it.
+  one node. `tools/differential.sh [build dir]` runs each case against a
+  fresh mimir-node, stops each by its PID, and counts the differing replies
+  by cause; its log is `<build dir>/differential.log`.
+- Valkey 8.1.1 (Debian's valkey-server, service disabled) is on
+  corvus-neptune since the wipe. Post a note on the board before installing
+  it elsewhere.
 
 ## How work is done
 
@@ -82,10 +57,11 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the Pis run mimi
 - After the 2026-11-18 wipe the Pis have build-essential, cmake, ninja, git,
   gdb, clang and lld 19 with the sanitizer runtimes, perf, and the boost,
   ssl, yaml-cpp, gtest and systemd dev packages (Lir Development Cluster).
-  The Lua runtime packages are there for mimir.service. Not confirmed, so
-  check under a claim before the first build: `liblua5.1-0-dev`,
-  `lua-cjson-dev`, `lua-bitop-dev` and `lua-cmsgpack` (asked of Lir
-  Development Cluster on 2026-11-18, not answered).
+  The Lua runtime packages are there for mimir.service, but not the dev
+  ones: Mimir's build needs `liblua5.1-0-dev`, `lua-cjson-dev` and
+  `lua-bitop-dev` (installed on neptune 2026-11-20; elsewhere, a note on
+  the board first). A Dannan clone from the bundle warns that the remote
+  HEAD is missing; FetchContent checks out the tag and does not mind.
 - Putting the work tree back on a Pi:
   - sources by rsync (`--no-o --no-g`, excluding `build*`) to
     `/root/mimir-work/mimir`, then `chown -R root:root`;
@@ -201,9 +177,8 @@ Settled with Dannan in review (the record is in `COMPLETED.md`, "The Dannan
    dannan::Node, a lone one a cluster of one; single-key writes by
    agreement; commit notices; transactions and WATCH over one key; blocking
    pops on one key; scripts on their one declared key; pub/sub and keyspace
-   notifications across the cluster; catch-up after a restart. Still to do,
-   in this order:
-   1. **Strict reads** (ruling 37): see "Resume here".
+   notifications across the cluster; catch-up after a restart; strict reads
+   (ruling 37). Still to do, in this order:
    2. **Expiry by agreement.** Today each node expires a key in its own
       view and raises "expired" to its own subscribers. The delete should
       commit, so every node agrees the key is gone and the event is raised
