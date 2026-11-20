@@ -44,7 +44,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            g++ clang clang-format cmake ninja-build git ca-certificates openssl \
+            g++ clang clang-format libclang-rt-19-dev cmake ninja-build git ca-certificates openssl \
             libboost-dev libssl-dev libyaml-cpp-dev libgtest-dev pkg-config liblua5.1-0-dev lua-cjson-dev lua-bitop-dev lua-cmsgpack
 
       - uses: actions/checkout@v4
