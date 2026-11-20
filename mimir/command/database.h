@@ -37,6 +37,18 @@
 // as Valkey's are. The cluster stage replaces the one lock with a shard's.
 namespace mimir::command {
 
+// A node of the cluster as a client can reach it (ruling 40): its id, its
+// name, where it takes clients, and whether it is the node asked.
+struct NodeAddress {
+  std::string id;
+  std::string name;
+  std::string host;
+  uint16_t port = 0;
+  // Zero: no TLS port.
+  uint16_t tls_port = 0;
+  bool self = false;
+};
+
 struct DatabaseSettings {
   // What HELLO and INFO say the server is.
   std::string server_name = "mimir";
@@ -66,6 +78,10 @@ struct DatabaseSettings {
   // and one naming more is refused until Dannan 0.10.0 (ruling 35). None: the
   // database runs every command on its own keyspace.
   std::shared_ptr<Agreements> agreements;
+  // Every active node's client address, this one's included (MIMIR NODES,
+  // ruling 40). Called under the database's lock: it must only read. None:
+  // the list is empty.
+  std::function<std::vector<NodeAddress>()> nodes;
 };
 
 // A parked command's wake: given its reply once a write has served it. Called

@@ -11,9 +11,12 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "dannan/context.h"
 #include "mimir/cluster/store.h"
+#include "mimir/command/database.h"
 
 // Mimir's agreement space on one node (stage 3, ruling 26): this node's
 // acceptors, served from its Store to proposers that advertise `mimir`, and
@@ -39,6 +42,15 @@ class Space {
 
   uint32_t shards() const;
   Store& store() noexcept { return *_store; }
+
+  // This node's name and where it takes clients, advertised for MIMIR NODES
+  // (ruling 40). An empty host: the address peers dial this node at.
+  // `tls_port` zero: none.
+  void advertise_clients(const std::string& name, const std::string& host, uint16_t port, uint16_t tls_port);
+  // Every active node that advertises where it takes clients, this one
+  // first. Thread-safe; waits on nothing.
+  std::vector<command::NodeAddress> client_addresses() const;
+  static constexpr const char* client_advert = "mimir.client";
   dannan::Context& context() noexcept { return _context; }
 
  private:

@@ -268,6 +268,8 @@ int main(int argc, char** argv) {
     // Every write commits by agreement (ruling 34), a lone node's included.
     auto agreements = std::make_shared<mimir::cluster::Agreements>(*space);
     database_settings.agreements = agreements;
+    // MIMIR NODES (ruling 40): every node's client address, read from the roster.
+    database_settings.nodes = [&space] { return space->client_addresses(); };
     std::unique_ptr<mimir::command::Database> made;
     try {
       made = std::make_unique<mimir::command::Database>(dannan::contract::system_wall_clock(), database_settings);
@@ -311,6 +313,11 @@ int main(int argc, char** argv) {
       tls = std::make_unique<dannan::listen::StreamListener>(io, config);
       tls->start(io.get_executor(), accepted);
     }
+    // Where clients may reach this node, for every node's MIMIR NODES: the
+    // listening host, unless it is a wildcard, then the cluster's advertised
+    // host, then the address peers dial.
+    const bool wildcard = host == "0.0.0.0" || host == "::" || host.empty();
+    space->advertise_clients(node_config.node_name, wildcard ? node_config.advertise_host : host, plain.port(), static_cast<uint16_t>(tls ? tls->port() : 0));
     say("{\"event\":\"listening\",\"port\":" + std::to_string(plain.port()) + ",\"tls_port\":" + std::to_string(tls ? tls->port() : 0) + ",\"id\":\"" +
         dannan::identity::to_string(self) + "\",\"cluster_port\":" + std::to_string(node->port()) + "}");
     logger.info("mimir-node " + std::string(mimir::version) + " listening on " + host + ":" + std::to_string(plain.port()));

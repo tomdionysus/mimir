@@ -33,7 +33,7 @@ commands (3.6).
 State on 2026-11-20:
 
 - `develop` is pushed. Hosted CI read green at `3aee353`.
-- Last gate: release 362 passed (node-c, 2026-11-20). The per-case
+- Last gate: release 363 passed (ASan and TSan 363 too) (node-c, 2026-11-20). The per-case
   differential (`tools/differential.sh build-ci/release`) shows 233 or 234
   differing replies. NotificationsCollections varied by one between runs;
   investigated 2026-11-20: `SMOVE s s2 b` is refused (ruling 35), so where
@@ -216,12 +216,11 @@ is in the README already.
 
 ## Settled 2026-11-20 (rulings 40 to 42), still to build
 
-- A Mimir command listing every node's client address (ruling 40; the
-  plan's Mi-5).
+- MIMIR NODES (ruling 40): done 2026-11-20.
 - Resizable shard count, at most 8192 (ruling 41): to design. Needs Dannan's
   slot table to change its count, which goes to the stack plan.
-- HELLO, INFO and SERVER_NAME as ruling 42 says: check what is built
-  against it.
+- HELLO, INFO and SERVER_NAME as ruling 42 says: checked 2026-11-20, as
+  built.
 - Stage 5 on Dagda's value-less durable store. Ruling 43 (the maintainer,
   2026-11-20): Mimir's persistence layer is Dagda; Mimir writes no durable
   file, log or format of its own.

@@ -2,6 +2,29 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-20: MIMIR NODES lists every node's client address (ruling 40)
+
+- The first feature built on a branch (`feature/node-list`) and squashed
+  onto develop, under the maintainer's rules of 2026-11-20.
+- Each node advertises its name and where it takes clients in its Dannan
+  record (advert `mimir.client`: name, host, port, TLS port). Space::
+  client_addresses() reads every active node's, this one first; a peer's
+  advert is untrusted bytes, and one that does not read is left out.
+  mimir-node advertises the listening host, or, when that is a wildcard,
+  the cluster's advertised host, or else the address peers dial.
+- MIMIR NODES answers each node's id, name, host, port, tls-port and self.
+  MIMIR HELP lists it. Every node answers the same list: no special node.
+- Mimir's own commands and subcommands now have ACL rows (client|strict,
+  mimir, mimir|help, mimir|nodes): a command with no row is never refused
+  by ACL, so CLIENT STRICT could not be refused until now.
+- Test: ClusterSpace.EveryNodeListsWhereEveryNodeTakesClients (three real
+  nodes; the command's reply; an unknown subcommand; a user refused it).
+- Ruling 42 (what Mimir calls itself) was checked: HELLO, INFO and
+  SERVER_NAME already answer as it says. Nothing to change.
+- Gate on node-c (-j1): release 363 passed; differential 233,
+  unchanged. Before the squash, ASan and TSan once each: 363 passed under
+  each, no sanitizer report.
+
 ## 2026-11-20: The varying differential count explained
 
 - The maintainer (2026-11-20): flaky tests are not tolerated. NotificationsCollections
