@@ -87,6 +87,12 @@ class Acl {
   bool delete_user(std::string_view name);
   const User* find(std::string_view name) const;
   const std::map<std::string, User, std::less<>>& users() const noexcept { return _users; }
+  // ACL LIST's lines, one a user; replace_users takes them back. In a cluster
+  // they are the users' record (ruling 27).
+  std::vector<std::string> lines() const;
+  // Every user replaced by those `lines` describe, all or none (the error
+  // when one does not load). The log is kept.
+  std::optional<std::string> replace_users(std::span<const std::string> lines);
 
   // Whether `password` opens `name`: the user exists, is on, and is nopass or
   // has the password's hash.

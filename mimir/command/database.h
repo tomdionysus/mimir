@@ -147,7 +147,9 @@ class Database {
   bool watch_broken_locked(Session& session) DANNAN_REQUIRES(_mutex);
   // For the server commands, under the lock: the connections known, and the
   // settings CONFIG reads and writes.
-  std::map<int64_t, Session*>& sessions_locked() DANNAN_REQUIRES(_mutex) { return _sessions; }
+  // None while an ACL change runs speculatively: it closes no connection
+  // until it commits.
+  std::map<int64_t, Session*>& sessions_locked() DANNAN_REQUIRES(_mutex) { return _scratch_acl ? _no_sessions : _sessions; }
   std::map<std::string, std::string>& config_locked() DANNAN_REQUIRES(_mutex) { return _config; }
   size_t waiting_locked() DANNAN_REQUIRES(_mutex) { return _waiters.size(); }
   // The databases, for SELECT, MOVE, SWAPDB, COPY ... DB, FLUSHALL and INFO.
@@ -160,8 +162,9 @@ class Database {
   dannan::contract::Mutex& lock_for_transactions() DANNAN_RETURN_CAPABILITY(_mutex) { return _mutex; }
   // The scripts' interpreter and cache, one for every database as Valkey's.
   Scripting& scripting_locked() DANNAN_REQUIRES(_mutex) { return _scripting; }
-  // The users, their permissions and the log of refusals.
-  Acl& acl_locked() DANNAN_REQUIRES(_mutex) { return _acl; }
+  // The users, their permissions and the log of refusals. While an ACL change
+  // runs speculatively (in a cluster), its own copy of the users.
+  Acl& acl_locked() DANNAN_REQUIRES(_mutex) { return _scratch_acl ? *_scratch_acl : _acl; }
   // Whether `session` may run `args` under ACL, in `context` ("toplevel",
   // "multi" or "lua"): none when it may; else the refusal's words (without a
   // code), logged.
@@ -235,6 +238,8 @@ class Database {
     // expired, which commits only if the key is expired at `issued_ms` in
     // the agreed record (a later EXPIRE elsewhere wins). No spec, no waiter.
     bool expiry = false;
+    // ACL SETUSER or DELUSER, on the users' register (ruling 27).
+    bool acl = false;
   };
   struct Waiter {
     Waiter(Session* session_, std::vector<std::string> args_, std::vector<std::string> keys_, bool null_bulk_, Wake wake_, bool postponed_ = false,
@@ -275,6 +280,13 @@ class Database {
   // The expiry's change: the key deleted if it has expired by the
   // proposal's issue time, otherwise nothing changed.
   Agreements::Changed speculate_expiry(const Proposal& proposal, const cluster::Record& base);
+  // An ACL change's change: run on the users the record holds (or, before the
+  // first, those the settings seed), the new users its record.
+  Agreements::Changed speculate_acl(const Proposal& proposal, const cluster::Record& base);
+  // The users' record committed: this node's users become it, and the
+  // connections of a user gone, or whose channels narrowed under them, are
+  // closed (`own` after its reply, into `closing`). Whether it was newer.
+  bool install_acl_locked(const std::string& version, const cluster::Record& record, Session* own, std::vector<Session*>& closing) DANNAN_REQUIRES(_mutex);
   // A blocking write's timeout and timeout reply, read from its arguments:
   // the error when its timeout is refused.
   struct Blocking {
@@ -425,6 +437,9 @@ class Database {
   bool _speculating DANNAN_GUARDED_BY(_mutex) = false;
   // Blocking pops' attempts, and expiries, to propose once the lock is let go.
   std::vector<std::shared_ptr<Proposal>> _pending DANNAN_GUARDED_BY(_mutex);
+  // An ACL change's speculative users, and the connections it may not close.
+  Acl* _scratch_acl DANNAN_GUARDED_BY(_mutex) = nullptr;
+  std::map<int64_t, Session*> _no_sessions DANNAN_GUARDED_BY(_mutex);
   // Keys (scoped) whose expiry is proposed: one proposal each at a time.
   std::set<std::string> _expiring DANNAN_GUARDED_BY(_mutex);
   // Set while a write looks its own key up before proposing: an expiry it

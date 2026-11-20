@@ -465,6 +465,52 @@ TEST(CommandAgreement, AWriteToAnExpiredKeyTakesItOutItself) {
   EXPECT_EQ(bed.run({"GET", "w"}), "$3\r\nnew\r\n");
 }
 
+TEST(CommandAgreement, UsersChangeByAgreementAndReachEveryNode) {
+  AgreementBed here;
+  here.session.tls = true;
+  EXPECT_EQ(here.run({"ACL", "SETUSER", "alice", "on", ">secret", "~app:*", "&news", "+@read", "(~other:* +get)"}), "+OK\r\n");
+  EXPECT_EQ(here.registers->proposals, 1);
+  // The users' register holds them, and this node uses them at once.
+  const cluster::Record users = here.registers->record(0xffff, "acl");
+  ASSERT_TRUE(users.payload);
+  const auto listed = here.run({"ACL", "LIST"});
+  EXPECT_EQ(here.run({"AUTH", "alice", "secret"}), "+OK\r\n");
+  EXPECT_EQ(here.run({"AUTH", "default", "any"}), "+OK\r\n");
+
+  // Another node hears of the commit: its users become the same, line for line.
+  AgreementBed there;
+  there.session.tls = true;
+  EXPECT_EQ(there.run({"AUTH", "alice", "secret"}), "-WRONGPASS invalid username-password pair or user is disabled.\r\n");
+  there.registers->commit_elsewhere(0xffff, "acl", users);
+  EXPECT_EQ(there.run({"ACL", "LIST"}), listed);
+  EXPECT_EQ(there.run({"AUTH", "alice", "secret"}), "+OK\r\n");
+  EXPECT_EQ(there.run({"AUTH", "default", "any"}), "+OK\r\n");
+
+  // A user deleted elsewhere: its connections here close.
+  bool killed = false;
+  Session theirs;
+  theirs.id = there.database->next_client_id();
+  theirs.tls = true;
+  theirs.kill = [&killed] { killed = true; };
+  there.database->welcome(theirs);
+  std::string out;
+  there.database->execute(theirs, {"AUTH", "alice", "secret"}, out);
+  ASSERT_EQ(out, "+OK\r\n");
+  EXPECT_EQ(here.run({"ACL", "DELUSER", "alice"}), ":1\r\n");
+  there.registers->commit_elsewhere(0xffff, "acl", here.registers->record(0xffff, "acl"));
+  EXPECT_TRUE(killed);
+  EXPECT_EQ(there.run({"ACL", "USERS"}), "*1\r\n$7\r\ndefault\r\n");
+  there.database->forget(theirs);
+
+  // A change refused, or inside MULTI, changes nothing.
+  EXPECT_EQ(here.run({"ACL", "SETUSER", "bob", "nonsense"}), "-ERR Error in ACL SETUSER modifier 'nonsense': Syntax error\r\n");
+  EXPECT_EQ(here.run({"ACL", "USERS"}), "*1\r\n$7\r\ndefault\r\n");
+  EXPECT_EQ(here.run({"MULTI"}), "+OK\r\n");
+  EXPECT_EQ(here.run({"ACL", "SETUSER", "carol", "on"}), "+QUEUED\r\n");
+  EXPECT_EQ(here.run({"EXEC"}), "-ERR in a cluster ACL SETUSER and DELUSER commit on their own, not inside MULTI (ruling 27)\r\n");
+  EXPECT_EQ(here.run({"ACL", "USERS"}), "*1\r\n$7\r\ndefault\r\n");
+}
+
 TEST(CommandAgreement, AStrictReadSeesWhatAMajorityHolds) {
   AgreementBed bed;
   EXPECT_EQ(bed.run({"SET", "k", "near"}), "+OK\r\n");

@@ -36,6 +36,38 @@ std::string unknown_command(const std::vector<std::string>& args) {
   return "ERR unknown command '" + args[0].substr(0, 128) + "', with args beginning with: " + listed;
 }
 
+// The users' register (ruling 27): a database number no keyspace has (there
+// are at most 1024), and one key.
+constexpr size_t acl_db = 0xffff;
+const std::string acl_key = "acl";
+
+bool changes_users(const std::vector<std::string>& args) { return args.size() >= 2 && iequals(args[0], "acl") && (iequals(args[1], "setuser") || iequals(args[1], "deluser")); }
+
+// The users' record: ACL LIST's lines, each with its length first.
+std::string encode_lines(const std::vector<std::string>& lines) {
+  std::string out;
+  for (const auto& line : lines) {
+    const auto n = static_cast<uint32_t>(line.size());
+    for (int shift = 24; shift >= 0; shift -= 8) out.push_back(static_cast<char>(n >> shift));
+    out += line;
+  }
+  return out;
+}
+
+std::optional<std::vector<std::string>> decode_lines(std::string_view bytes) {
+  std::vector<std::string> out;
+  while (!bytes.empty()) {
+    if (bytes.size() < 4) return std::nullopt;
+    uint32_t n = 0;
+    for (size_t i = 0; i < 4; ++i) n = (n << 8) | static_cast<uint8_t>(bytes[i]);
+    bytes.remove_prefix(4);
+    if (n > bytes.size()) return std::nullopt;
+    out.emplace_back(bytes.substr(0, n));
+    bytes.remove_prefix(n);
+  }
+  return out;
+}
+
 // notify-keyspace-events' classes as bits, in Valkey's letters.
 constexpr std::string_view notify_letters = "g$lshzxetdnmKE";
 constexpr uint32_t notify_bit(char letter) {
@@ -747,6 +779,32 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         out.append(reply.bytes());
         return executed;
       }
+      // ACL SETUSER and DELUSER change the users, which are cluster state:
+      // by agreement on their one register (ruling 27).
+      if (changes_users(args)) {
+        if (!wake) {
+          reply.error("ERR this write needs a connection that can wait for its agreement");
+          out.append(reply.bytes());
+          return executed;
+        }
+        feed_monitors(session, *spec, args, db);
+        auto proposal = std::make_shared<Proposal>();
+        proposal->acl = true;
+        proposal->wait = _next_wait++;
+        proposal->session = session;
+        proposal->spec = spec;
+        proposal->args = args;
+        proposal->db = acl_db;
+        proposal->key = acl_key;
+        proposal->operation = _settings.agreements->operation_id();
+        proposal->issued_ms = _wall.unix_ms();
+        proposal->deadline_ms = proposal->issued_ms + proposal_deadline_ms;
+        _waiters.emplace(proposal->wait, Waiter{&session, args, {}, false, std::move(wake), false, true});
+        executed.wait = proposal->wait;
+        executed.wait_seconds = 0;
+        after.fn = [this, proposal] { propose(proposal); };
+        return executed;
+      }
       auto keys = spec->find_keys ? spec->find_keys(args) : keys_of(*spec, args);
       // WATCH reads each key's write count from a majority (ruling 5's strict
       // read), so the EXEC's agreement can tell whether anything wrote it.
@@ -983,6 +1041,8 @@ std::optional<std::string> Database::cluster_refusal_locked(const Spec& spec, co
   }
   if (name == "exec") {
     if (!session.in_multi || session.multi_failed) return std::nullopt;
+    for (const auto& queued : session.queued)
+      if (changes_users(queued)) return "ERR in a cluster ACL SETUSER and DELUSER commit on their own, not inside MULTI (ruling 27)";
     if (exec_key_locked(session).several) return several;
     return std::nullopt;
   }
@@ -1065,7 +1125,11 @@ Agreements::Changed Database::speculate(const Proposal& proposal, const cluster:
 void Database::propose(std::shared_ptr<Proposal> proposal) {
   _settings.agreements->change(
       proposal->db, proposal->key,
-      [this, proposal](const cluster::Record& base) { return proposal->expiry ? speculate_expiry(*proposal, base) : speculate(*proposal, base); },
+      [this, proposal](const cluster::Record& base) {
+        if (proposal->expiry) return speculate_expiry(*proposal, base);
+        if (proposal->acl) return speculate_acl(*proposal, base);
+        return speculate(*proposal, base);
+      },
       [this, proposal](Agreements::Outcome outcome) { decided(proposal, std::move(outcome)); });
 }
 
@@ -1100,6 +1164,9 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
     start_pending();
     return;
   }
+  // The proposer's own connection, when its change of the users closes it:
+  // after its reply.
+  std::function<void()> close_own;
   {
     dannan::contract::Lock lock(_mutex);
     const auto found = _waiters.find(proposal->wait);
@@ -1117,13 +1184,19 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
       bytes = result->reply;
     } else if (result) {
       // A newer commit's notice may have come first: the view keeps it.
-      install_locked(proposal->db, proposal->key, outcome.version, outcome.record);
+      if (proposal->acl) {
+        std::vector<Session*> closing;
+        install_acl_locked(outcome.version, outcome.record, session, closing);
+        if (session && !closing.empty() && session->kill) close_own = session->kill;
+      } else {
+        install_locked(proposal->db, proposal->key, outcome.version, outcome.record);
+      }
       for (const auto& [db, event, key] : result->raised) _events.push_back(Event{db, event, key});
       Session* const previous = _current;
       _current = session;
       _own_invalidations.clear();
       _touched.clear();
-      if (result->wrote) touch_key_locked(proposal->db, proposal->key, session);
+      if (result->wrote && !proposal->acl) touch_key_locked(proposal->db, proposal->key, session);
       bytes = result->reply;
       if (!_waiters.empty()) serve_ready(woken);
       publish_events();
@@ -1142,13 +1215,85 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
   }
   for (auto& [wake_one, reply] : woken) wake_one(std::move(reply));
   if (wake) wake(std::move(bytes));
+  if (close_own) close_own();
   start_pending();
+}
+
+Agreements::Changed Database::speculate_acl(const Proposal& proposal, const cluster::Record& base) {
+  // Applied already, by an attempt an earlier round took: its result again.
+  if (const auto* applied = base.find(proposal.operation)) return {base, applied->reply};
+  dannan::contract::Lock lock(_mutex);
+  // The users as agreed; before the first change, those every node is
+  // seeded with by its settings (ruling 27's genesis).
+  Acl users;
+  if (base.payload) {
+    const auto lines = decode_lines(*base.payload);
+    if (!lines || users.replace_users(*lines)) return {base, encode_result("-ERR the users' stored record cannot be read\r\n", {})};
+  } else {
+    for (const std::string& line : _settings.users)
+      if (users.load_line(line)) return {base, encode_result("-ERR this node's configured users cannot be read\r\n", {})};
+  }
+  Session session = proposal.session;
+  resp::Reply reply(session.protocol);
+  const size_t db = std::min(session.db, _dbs.size() - 1);
+  Call call{session, *this, *_dbs[db], reply, proposal.args};
+  call.db = db;
+  _scratch_acl = &users;
+  try {
+    proposal.spec->handler(call);
+  } catch (const CommandError& e) {
+    reply = resp::Reply(session.protocol);
+    reply.error(e.what());
+  }
+  _scratch_acl = nullptr;
+  const std::string& bytes = reply.bytes();
+  const bool wrote = !bytes.empty() && bytes[0] != '-';
+  cluster::Record out;
+  out.applied = base.applied;
+  out.serial = base.serial + (wrote ? 1 : 0);
+  out.payload = wrote ? std::optional<std::string>(encode_lines(users.lines())) : base.payload;
+  std::string result = encode_result(bytes, {}, wrote);
+  if (!cluster::note_applied(out, {proposal.operation, proposal.issued_ms, result}))
+    return {base, encode_result("-ERR too many changes to the users are in flight; try again\r\n", {})};
+  return {std::move(out), std::move(result)};
+}
+
+bool Database::install_acl_locked(const std::string& version, const cluster::Record& record, Session* own, std::vector<Session*>& closing) {
+  // No record yet: every node keeps the users its settings seeded.
+  if (!record.payload) return false;
+  auto& known = _versions[scoped(acl_db, acl_key)];
+  if (!known.empty() && version <= known) return false;
+  const auto lines = decode_lines(*record.payload);
+  if (!lines) return false;
+  const auto before = _acl.users();
+  if (_acl.replace_users(*lines)) return false;
+  known = version;
+  // A user gone: its connections close. A user whose channels narrowed:
+  // those of its subscribers the new permissions refuse close.
+  std::set<Session*> refused;
+  for (const auto& [id, session] : _sessions)
+    if (!_acl.find(session->user)) refused.insert(session);
+  for (const auto& [name, user] : before)
+    if (const Acl::User* now = _acl.find(name))
+      for (Session* session : acl::refused_subscribers(*this, _sessions, user, *now)) refused.insert(session);
+  for (Session* session : refused) {
+    if (session == own)
+      closing.push_back(session);
+    else if (session->kill)
+      session->kill();
+  }
+  return true;
 }
 
 void Database::install_committed(size_t db, const std::string& key, const std::string& version, const cluster::Record& record) {
   Woken woken;
   {
     dannan::contract::Lock lock(_mutex);
+    if (db == acl_db && key == acl_key) {
+      std::vector<Session*> closing;
+      install_acl_locked(version, record, nullptr, closing);
+      return;
+    }
     if (db >= _dbs.size()) return;
     if (!install_locked(db, key, version, record)) return;
     Session* const previous = _current;

@@ -61,11 +61,16 @@ void close_session(Call& call, Session& session) {
     session.kill();
 }
 
-// A user's channel permissions narrowed: its subscribed connections whose
-// subscriptions the new permissions refuse are closed, as Valkey closes them.
 void close_refused_subscribers(Call& call, const Acl::User& before, const Acl::User& after) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+  for (Session* session : refused_subscribers(call.database, call.database.sessions_locked(), before, after)) close_session(call, *session);
+}
+
+}  // namespace
+
+std::vector<Session*> refused_subscribers(Database& database, const std::map<int64_t, Session*>& sessions, const Acl::User& before, const Acl::User& after) {
+  std::vector<Session*> refused;
   for (const auto& s : after.selectors)
-    if (s.all_channels) return;
+    if (s.all_channels) return refused;
   std::vector<std::string> upcoming;
   for (const auto& s : after.selectors) upcoming.insert(upcoming.end(), s.channels.begin(), s.channels.end());
   bool kept = true;
@@ -74,13 +79,12 @@ void close_refused_subscribers(Call& call, const Acl::User& before, const Acl::U
     for (const auto& c : s.channels)
       if (std::find(upcoming.begin(), upcoming.end(), c) == upcoming.end()) kept = false;
   }
-  if (kept) return;
+  if (kept) return refused;
   const auto allowed = [&](const std::string& name, bool pattern) {
     return std::any_of(upcoming.begin(), upcoming.end(), [&](const std::string& p) { return pattern ? p == name : keyspace::glob_match(p, name); });
   };
-  auto& pubsub = call.database.pubsub();
-  std::vector<Session*> refused;
-  for (const auto& [id, session] : call.database.sessions_locked()) {
+  auto& pubsub = database.pubsub();
+  for (const auto& [id, session] : sessions) {
     if (session->user != after.name || (session->subscriptions == 0 && session->shard_subscriptions == 0)) continue;
     bool close = false;
     for (const auto& name : pubsub.names_of(PubSub::Kind::pattern, id)) close = close || !allowed(name, true);
@@ -88,8 +92,10 @@ void close_refused_subscribers(Call& call, const Acl::User& before, const Acl::U
     for (const auto& name : pubsub.names_of(PubSub::Kind::shard, id)) close = close || !allowed(name, false);
     if (close) refused.push_back(session);
   }
-  for (Session* session : refused) close_session(call, *session);
+  return refused;
 }
+
+namespace {
 
 void reply_selector(resp::Reply& reply, const Acl::Selector& s) {
   reply.bulk("commands");

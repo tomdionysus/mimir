@@ -606,6 +606,22 @@ std::optional<std::string> Acl::load_line(std::string_view line) {
   return set_user(words[1], std::span<const std::string>(words).subspan(2));
 }
 
+std::vector<std::string> Acl::lines() const {
+  std::vector<std::string> out;
+  out.reserve(_users.size());
+  for (const auto& [name, user] : _users) out.push_back("user " + name + " " + describe(user));
+  return out;
+}
+
+std::optional<std::string> Acl::replace_users(std::span<const std::string> lines) {
+  Acl loaded;
+  loaded._users.clear();
+  for (const std::string& line : lines)
+    if (auto error = loaded.load_line(line)) return error;
+  _users = std::move(loaded._users);
+  return std::nullopt;
+}
+
 bool Acl::delete_user(std::string_view name) {
   auto found = _users.find(name);
   if (found == _users.end()) return false;
