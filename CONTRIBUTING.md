@@ -58,8 +58,9 @@ or `tools/ci.sh release`, which does the same. Dannan is fetched at its pinned
 tag from the sibling checkout, or from its repository. Run the test binary
 rather than `ctest`. Sanitizers run before a release, or to hunt a bug that
 cannot be pinned any other way. Hosted CI runs `tools/ci.sh`'s check, release,
-clang, client, package, tidy and coverage steps on each push, and no
-sanitizer step.
+clang, client, package, tidy and coverage steps on each push to `develop` or
+`main` that changes more than documents, and no sanitizer step; a feature
+branch's gate runs on the build servers. CodeQL runs on `main` and weekly.
 `tools/ci.sh client` builds `mimir_client_tests` (libhiredis-dev), which drives
 three real mimir-node processes with hiredis (ruling 44). The differential gate
 against a Valkey 8 server runs by hand on the build servers.

@@ -13,17 +13,21 @@
 # `tsan` run only before a release, or to hunt a named bug.
 name: CI
 
+# develop and main only (a feature branch's gate runs on the build servers),
+# and never for documents alone.
 on:
   push:
     branches: [main, develop]
+    paths-ignore: ["TODO/**", "docs/**", "**/*.md"]
   pull_request:
+    paths-ignore: ["TODO/**", "docs/**", "**/*.md"]
 
 permissions:
   contents: read
 
 # A newer push to the same branch supersedes a run still going.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

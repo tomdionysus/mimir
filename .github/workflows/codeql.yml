@@ -7,10 +7,11 @@
 # CodeQL security analysis of the library and mimir-node, built as in CI.
 name: CodeQL
 
+# On a release (main) and weekly, not on every push.
 on:
   push:
-    branches: [main, develop]
-  pull_request:
+    branches: [main]
+    paths-ignore: ["TODO/**", "docs/**", "**/*.md"]
   schedule:
     - cron: "41 4 * * 1"
 
@@ -18,7 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: codeql-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
