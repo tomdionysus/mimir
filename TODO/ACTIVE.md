@@ -106,7 +106,10 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the build server
   job catches thread-safety annotations the build servers' GCC gate cannot.
 - Fuzz targets build with clang 19 and the default
   `fuzzer,address,undefined`.
-- Commit when a step's gate passes; push `develop`. Read the completed
+- Features and milestones go on a `feature/<name>` branch off `develop`,
+  merged to `develop` when complete (the maintainer, 2026-11-20); commit on the branch
+  when a step's gate passes, and push it. Small fixes and documents go to
+  `develop` directly. Read the completed
   hosted CI runs, not only the newest (superseded runs are cancelled); push
   no more until a run completes when a fix awaits confirmation.
 - A test node is stopped by its own PID, never `pkill -x mimir-node`: every

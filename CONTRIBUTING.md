@@ -26,8 +26,9 @@ serves and which discipline it follows.
 - `main` is the last stable state. Nothing is committed to it directly; stable
   states reach it by merging `develop`.
 - `develop` is where work happens.
-- Work that needs isolation branches off `develop` as `feature/<short-name>` and
-  merges back into `develop`.
+- Features and milestones are developed on branches off `develop` as
+  `feature/<short-name>` and merged back into `develop` on completion. Small
+  fixes and documents may go to `develop` directly.
 
 ## Tags and releases
 
