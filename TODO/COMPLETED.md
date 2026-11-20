@@ -2,6 +2,34 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-20: Pub/sub by prefix (the stack plan's item 7)
+
+- `0ff90ef`. Each node subscribes on Dannan's `mimir.pubsub` notify channel
+  by topic prefix instead of to everything:
+  - a channel's or shard channel's prefix is its topic ("c:news",
+    "s:news");
+  - a pattern's is "c:" and its literal part before the first glob
+    character ("news.*" gives "c:news.", "*" gives "c:").
+- The node keeps a minimal set (no prefix that another covers), so a topic
+  matches one subscription at most and is never delivered twice. Dannan
+  also folds covered prefixes in its advert.
+- PubSub::set_interest tells the fan-out, under the hub's lock, when a name
+  gains its first subscriber or loses its last. The fan-out's lock comes
+  after the hub's.
+- The interest is pushed to every active peer at once (Dannan's subscribe
+  with a deadline). A publish made on another node before the push arrives
+  goes nowhere (at most once). Valkey's guarantee would need SUBSCRIBE's
+  confirmation held until the push is acknowledged, as Lir holds SUBACK. Not
+  done; recorded as a gap.
+- Tests:
+  - ClusterFanout.ANodeWantsThePrefixesItsSubscriptionsNeed;
+  - ClusterDatabase.APublishAndANotificationReachEveryNodesSubscribers now
+    publishes until heard, since interest is no longer everywhere at once.
+- Gate on corvus-neptune (-j2): release 362 passed. The cluster and pub/sub
+  tests were repeated three times, all passing, because the change is
+  timing-sensitive. Differential: 234, matching an earlier run case for
+  case (NotificationsCollections varies by one).
+
 ## 2026-11-20: Dannan 0.9.2, and the stack audits
 
 - Pin moved from 0.9.1 to 0.9.2, so the stack is on one version. 0.9.2's

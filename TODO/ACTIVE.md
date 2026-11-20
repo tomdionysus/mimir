@@ -1,24 +1,41 @@
 # Mimir - Active Work
 
-Last updated: 2026-11-19. `COMPLETED.md` is the record, with gate counts. The
+Last updated: 2026-11-20. `COMPLETED.md` is the record, with gate counts. The
 design is `TODO/2026-11-15-mimir-design.md`: Tom's rulings (1 to 39), the two
 classes of command, agreement in Dannan, durability, and the order.
 
 ## Resume here
 
-Next: the stack-wide placement plan Tom asked for (2026-11-20), negotiated
-through Lir Development Cluster
-(`../lir-develop-cluster/TODO/2026-11-20-cluster-stack-placement.md`);
-Mimir's audit is `TODO/2026-11-20-duplication-audit.md`. Pieces of Mimir
-may move to Dannan; nothing moves until Tom decides. Meanwhile, stage 3:
-cluster-wide keyspace commands (3.6); routing (3.3) needs placement (3.4).
+The stack's placement plan has converged (2026-11-20; Mimir agreed). Mimir's
+list is "The converged plan" -> "Mimir" in
+`../lir-develop-cluster/TODO/2026-11-20-cluster-stack-placement.md`:
+
+1. Pin 0.9.2. Done.
+2. `mimir/cluster/store.*` onto Dannan's in-memory AcceptorStore when it
+   lands (all six of Mimir's conditions accepted); Dagda's durable
+   value-less form at stage 5.
+3. Routes 600 and 601, operation ids and `version_of` onto Dannan's
+   register layer when it lands (held(slot) becomes a catch_up exchange).
+4. Pub/sub subscribes by prefix. Done (`0ff90ef`).
+5. SHA-1 and hex onto Dannan's; AUTH throttled per client address on
+   Dannan's keyed map. Both wait on Dannan.
+6. Stage 3 step 4 (placement by transfer) is not written by Mimir: replica
+   sets kept whole come from Dannan. Expiry on the bounded hybrid clock.
+7. The node binary onto Dannan's helper; fuzz onto Dannan's export.
+8. Mimir's own: eviction; listing every node's client address, plus DNS.
+
+Items 2, 3, 5, 6 and 7 wait for Dannan's next minor. Until replica sets
+ship, Dannan's operator rule holds: never retire a genesis member while
+slots are still on genesis (this covers the registrar's move).
+Meanwhile, stage 3 work that waits on nobody: cluster-wide keyspace
+commands (3.6).
 
 State on 2026-11-20:
 
 - `develop` is pushed. Hosted CI read green at `3aee353`.
-- Last gate: release 361 passed (corvus-neptune, 2026-11-20). The per-case
-  differential (`tools/differential.sh build-ci/release`) shows 233
-  differing replies, all accounted for: ruling 35 refusals (157 replies
+- Last gate: release 362 passed (corvus-neptune, 2026-11-20). The per-case
+  differential (`tools/differential.sh build-ci/release`) shows 233 or 234
+  differing replies (NotificationsCollections varies by one), all accounted for: ruling 35 refusals (157 replies
   carry its words), 4 undeclared-key script writes (ruling 36), and the
   rest cases whose setup used a refused command.
 - Dannan is pinned at 0.9.2 (2026-11-20), the stack's version. On a Pi,
