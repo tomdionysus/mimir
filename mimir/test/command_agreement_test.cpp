@@ -63,12 +63,20 @@ class Registers final : public Agreements {
     ++reads;
     boost::asio::post(_io, [this, db, key, done = std::move(done)] {
       Outcome outcome;
+      if (refuse_reads > 0) {
+        --refuse_reads;
+        outcome.why = "no majority of the key's replicas answered";
+        return done(outcome);
+      }
       outcome.committed = true;
       outcome.record = records[{db, key}];
+      // A read commits too, above every write before it.
+      outcome.version = version(++_commits);
       done(outcome);
     });
   }
   int reads = 0;
+  int refuse_reads = 0;
 
   // Versions order as commits do: a fixed-width count.
   static std::string version(uint64_t n) {
@@ -394,6 +402,31 @@ TEST(CommandAgreement, ANoticeBreaksAWatchOnItsKey) {
   EXPECT_EQ(bed.run({"MULTI"}), "+OK\r\n");
   EXPECT_EQ(bed.run({"GET", "k"}), "+QUEUED\r\n");
   EXPECT_EQ(bed.run({"EXEC"}), "*-1\r\n");
+}
+
+TEST(CommandAgreement, AStrictReadSeesWhatAMajorityHolds) {
+  AgreementBed bed;
+  EXPECT_EQ(bed.run({"SET", "k", "near"}), "+OK\r\n");
+  // Another node commits, and its notice has not come yet.
+  bed.registers->record(0, "k") = string_record("far");
+  EXPECT_EQ(bed.run({"GET", "k"}), "$4\r\nnear\r\n");
+  EXPECT_EQ(bed.run({"CLIENT", "STRICT", "ON"}), "+OK\r\n");
+  EXPECT_EQ(bed.run({"GET", "k"}), "$3\r\nfar\r\n");
+  EXPECT_EQ(bed.registers->reads, 1);
+  const auto info = bed.run({"CLIENT", "INFO"});
+  EXPECT_NE(info.find(" strict=1"), std::string::npos) << info;
+  // Several keys are each read from a majority.
+  EXPECT_EQ(bed.run({"MGET", "k", "none"}), "*2\r\n$3\r\nfar\r\n$-1\r\n");
+  EXPECT_EQ(bed.registers->reads, 3);
+  // Without a majority it is refused, never answered stale.
+  bed.registers->refuse_reads = 1;
+  EXPECT_EQ(bed.run({"GET", "k"}), "-CLUSTERDOWN no majority of the key's replicas answered\r\n");
+  // OFF: plain reads again, from this node's view, which the strict read
+  // brought up to date.
+  EXPECT_EQ(bed.run({"CLIENT", "STRICT", "OFF"}), "+OK\r\n");
+  EXPECT_EQ(bed.run({"GET", "k"}), "$3\r\nfar\r\n");
+  EXPECT_EQ(bed.run({"CLIENT", "INFO"}).find("strict="), std::string::npos);
+  EXPECT_EQ(bed.run({"CLIENT", "STRICT", "MAYBE"}), "-ERR syntax error\r\n");
 }
 
 }  // namespace

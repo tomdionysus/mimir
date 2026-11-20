@@ -124,6 +124,9 @@ struct Session {
   // In a cluster (stage 3): each watched key's write count as a majority held
   // it at WATCH, which the EXEC's agreement checks.
   std::map<std::string, uint64_t> watched_serials;
+  // CLIENT STRICT ON (ruling 37): every read on this connection is confirmed
+  // with a majority of its key's replicas before it is answered.
+  bool strict = false;
 };
 
 // MIGRATE's work off the database's lock (ruling 31): the target, the keys
