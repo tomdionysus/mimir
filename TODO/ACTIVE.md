@@ -224,7 +224,11 @@ Dagda's debian/, first):
 - Version from git describe; the tag must equal project(VERSION); only tag
   builds are released. docs/packaging.md for packaging.
 - The registrar's install under /opt/mimir moves to the package at the
-  first release.
+  first release. The claim board depends on it on all four Pis: keep port
+  6390 on all interfaces, the `registrar` and `reader` users and their
+  passwords (from the current /etc/mimir/secrets.yaml, carried into the
+  package's) unchanged, and post a board note (note_post) before restarting
+  mimir.service on any Pi.
 
 ## Waiting on Tom
 
