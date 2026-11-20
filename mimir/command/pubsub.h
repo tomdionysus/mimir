@@ -62,6 +62,12 @@ class PubSub {
   // the other nodes. Set once, before the first publish.
   using Fanout = std::function<void(Kind kind, const std::string& channel, const std::string& message)>;
   void set_fanout(Fanout fanout);
+  // The cluster's interest: told, under the hub's lock, when a name of a kind
+  // gains its first subscriber here (`held`) or loses its last, so the node
+  // announces only what its own subscribers want. Set once, before the first
+  // subscription; it must not call back into the hub.
+  using Interest = std::function<void(Kind kind, const std::string& name, bool held)>;
+  void set_interest(Interest interest);
   // A message published on another node: delivered here, never carried on.
   size_t deliver(Kind kind, const std::string& channel, const std::string& message);
 
@@ -85,6 +91,7 @@ class PubSub {
   Table _patterns DANNAN_GUARDED_BY(_mutex);
   Table _shard DANNAN_GUARDED_BY(_mutex);
   Fanout _fanout DANNAN_GUARDED_BY(_mutex);
+  Interest _interest DANNAN_GUARDED_BY(_mutex);
 };
 
 }  // namespace mimir::command
