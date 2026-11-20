@@ -1070,6 +1070,28 @@ void Scripting::flush_functions() {
   make_functions_state(_functions_lua, _names);
 }
 
+std::vector<std::string> Scripting::library_codes() const {
+  std::vector<std::string> codes;
+  for (const auto& [name, library] : _libraries) codes.push_back(library.code);
+  return codes;
+}
+
+std::optional<std::string> Scripting::replace_libraries(const std::vector<std::string>& codes) {
+  // Each loads into a fresh interpreter first, so codes that do not load
+  // change nothing.
+  {
+    Scripting trial(_names);
+    try {
+      for (const auto& code : codes) load_library(trial, {"FUNCTION", "LOAD", code});
+    } catch (const CommandError& e) {
+      return std::string(e.what());
+    }
+  }
+  flush_functions();
+  for (const auto& code : codes) load_library(*this, {"FUNCTION", "LOAD", code});
+  return std::nullopt;
+}
+
 const std::string* Scripting::body(const std::string& sha) const {
   auto found = _bodies.find(sha);
   return found == _bodies.end() ? nullptr : &found->second;
@@ -1250,9 +1272,7 @@ void function(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
     call.reply.integer(static_cast<int64_t>(scripting.function_index().size()));
   } else if (sub == "dump") {
     if (call.args.size() != 2) throw CommandError("ERR wrong number of arguments for 'function|dump' command");
-    std::vector<std::string> codes;
-    for (const auto& [name, library] : scripting.libraries()) codes.push_back(library.code);
-    call.reply.bulk(keyspace::rdb::dump_functions(codes));
+    call.reply.bulk(keyspace::rdb::dump_functions(scripting.library_codes()));
   } else if (sub == "restore") {
     if (call.args.size() < 3 || call.args.size() > 4) throw CommandError("ERR wrong number of arguments for 'function|restore' command");
     std::string policy = "append";

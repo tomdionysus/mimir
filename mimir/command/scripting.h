@@ -68,6 +68,12 @@ class Scripting {
   // The function named `name` and its library, or null.
   const Function* find_function(const std::string& name) const;
   void flush_functions();
+  // Every library's code, by name: FUNCTION DUMP's libraries, and in a
+  // cluster the libraries' record (ruling 39).
+  std::vector<std::string> library_codes() const;
+  // The libraries replaced by those `codes` define, all or none (the error
+  // when one does not load).
+  std::optional<std::string> replace_libraries(const std::vector<std::string>& codes);
 
  private:
   ScriptingNames _names;

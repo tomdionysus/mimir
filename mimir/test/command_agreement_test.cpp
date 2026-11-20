@@ -34,7 +34,9 @@ class Registers final : public Agreements {
   std::string operation_id() override { return "op-" + std::to_string(_next++); }
 
   void change(size_t db, const std::string& key, Change change, std::function<void(Outcome)> done) override {
-    ++proposals;
+    // The cluster's own registers (users, libraries, scripts) are counted
+    // apart from keys'.
+    ++(db == 0xffff ? system_proposals : proposals);
     boost::asio::post(_io, [this, db, key, change = std::move(change), done = std::move(done)] {
       auto& held = records[{db, key}];
       const auto changed = change(held);
@@ -101,6 +103,7 @@ class Registers final : public Agreements {
   int lose_next = 0;
   int refuse_next = 0;
   int proposals = 0;
+  int system_proposals = 0;
 
  private:
   boost::asio::io_context& _io;
@@ -129,15 +132,20 @@ class AgreementBed {
   dannan::test::SteppedWall wall;
 
   // The command's reply, waiting for its agreement if it has one.
+  // A postponed command woken with no bytes is run again, as the connection
+  // runs it.
   std::string run(std::vector<std::string> args) {
-    std::string out;
-    std::optional<std::string> woken;
-    const auto executed = database->execute(session, args, out, [&woken](std::string reply) { woken = std::move(reply); });
-    if (!executed.wait) return out;
-    io.restart();
-    while (!woken && io.run_one() > 0) {
+    for (;;) {
+      std::string out;
+      std::optional<std::string> woken;
+      const auto executed = database->execute(session, args, out, [&woken](std::string reply) { woken = std::move(reply); });
+      if (!executed.wait) return out;
+      io.restart();
+      while (!woken && io.run_one() > 0) {
+      }
+      if (executed.postponed && woken && woken->empty()) continue;
+      return woken.value_or("<no reply>");
     }
-    return woken.value_or("<no reply>");
   }
 
   boost::asio::io_context io;
@@ -469,7 +477,7 @@ TEST(CommandAgreement, UsersChangeByAgreementAndReachEveryNode) {
   AgreementBed here;
   here.session.tls = true;
   EXPECT_EQ(here.run({"ACL", "SETUSER", "alice", "on", ">secret", "~app:*", "&news", "+@read", "(~other:* +get)"}), "+OK\r\n");
-  EXPECT_EQ(here.registers->proposals, 1);
+  EXPECT_EQ(here.registers->system_proposals, 1);
   // The users' register holds them, and this node uses them at once.
   const cluster::Record users = here.registers->record(0xffff, "acl");
   ASSERT_TRUE(users.payload);
@@ -509,6 +517,66 @@ TEST(CommandAgreement, UsersChangeByAgreementAndReachEveryNode) {
   EXPECT_EQ(here.run({"ACL", "SETUSER", "carol", "on"}), "+QUEUED\r\n");
   EXPECT_EQ(here.run({"EXEC"}), "-ERR in a cluster ACL SETUSER and DELUSER commit on their own, not inside MULTI (ruling 27)\r\n");
   EXPECT_EQ(here.run({"ACL", "USERS"}), "*1\r\n$7\r\ndefault\r\n");
+}
+
+TEST(CommandAgreement, FunctionLibrariesChangeByAgreementAndReachEveryNode) {
+  const std::string code = "#!lua name=lib\nserver.register_function('hello', function() return 'hi' end)";
+  AgreementBed here;
+  EXPECT_EQ(here.run({"FUNCTION", "LOAD", code}), "$3\r\nlib\r\n");
+  EXPECT_EQ(here.registers->system_proposals, 1);
+  const cluster::Record libraries = here.registers->record(0xffff, "functions");
+  ASSERT_TRUE(libraries.payload);
+  EXPECT_EQ(here.run({"FCALL", "hello", "0"}), "$2\r\nhi\r\n");
+  // Loaded again, it is refused by the agreed libraries, and changes nothing.
+  EXPECT_EQ(here.run({"FUNCTION", "LOAD", code}), "-ERR Library 'lib' already exists\r\n");
+
+  // Another node hears of the commit and can call it.
+  AgreementBed there;
+  EXPECT_EQ(there.run({"FCALL", "hello", "0"}), "-ERR Function not found\r\n");
+  there.registers->commit_elsewhere(0xffff, "functions", libraries);
+  EXPECT_EQ(there.run({"FCALL", "hello", "0"}), "$2\r\nhi\r\n");
+  EXPECT_EQ(there.run({"FUNCTION", "LIST"}), here.run({"FUNCTION", "LIST"}));
+
+  // A flush is agreed too, and reaches it.
+  EXPECT_EQ(here.run({"FUNCTION", "FLUSH"}), "+OK\r\n");
+  EXPECT_EQ(here.run({"FCALL", "hello", "0"}), "-ERR Function not found\r\n");
+  there.registers->commit_elsewhere(0xffff, "functions", here.registers->record(0xffff, "functions"));
+  EXPECT_EQ(there.run({"FCALL", "hello", "0"}), "-ERR Function not found\r\n");
+}
+
+TEST(CommandAgreement, ScriptsAreFoundAcrossTheCluster) {
+  using namespace std::chrono_literals;
+  const std::string body = "return 'hi'";
+  const std::string sha = sha1_hex(body);
+  AgreementBed here(true);
+  EXPECT_EQ(here.run({"SCRIPT", "LOAD", body}), "$40\r\n" + sha + "\r\n");
+  EXPECT_EQ(here.registers->system_proposals, 1);
+  const cluster::Record loaded = here.registers->record(0xffff, "script:" + sha);
+  ASSERT_TRUE(loaded.payload);
+  EXPECT_EQ(*loaded.payload, body);
+
+  // Another node has not seen it: its EVALSHA reads the register, then runs.
+  AgreementBed there(true);
+  there.registers->record(0xffff, "script:" + sha) = loaded;
+  EXPECT_EQ(there.run({"EVALSHA", sha, "0"}), "$2\r\nhi\r\n");
+  EXPECT_EQ(there.registers->reads, 1);
+  EXPECT_EQ(there.run({"EVALSHA", sha, "0"}), "$2\r\nhi\r\n");
+  EXPECT_EQ(there.registers->reads, 1);
+  EXPECT_EQ(there.run({"EVALSHA", std::string(40, 'a'), "0"}), "-NOSCRIPT No matching script.\r\n");
+  EXPECT_EQ(there.registers->reads, 2);
+
+  // SCRIPT FLUSH empties this node's cache, and a script loaded before it is
+  // not brought back.
+  there.wall.advance(1000ms);
+  EXPECT_EQ(there.run({"SCRIPT", "FLUSH"}), "+OK\r\n");
+  EXPECT_EQ(there.run({"EVALSHA", sha, "0"}), "-NOSCRIPT No matching script.\r\n");
+
+  // An EVAL's script is shared in the background, once.
+  EXPECT_EQ(here.run({"EVAL", "return 1", "0"}), ":1\r\n");
+  EXPECT_EQ(here.run({"EVAL", "return 1", "0"}), ":1\r\n");
+  here.settle();
+  EXPECT_EQ(here.registers->system_proposals, 2);
+  ASSERT_TRUE(here.registers->record(0xffff, "script:" + sha1_hex("return 1")).payload);
 }
 
 TEST(CommandAgreement, AStrictReadSeesWhatAMajorityHolds) {

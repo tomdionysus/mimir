@@ -36,36 +36,43 @@ std::string unknown_command(const std::vector<std::string>& args) {
   return "ERR unknown command '" + args[0].substr(0, 128) + "', with args beginning with: " + listed;
 }
 
-// The users' register (ruling 27): a database number no keyspace has (there
-// are at most 1024), and one key.
-constexpr size_t acl_db = 0xffff;
+// The cluster's own state lives in registers of a database number no
+// keyspace has (there are at most 1024): the users (ruling 27) and the
+// function libraries (ruling 39).
+constexpr size_t system_db = 0xffff;
 const std::string acl_key = "acl";
+const std::string functions_key = "functions";
 
 bool changes_users(const std::vector<std::string>& args) { return args.size() >= 2 && iequals(args[0], "acl") && (iequals(args[1], "setuser") || iequals(args[1], "deluser")); }
 
-// The users' record: ACL LIST's lines, each with its length first.
+bool changes_functions(const std::vector<std::string>& args) {
+  return args.size() >= 2 && iequals(args[0], "function") &&
+         (iequals(args[1], "load") || iequals(args[1], "delete") || iequals(args[1], "flush") || iequals(args[1], "restore"));
+}
+
+// The users' record: ACL LIST's lines, in Dannan's codec.
 std::string encode_lines(const std::vector<std::string>& lines) {
-  std::string out;
-  for (const auto& line : lines) {
-    const auto n = static_cast<uint32_t>(line.size());
-    for (int shift = 24; shift >= 0; shift -= 8) out.push_back(static_cast<char>(n >> shift));
-    out += line;
-  }
-  return out;
+  dannan::net::Writer out;
+  out.u32(static_cast<uint32_t>(lines.size()));
+  for (const auto& line : lines) out.bytes(std::span(reinterpret_cast<const uint8_t*>(line.data()), line.size()));
+  const auto bytes = out.take();
+  return std::string(bytes.begin(), bytes.end());
 }
 
 std::optional<std::vector<std::string>> decode_lines(std::string_view bytes) {
-  std::vector<std::string> out;
-  while (!bytes.empty()) {
-    if (bytes.size() < 4) return std::nullopt;
-    uint32_t n = 0;
-    for (size_t i = 0; i < 4; ++i) n = (n << 8) | static_cast<uint8_t>(bytes[i]);
-    bytes.remove_prefix(4);
-    if (n > bytes.size()) return std::nullopt;
-    out.emplace_back(bytes.substr(0, n));
-    bytes.remove_prefix(n);
+  try {
+    dannan::net::Reader in(std::span(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()));
+    const uint32_t count = in.u32();
+    std::vector<std::string> out;
+    for (uint32_t i = 0; i < count; ++i) {
+      const auto line = in.view_bytes(1 << 20);
+      out.emplace_back(reinterpret_cast<const char*>(line.data()), line.size());
+    }
+    in.finish();
+    return out;
+  } catch (const dannan::net::DecodeError&) {
+    return std::nullopt;
   }
-  return out;
 }
 
 // notify-keyspace-events' classes as bits, in Valkey's letters.
@@ -779,9 +786,11 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         out.append(reply.bytes());
         return executed;
       }
-      // ACL SETUSER and DELUSER change the users, which are cluster state:
-      // by agreement on their one register (ruling 27).
-      if (changes_users(args)) {
+      // ACL SETUSER and DELUSER change the users, and FUNCTION's changes the
+      // libraries, which are cluster state: by agreement on their one
+      // register each (rulings 27 and 39).
+      const bool users = changes_users(args);
+      if (users || changes_functions(args)) {
         if (!wake) {
           reply.error("ERR this write needs a connection that can wait for its agreement");
           out.append(reply.bytes());
@@ -789,13 +798,14 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         }
         feed_monitors(session, *spec, args, db);
         auto proposal = std::make_shared<Proposal>();
-        proposal->acl = true;
+        proposal->acl = users;
+        proposal->functions = !users;
         proposal->wait = _next_wait++;
         proposal->session = session;
         proposal->spec = spec;
         proposal->args = args;
-        proposal->db = acl_db;
-        proposal->key = acl_key;
+        proposal->db = system_db;
+        proposal->key = users ? acl_key : functions_key;
         proposal->operation = _settings.agreements->operation_id();
         proposal->issued_ms = _wall.unix_ms();
         proposal->deadline_ms = proposal->issued_ms + proposal_deadline_ms;
@@ -804,6 +814,55 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         executed.wait_seconds = 0;
         after.fn = [this, proposal] { propose(proposal); };
         return executed;
+      }
+      // Scripts are shared with the cluster on the register of their SHA
+      // (ruling 39): SCRIPT LOAD by agreement, an EVAL's in the background.
+      // SCRIPT FLUSH empties this node's cache only.
+      if (iequals(args[0], "script") && args.size() == 3 && iequals(args[1], "load")) {
+        if (!wake) {
+          reply.error("ERR this write needs a connection that can wait for its agreement");
+          out.append(reply.bytes());
+          return executed;
+        }
+        feed_monitors(session, *spec, args, db);
+        auto proposal = std::make_shared<Proposal>();
+        proposal->script = true;
+        proposal->wait = _next_wait++;
+        proposal->session = session;
+        proposal->spec = spec;
+        proposal->args = args;
+        proposal->db = system_db;
+        proposal->key = "script:" + sha1_hex(args[2]);
+        proposal->operation = _settings.agreements->operation_id();
+        proposal->issued_ms = _wall.unix_ms();
+        proposal->deadline_ms = proposal->issued_ms + proposal_deadline_ms;
+        _shared_scripts.insert(sha1_hex(args[2]));
+        _waiters.emplace(proposal->wait, Waiter{&session, args, {}, false, std::move(wake), false, true});
+        executed.wait = proposal->wait;
+        executed.wait_seconds = 0;
+        after.fn = [this, proposal] { propose(proposal); };
+        return executed;
+      }
+      if (iequals(args[0], "script") && args.size() >= 2 && iequals(args[1], "flush")) {
+        _scripts_flushed_ms = _wall.unix_ms();
+        _shared_scripts.clear();
+      }
+      if (spec->name == "eval" || spec->name == "eval_ro") share_script_locked(args[1]);
+      // An EVALSHA whose script this node has not seen looks for it in the
+      // cluster first, then runs again.
+      if ((spec->name == "evalsha" || spec->name == "evalsha_ro") && wake) {
+        const std::string sha = lower(args[1]);
+        if (session.script_looked_up == sha) {
+          session.script_looked_up.clear();
+        } else if (!_scripting.body(sha)) {
+          const uint64_t id = _next_wait++;
+          _waiters.emplace(id, Waiter{&session, args, {}, false, std::move(wake), true});
+          executed.wait = id;
+          executed.wait_seconds = 0;
+          executed.postponed = true;
+          after.fn = [this, id, sha] { find_script(id, sha); };
+          return executed;
+        }
       }
       auto keys = spec->find_keys ? spec->find_keys(args) : keys_of(*spec, args);
       // WATCH reads each key's write count from a majority (ruling 5's strict
@@ -1043,6 +1102,7 @@ std::optional<std::string> Database::cluster_refusal_locked(const Spec& spec, co
     if (!session.in_multi || session.multi_failed) return std::nullopt;
     for (const auto& queued : session.queued)
       if (changes_users(queued)) return "ERR in a cluster ACL SETUSER and DELUSER commit on their own, not inside MULTI (ruling 27)";
+      else if (changes_functions(queued)) return "ERR in a cluster FUNCTION's changes commit on their own, not inside MULTI (ruling 39)";
     if (exec_key_locked(session).several) return several;
     return std::nullopt;
   }
@@ -1128,6 +1188,8 @@ void Database::propose(std::shared_ptr<Proposal> proposal) {
       [this, proposal](const cluster::Record& base) {
         if (proposal->expiry) return speculate_expiry(*proposal, base);
         if (proposal->acl) return speculate_acl(*proposal, base);
+        if (proposal->functions) return speculate_functions(*proposal, base);
+        if (proposal->script) return speculate_script(*proposal, base);
         return speculate(*proposal, base);
       },
       [this, proposal](Agreements::Outcome outcome) { decided(proposal, std::move(outcome)); });
@@ -1188,6 +1250,10 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
         std::vector<Session*> closing;
         install_acl_locked(outcome.version, outcome.record, session, closing);
         if (session && !closing.empty() && session->kill) close_own = session->kill;
+      } else if (proposal->functions) {
+        install_functions_locked(outcome.version, outcome.record);
+      } else if (proposal->script) {
+        // Its body was cached here when it ran.
       } else {
         install_locked(proposal->db, proposal->key, outcome.version, outcome.record);
       }
@@ -1196,7 +1262,7 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
       _current = session;
       _own_invalidations.clear();
       _touched.clear();
-      if (result->wrote && !proposal->acl) touch_key_locked(proposal->db, proposal->key, session);
+      if (result->wrote && proposal->db != system_db) touch_key_locked(proposal->db, proposal->key, session);
       bytes = result->reply;
       if (!_waiters.empty()) serve_ready(woken);
       publish_events();
@@ -1261,7 +1327,7 @@ Agreements::Changed Database::speculate_acl(const Proposal& proposal, const clus
 bool Database::install_acl_locked(const std::string& version, const cluster::Record& record, Session* own, std::vector<Session*>& closing) {
   // No record yet: every node keeps the users its settings seeded.
   if (!record.payload) return false;
-  auto& known = _versions[scoped(acl_db, acl_key)];
+  auto& known = _versions[scoped(system_db, acl_key)];
   if (!known.empty() && version <= known) return false;
   const auto lines = decode_lines(*record.payload);
   if (!lines) return false;
@@ -1285,13 +1351,125 @@ bool Database::install_acl_locked(const std::string& version, const cluster::Rec
   return true;
 }
 
+Agreements::Changed Database::speculate_functions(const Proposal& proposal, const cluster::Record& base) {
+  // Applied already, by an attempt an earlier round took: its result again.
+  if (const auto* applied = base.find(proposal.operation)) return {base, applied->reply};
+  dannan::contract::Lock lock(_mutex);
+  // The libraries as agreed: none before the first change.
+  Scripting libraries(_scripting.names());
+  if (base.payload) {
+    auto read = keyspace::rdb::restore_functions(*base.payload);
+    const auto* codes = std::get_if<std::vector<std::string>>(&read);
+    if (!codes || libraries.replace_libraries(*codes)) return {base, encode_result("-ERR the libraries' stored record cannot be read\r\n", {})};
+  }
+  Session session = proposal.session;
+  resp::Reply reply(session.protocol);
+  const size_t db = std::min(session.db, _dbs.size() - 1);
+  Call call{session, *this, *_dbs[db], reply, proposal.args};
+  call.db = db;
+  _scratch_scripting = &libraries;
+  try {
+    proposal.spec->handler(call);
+  } catch (const CommandError& e) {
+    reply = resp::Reply(session.protocol);
+    reply.error(e.what());
+  }
+  _scratch_scripting = nullptr;
+  const std::string& bytes = reply.bytes();
+  const bool wrote = !bytes.empty() && bytes[0] != '-';
+  cluster::Record out;
+  out.applied = base.applied;
+  out.serial = base.serial + (wrote ? 1 : 0);
+  out.payload = wrote ? std::optional<std::string>(keyspace::rdb::dump_functions(libraries.library_codes())) : base.payload;
+  std::string result = encode_result(bytes, {}, wrote);
+  if (!cluster::note_applied(out, {proposal.operation, proposal.issued_ms, result}))
+    return {base, encode_result("-ERR too many changes to the libraries are in flight; try again\r\n", {})};
+  return {std::move(out), std::move(result)};
+}
+
+Agreements::Changed Database::speculate_script(const Proposal& proposal, const cluster::Record& base) {
+  // Applied already, by an attempt an earlier round took: its result again.
+  if (const auto* applied = base.find(proposal.operation)) return {base, applied->reply};
+  dannan::contract::Lock lock(_mutex);
+  Session session = proposal.session;
+  resp::Reply reply(session.protocol);
+  const size_t db = std::min(session.db, _dbs.size() - 1);
+  Call call{session, *this, *_dbs[db], reply, proposal.args};
+  call.db = db;
+  try {
+    proposal.spec->handler(call);
+  } catch (const CommandError& e) {
+    reply = resp::Reply(session.protocol);
+    reply.error(e.what());
+  }
+  const std::string& bytes = reply.bytes();
+  const bool wrote = !bytes.empty() && bytes[0] != '-';
+  cluster::Record out;
+  out.applied = base.applied;
+  out.serial = base.serial + (wrote ? 1 : 0);
+  out.payload = wrote ? std::optional<std::string>(proposal.args[2]) : base.payload;
+  std::string result = encode_result(bytes, {}, wrote);
+  if (!cluster::note_applied(out, {proposal.operation, proposal.issued_ms, result}))
+    return {base, encode_result("-ERR too many loads of this script are in flight; try again\r\n", {})};
+  return {std::move(out), std::move(result)};
+}
+
+void Database::share_script_locked(const std::string& body) {
+  const std::string sha = sha1_hex(body);
+  if (!_shared_scripts.insert(sha).second) return;
+  auto proposal = std::make_shared<Proposal>();
+  proposal->script = true;
+  proposal->spec = find_spec("script");
+  proposal->args = {"SCRIPT", "LOAD", body};
+  proposal->db = system_db;
+  proposal->key = "script:" + sha;
+  proposal->operation = _settings.agreements->operation_id();
+  proposal->issued_ms = _wall.unix_ms();
+  proposal->deadline_ms = proposal->issued_ms + proposal_deadline_ms;
+  _pending.push_back(std::move(proposal));
+}
+
+void Database::find_script(uint64_t wait, std::string sha) {
+  _settings.agreements->read(system_db, "script:" + sha, [this, wait, sha](Agreements::Outcome outcome) {
+    Wake wake;
+    {
+      dannan::contract::Lock lock(_mutex);
+      const auto found = _waiters.find(wait);
+      if (found == _waiters.end()) return;
+      if (outcome.committed && outcome.record.payload && sha1_hex(*outcome.record.payload) == sha) {
+        // Not one this node flushed since it was last loaded anywhere.
+        uint64_t newest = 0;
+        for (const auto& applied : outcome.record.applied) newest = std::max(newest, applied.issued_ms);
+        if (newest >= _scripts_flushed_ms) _scripting.load(*outcome.record.payload);
+      }
+      found->second.session->script_looked_up = sha;
+      wake = std::move(found->second.wake);
+      forget_waiter(wait);
+    }
+    // No bytes: the connection runs the command again.
+    if (wake) wake(std::string());
+  });
+}
+
+bool Database::install_functions_locked(const std::string& version, const cluster::Record& record) {
+  if (!record.payload) return false;
+  auto& known = _versions[scoped(system_db, functions_key)];
+  if (!known.empty() && version <= known) return false;
+  auto read = keyspace::rdb::restore_functions(*record.payload);
+  const auto* codes = std::get_if<std::vector<std::string>>(&read);
+  if (!codes || _scripting.replace_libraries(*codes)) return false;
+  known = version;
+  return true;
+}
+
 void Database::install_committed(size_t db, const std::string& key, const std::string& version, const cluster::Record& record) {
   Woken woken;
   {
     dannan::contract::Lock lock(_mutex);
-    if (db == acl_db && key == acl_key) {
+    if (db == system_db) {
       std::vector<Session*> closing;
-      install_acl_locked(version, record, nullptr, closing);
+      if (key == acl_key) install_acl_locked(version, record, nullptr, closing);
+      if (key == functions_key) install_functions_locked(version, record);
       return;
     }
     if (db >= _dbs.size()) return;
