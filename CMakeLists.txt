@@ -50,7 +50,7 @@ set(MIMIR_DANNAN_REPOSITORY "${CMAKE_CURRENT_SOURCE_DIR}/../dannan" CACHE STRING
 option(MIMIR_FETCH_DANNAN "Fetch Dannan at its tag when no installed release of its minor is found" ON)
 # Not a cache variable: a moved pin must take effect in a build tree that
 # already exists.
-set(MIMIR_DANNAN_TAG "0.10.0")
+set(MIMIR_DANNAN_TAG "0.10.1")
 # A sanitizer build instruments every stack library it links, so it always
 # builds Dannan from source with the same flags, never an installed copy.
 set(MIMIR_SANITIZED OFF)
