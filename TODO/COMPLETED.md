@@ -2,6 +2,50 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-21: Release 0.1.0: packaging, Dannan 0.10.1 and Dannan's store
+
+- Built on `feature/packaging` and `feature/memory-store` (off it), each
+  squashed onto develop as its own commit, then develop merged to main and
+  tagged 0.1.0.
+- Packaging: debian/ (one package, `mimir`; libmimir static), the packaged
+  settings and unit in packaging/, mimir-node(1), docs/packaging.md and
+  docs/overview.md, tools/build-deb.sh, the README rewritten for
+  installation and use, and `tools/ci.sh package` (Dannan's packages at the
+  pinned tag, Mimir's built, linted, installed, checked and purged) as a
+  hosted CI job on x86-64 and arm64.
+- Dannan 0.10.1: SHA-1 and hex from Dannan (Mimir no longer links OpenSSL
+  itself), durable_sync_directory, mimir-node's posted teardown turns
+  deleted, and the sanitizer builds pass DANNAN_SANITIZE and check
+  libdannan's symbols with nm. `tools/ci.sh fuzz`.
+- Mimir's acceptor store replaced by Dannan's MemoryStore; catch-up pages
+  by the last name given (each_held), so a name removed between pages
+  cannot be skipped. New case: ACatchUpOverManyPagesGathersEveryName.
+- The gate, once, on a build server (node-a, 2026-11-21), in a
+  debian:trixie container pinned to the two claimed cores, on
+  feature/memory-store 89f2ddd: check passed; release 365; the differential
+  233 differing replies (163 ruling 35 refusals, 4 undeclared script keys,
+  the rest cases whose setup used a refused command, as before); clang 365;
+  client 9/9; ASan 365; TSan 365; client-asan 9/9 with no node report;
+  fuzz 300 s per target (resp_request 11,680,216 runs, resp_reply
+  17,019,734, rdb_restore 3,747,210), no finding; package and lintian clean.
+  libdannan.so.0.10.1 carried __asan_ (asan, client-asan, fuzz) and
+  __tsan_ (tsan).
+- Faults the gate found:
+  - The first run (dad2300) stopped on a g++ -Wshadow error in the new
+    shard-names handler (clang passed 365); fixed in 89f2ddd and the whole
+    gate run again.
+  - Installing the deb was never checked: compat 13 does not run
+    dh_installsysusers, so the package made no mimir user and its postinst
+    failed (`chown: invalid user`, shown on the gate's deb in a container).
+    debian/rules now calls it, and the package step installs, checks the
+    user, the files' owners and modes and the binary, and purges. Rerun on
+    0978845: green, the user made, `mimir-node 0.1.0`, the purge clean.
+  - The gate script's DEB_BUILD_OPTIONS lost its parallel= to a missing
+    space, so the first package build ran make -j4, held to the two claimed
+    cores by the container's CPU set; the rerun ran -j2.
+- Before it: the partial gate on Dannan 0.10.0 (superseded, recorded in
+  ACTIVE.md's history of this release).
+
 ## 2026-11-20: The real-client gate: hiredis against a three-node cluster (ruling 44)
 
 - Built on `feature/hiredis-gate`, squashed onto develop.

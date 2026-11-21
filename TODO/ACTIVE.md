@@ -203,17 +203,18 @@ sanitation and fuzzing, and tagging and merging to main, pushing. You must
 maintain a release badge."
 
 Only minor or patch versions are bumped (the maintainer, 2026-11-20); a major
-version is his. Mimir has cut no release yet (0.1.0 in CMake). The first is cut when the
+version is the maintainer's. 0.1.0 is cut (2026-11-21; the record is in COMPLETED.md); the
+next is 0.1.1 or 0.2.0. How the first was cut, for the next: when the
 work above is done: README rewritten for installation and use (the design
 and status move to docs/ or TODO/); a deb package of mimir-node (binary,
 libmimir, the systemd unit and a default config.yaml, depending on the
 Debian packages it links); the full tests once on the cluster (release,
 ASan, TSan, the differential, and the fuzz targets for a bounded time);
 then develop merged to main, tagged x.y.z, both pushed. The release badge
-is in the README already. The first release (0.1.0) waits for Dannan
+is in the README already. The first release (0.1.0) waited for Dannan
 0.10.1 (the maintainer, 2026-11-20: "I would say wait"), so it ships on
-Dannan's store rather than Mimir's own. Its gate runs once, whole, on that
-tree; its release gate's ASan client run must be clean (0.9.2's agreement
+Dannan's store rather than Mimir's own. Its gate ran once, whole, on that
+tree; its ASan client run was clean (0.9.2's agreement
 leaked, and read a freed node, when a node stopped with a store completion
 in flight; fixed in 0.10.0). The packaging and the README for installation
 and use are on `feature/packaging`, the store on `feature/memory-store`
