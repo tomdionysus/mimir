@@ -1,0 +1,43 @@
+Source: mimir
+Section: database
+Priority: optional
+Maintainer: tomdionysus <tomdionysus@users.noreply.github.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ cmake,
+ pkgconf,
+ libboost-dev (>= 1.83),
+ libyaml-cpp-dev,
+ liblua5.1-0-dev,
+ lua-cjson-dev,
+ lua-bitop-dev,
+ lua-cmsgpack,
+ libdannan-dev (>= 0.10.1),
+ libdannan-dev (<< 0.11~),
+ libgtest-dev <!nocheck>,
+Standards-Version: 4.7.0
+Homepage: https://github.com/tomdionysus/mimir
+Vcs-Git: https://github.com/tomdionysus/mimir.git
+Vcs-Browser: https://github.com/tomdionysus/mimir
+Rules-Requires-Root: no
+
+Package: mimir
+Architecture: any
+Depends:
+ lua-cjson,
+ lua-bitop,
+ lua-cmsgpack,
+ ${shlibs:Depends},
+ ${misc:Depends},
+Recommends:
+ systemd,
+Description: Redis-compatible distributed database, multi-master and leaderless
+ Mimir is a distributed database for a cluster of trusted machines that
+ speaks the Redis protocol. A client connects to any node, over RESP2 or
+ RESP3, and every command works whichever node it talks to: every write
+ commits by agreement on a majority of the cluster, with no leader and no
+ central coordinator. Valkey 8's command documentation is its specification.
+ .
+ This package holds mimir-node, its systemd unit and its settings. The
+ service is installed disabled: review /etc/mimir/config.yaml and
+ /etc/mimir/secrets.yaml, then enable mimir.service.

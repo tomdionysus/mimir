@@ -259,9 +259,9 @@ int main(int argc, char** argv) {
     // Spent, durably, before this node can vote: started once, it is never new
     // again.
     if (std::filesystem::exists(unstarted)) {
-      auto& fs = dannan::storage::posix_file_system();
-      if (!fs.remove(unstarted) || !fs.sync_directory(node_config.state_path))
+      if (!dannan::storage::posix_file_system().remove(unstarted))
         throw std::runtime_error("cannot remove " + unstarted.string() + ": the node would vote as new at its next start");
+      dannan::identity::durable_sync_directory(node_config.state_path);
     }
     if (genesis.empty() && bootstrap.empty()) genesis.push_back(self);
     const bool founder = std::find(genesis.begin(), genesis.end(), self) != genesis.end();
@@ -409,17 +409,12 @@ int main(int argc, char** argv) {
     }
     finished.get_future().wait();
     // The cluster goes after the clients, while the io still runs: the node
-    // stops first, so no write in flight is proposed again. What its stop
-    // posted runs (one turn on each io thread); then the database and its
-    // agreements, which hold the space by reference, then the space, then the
-    // node.
+    // stops first, so no write in flight is proposed again; then the database
+    // and its agreements, which hold the space by reference, then the space,
+    // then the node. A store completion that runs after them reaches nothing
+    // of them (Dannan 0.10.0).
     fanout.reset();
     node->stop();
-    for (int turn = 0; turn < 2; ++turn) {
-      std::promise<void> ran;
-      asio::post(io, [&ran] { ran.set_value(); });
-      ran.get_future().wait();
-    }
     made.reset();
     database_settings = {};
     agreements.reset();

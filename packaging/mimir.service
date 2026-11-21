@@ -1,0 +1,43 @@
+#
+# Mimir - The Distributed Database
+#
+# Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+# Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+#
+
+# One mimir-node as a systemd service, as the mimir user. Its settings are
+# /etc/mimir/config.yaml and, beside it, secrets.yaml (mode 600: the users);
+# its state (the node's id) is /var/lib/mimir. The data is in memory: a
+# restarted node catches up from the others, and a cluster of one starts
+# empty.
+
+[Unit]
+Description=Mimir node
+Documentation=man:mimir-node(1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mimir
+Group=mimir
+ExecStart=/usr/bin/mimir-node --config /etc/mimir/config.yaml
+StateDirectory=mimir
+StateDirectoryMode=0700
+# Always: a node stopped by a signal exits cleanly and is still wanted (an
+# operator's `systemctl stop` is not restarted).
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

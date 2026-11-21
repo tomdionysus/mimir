@@ -7,8 +7,9 @@
 
 # The database. Public headers are mimir/include/mimir/*.h, included as
 # "mimir/x.h"; everything else is included from the repository root as
-# "mimir/<subsystem>/x.h".
-add_library(mimir SHARED
+# "mimir/<subsystem>/x.h". Static, built into mimir-node: Mimir ships no
+# library of its own, so it has no ABI to keep.
+add_library(mimir STATIC
   cluster/agreements.cpp
   cluster/fanout.cpp
   cluster/register.cpp
@@ -62,7 +63,6 @@ target_include_directories(mimir
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
 )
 target_link_libraries(mimir
-  PUBLIC dannan::dannan Boost::headers OpenSSL::SSL OpenSSL::Crypto Threads::Threads
+  PUBLIC dannan::dannan Boost::headers Threads::Threads
   PRIVATE mimir_warnings PkgConfig::LUA51 PkgConfig::LUA51_CJSON PkgConfig::LUA51_BITOP ${MIMIR_LUA51_CMSGPACK}
 )
-set_target_properties(mimir PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})

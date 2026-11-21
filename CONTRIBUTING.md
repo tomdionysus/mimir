@@ -58,15 +58,36 @@ or `tools/ci.sh release`, which does the same. Dannan is fetched at its pinned
 tag from the sibling checkout, or from its repository. Run the test binary
 rather than `ctest`. Sanitizers run before a release, or to hunt a bug that
 cannot be pinned any other way. Hosted CI runs `tools/ci.sh`'s check, release,
-clang, client, tidy and coverage steps on each push to `develop` or `main`
-that changes more than documents, and no sanitizer step; a feature branch's
-gate runs on the build servers. CodeQL runs on `main` and weekly.
+clang, client, package, tidy and coverage steps on each push to `develop` or
+`main` that changes more than documents, and no sanitizer step; a feature
+branch's gate runs on the build servers. CodeQL runs on `main` and weekly.
 `tools/ci.sh client` builds `mimir_client_tests` (libhiredis-dev), which drives
 three real mimir-node processes with hiredis (ruling 44). The differential gate
 against a Valkey 8 server runs by hand on the build servers.
 
+The tests need GoogleTest (`libgtest-dev`). Build options: `MIMIR_BUILD_TESTING`,
+`MIMIR_BUILD_CLIENT_TESTS` (`mimir_client_tests`: hiredis against a real
+three-node cluster; needs libhiredis-dev), `MIMIR_BUILD_FUZZING` (clang,
+libFuzzer targets for the RESP parser and `RESTORE`), `MIMIR_WARNINGS_AS_ERRORS`,
+and `MIMIR_FETCH_DANNAN` (on by default: fetch Dannan when no installed release
+of its minor is found).
+
 Write tests from Valkey 8's documented behaviour, the design and the laws, not
 from the current behaviour.
+
+### The differential gate
+
+The `Differential.*` cases send the same commands to Mimir and to a Valkey 8
+server on loopback and compare the replies byte for byte. `tools/differential.sh
+[build directory]` runs each case against a freshly started node (while
+multi-key writes are refused, a case cannot clear the node with `FLUSHALL`), and
+prints the count of differing replies. By hand:
+
+```
+LC_ALL=C valkey-server --port 7379 --bind 127.0.0.1 --save "" --appendonly no --daemonize yes
+./build/mimir-node --listen 127.0.0.1 --port 7380 --databases 16 --auth-plaintext --seconds 200 &
+MIMIR_DIFF_MIMIR_PORT=7380 MIMIR_DIFF_VALKEY_PORT=7379 ./build/mimir_tests --gtest_filter='Differential.*'
+```
 
 ## Dependencies
 
@@ -83,8 +104,11 @@ One layout for all the projects, as `../dannan/CONTRIBUTING.md` "Layout" gives
 it, with `<p>` = `mimir`: the library target `mimir` in `mimir/`, public headers
 in `mimir/include/mimir/`, subsystems in `mimir/<subsystem>/` (`resp`,
 `keyspace`, `command`, `cluster`, `server`), tests in `mimir/test/` (one binary
-`mimir_tests`, and `mimir_client_tests` from `mimir/test/client/`), fuzz targets in `mimir/fuzz/` (the RESP request parser first),
-tools in `tools/`. No presets.
+`mimir_tests`, and `mimir_client_tests` from `mimir/test/client/`), fuzz
+targets in `mimir/fuzz/` (the RESP request parser first), tools in `tools/`,
+the Debian packaging in `debian/` with the packaged settings and unit in
+`packaging/` (`docs/packaging.md`), the manual page in `docs/man/`, and the
+design, the plan and the record in `TODO/`. No presets.
 
 ## Shared code
 

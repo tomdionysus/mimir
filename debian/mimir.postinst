@@ -1,0 +1,33 @@
+#!/bin/sh
+#
+# Mimir - The Distributed Database
+#
+# Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+# Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+#
+# mimir postinst: after the mimir user exists (the debhelper snippet), the
+# site's files, each made only if absent and never part of the package:
+# secrets.yaml (the users) and cluster.key (the cluster's key), mode 600 for
+# the mimir user, and the state directory.
+
+set -e
+
+#DEBHELPER#
+
+if [ "$1" = "configure" ]; then
+    if [ ! -e /etc/mimir/secrets.yaml ]; then
+        (umask 077 && printf '%s\n' '# The users, as lines of a Valkey ACL file:' '#' '# acl:' '#   users:' '#     - user default off' '#     - user app on >secret ~app:* +@all' >/etc/mimir/secrets.yaml)
+        chown mimir:mimir /etc/mimir/secrets.yaml
+    fi
+    if [ ! -e /etc/mimir/cluster.key ]; then
+        (umask 077 && head -c 32 /dev/urandom >/etc/mimir/cluster.key)
+        chown mimir:mimir /etc/mimir/cluster.key
+    fi
+    install -d -o mimir -g mimir -m 0700 /var/lib/mimir
+    if [ -z "${2:-}" ]; then
+        echo "mimir is installed and disabled. Review /etc/mimir/config.yaml and the users in"
+        echo "/etc/mimir/secrets.yaml, then: systemctl enable --now mimir"
+    fi
+fi
+
+exit 0

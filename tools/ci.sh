@@ -15,6 +15,13 @@
 #   tools/ci.sh tsan       ThreadSanitizer
 #   tools/ci.sh coverage   a coverage build's tests; lcov report build-ci/coverage.info
 #   tools/ci.sh client     hiredis against a real three-node cluster (ruling 44)
+#   tools/ci.sh client-asan  the same, every node under ASan and UBSan
+#   tools/ci.sh fuzz       each libFuzzer target for MIMIR_FUZZ_SECONDS (300)
+#
+#   The sanitizer steps build Dannan from source with their flags, never an
+#   installed copy, and fail unless it carries the sanitizer's symbols.
+#   tools/ci.sh package    Dannan's packages at the pinned tag, then Mimir's, linted,
+#                          installed, checked and purged (in a container or runner)
 #   tools/ci.sh tidy       clang-tidy's bugprone-use-after-move over every source
 #                          and Mimir's headers, warnings as errors
 #
@@ -49,6 +56,28 @@ configure() {
   cmake --build "$out/$dir" -j "$jobs"
 }
 
+# A sanitizer build instruments every stack library it links: each one built
+# from source under $out/<dir>/_deps must carry the sanitizer's symbols, or
+# the step fails before its tests run.
+instrumented() {
+  dir="$1"
+  symbol="$2"
+  found=0
+  for lib in "$out/$dir"/_deps/*-build/*/lib*.so*; do
+    [ -f "$lib" ] && [ ! -L "$lib" ] || continue
+    found=1
+    if ! nm -D "$lib" | grep -q " $symbol"; then
+      echo "not instrumented ($symbol): $lib" >&2
+      exit 1
+    fi
+    echo "instrumented ($symbol): $lib"
+  done
+  [ "$found" = 1 ] || {
+    echo "no stack library built from source under $out/$dir/_deps" >&2
+    exit 1
+  }
+}
+
 case "$step" in
   check)
     cd "$top"
@@ -73,11 +102,13 @@ case "$step" in
   asan)
     flags="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
     configure asan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMIMIR_WARNINGS_AS_ERRORS=OFF -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
+    instrumented asan __asan_
     ASAN_OPTIONS=detect_stack_use_after_return=1 UBSAN_OPTIONS=print_stacktrace=1 "$out/asan/mimir_tests"
     ;;
   tsan)
     flags="-fsanitize=thread -fno-omit-frame-pointer"
     configure tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMIMIR_WARNINGS_AS_ERRORS=OFF -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
+    instrumented tsan __tsan_
     TSAN_OPTIONS="halt_on_error=1 second_deadlock_stack=1" "$out/tsan/mimir_tests"
     ;;
   coverage)
@@ -95,6 +126,68 @@ case "$step" in
     configure client -DCMAKE_BUILD_TYPE=Release -DMIMIR_BUILD_TESTING=OFF -DMIMIR_BUILD_CLIENT_TESTS=ON
     "$out/client/mimir_client_tests"
     ;;
+  client-asan)
+    # The nodes' own reports go to $out/client-asan/reports (a node's log
+    # goes with its test's directory); any report fails the step.
+    flags="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
+    configure client-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMIMIR_BUILD_TESTING=OFF -DMIMIR_BUILD_CLIENT_TESTS=ON -DMIMIR_WARNINGS_AS_ERRORS=OFF \
+      -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
+    instrumented client-asan __asan_
+    reports="$out/client-asan/reports"
+    rm -rf "$reports"
+    mkdir -p "$reports"
+    ASAN_OPTIONS="detect_stack_use_after_return=1:log_path=$reports/asan" UBSAN_OPTIONS="print_stacktrace=1:log_path=$reports/ubsan" \
+      "$out/client-asan/mimir_client_tests"
+    if [ -n "$(ls "$reports")" ]; then
+      cat "$reports"/* >&2
+      exit 1
+    fi
+    ;;
+  fuzz)
+    # Each libFuzzer target for MIMIR_FUZZ_SECONDS (300 by default), with
+    # Dannan built from source under ASan and UBSan like the targets.
+    flags="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
+    CXX=clang++ configure fuzz -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMIMIR_BUILD_TESTING=OFF -DMIMIR_BUILD_FUZZING=ON -DMIMIR_WARNINGS_AS_ERRORS=OFF \
+      -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
+    instrumented fuzz __asan_
+    for target in resp_request resp_reply rdb_restore; do
+      mkdir -p "$out/fuzz/corpus/$target"
+      "$out/fuzz/${target}_fuzz" -max_total_time="${MIMIR_FUZZ_SECONDS:-300}" -print_final_stats=1 "$out/fuzz/corpus/$target"
+    done
+    ;;
+  package)
+    # Dannan's packages at the pinned tag, by Dannan's own step, then Mimir's
+    # package, linted (docs/packaging.md). Needs git, dpkg-dev, lintian, apt
+    # and root or sudo.
+    tag=$(sed -n 's/^set(MIMIR_DANNAN_TAG "\(.*\)")$/\1/p' "$top/CMakeLists.txt")
+    sudo=
+    if [ "$(id -u)" -ne 0 ]; then sudo=sudo; fi
+    rm -rf "$out/dannan-package"
+    git clone --quiet --depth 1 --branch "$tag" "$MIMIR_DANNAN_REPOSITORY" "$out/dannan-package"
+    (cd "$out/dannan-package" && DANNAN_REPOSITORY="$MIMIR_DANNAN_REPOSITORY" DANNAN_CI_OUT="$out/dannan-package/build-ci" tools/ci.sh install-debs "$tag")
+    $sudo apt-get build-dep -y "$top"
+    (cd "$top" && tools/build-deb.sh)
+    lintian --fail-on error,warning "$top"/build-deb/mimir_*.changes
+    # Installed, checked and purged: the user, the site's files and their
+    # modes, and the binary. This installs the package, so run the step in a
+    # container or a CI runner, never on a host that runs mimir.
+    deb=$(ls "$top"/build-deb/mimir_*_"$(dpkg --print-architecture)".deb)
+    $sudo apt-get install -y "$deb"
+    id mimir
+    for check in "/etc/mimir/secrets.yaml mimir 600" "/etc/mimir/cluster.key mimir 600" "/var/lib/mimir mimir 700"; do
+      set -- $check
+      [ "$(stat -c '%U %a' "$1")" = "$2 $3" ] || {
+        echo "$1: $(stat -c '%U %a' "$1"), not $2 $3" >&2
+        exit 1
+      }
+    done
+    mimir-node --version
+    $sudo apt-get purge -y mimir
+    if [ -e /etc/mimir ] || [ -e /var/lib/mimir ]; then
+      echo "purge left /etc/mimir or /var/lib/mimir" >&2
+      exit 1
+    fi
+    ;;
   tidy)
     # Configured, not built: clang-tidy needs only the compile database.
     tidy=$(command -v run-clang-tidy || command -v run-clang-tidy-19)
@@ -104,7 +197,7 @@ case "$step" in
     "$tidy" -p "$out/tidy" -j "$jobs" -quiet -checks='-*,bugprone-use-after-move' -warnings-as-errors='*' -header-filter="$ours" "$ours"
     ;;
   *)
-    echo "usage: tools/ci.sh check|release|clang|asan|tsan|coverage|client|tidy" >&2
+    echo "usage: tools/ci.sh check|release|clang|asan|tsan|coverage|client|client-asan|fuzz|package|tidy" >&2
     exit 2
     ;;
 esac
