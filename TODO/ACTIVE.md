@@ -152,24 +152,29 @@ valkey-cli -p 7379 shutdown nosave; kill $node   # never pkill: the build server
 ## Running: the claim board's registrar
 
 - mimir.service runs on all four build servers on port 6390, four independent nodes,
-  from develop `79b62bb` (2026-11-16, before stage 3). Users: `default off`,
+  from the mimir 0.1.0 package with libdannan0.10 0.10.1 (2026-11-21; before:
+  develop `79b62bb` from `/opt/mimir`). Users: `default off`,
   `registrar` (writes `node:*`), `reader` (reads). Plaintext AUTH on the lab
   LAN (ruling 28's `auth.plaintext`, this deployment only). Passwords:
   `~/.claude/mimir-registrar.yaml`, never in the repository. Spec:
   `../stack-coordinator/TODO/2026-11-16-claim-board-registrar.md`.
-- What it needs on a build server, all kept through the 2026-11-18 wipe and checked
-  after it:
-  - `/opt/mimir` (bin/mimir-node, lib/libmimir.so.0.1,
-    lib/libdannan.so.0.8), found through the unit's
-    `LD_LIBRARY_PATH=/opt/mimir/lib`;
-  - `/etc/mimir/config.yaml` and `secrets.yaml`, and the unit
-    (`tools/deploy/`), which is `Restart=always`;
-  - the packages libssl3, libyaml-cpp0.8, zlib1g, libzstd1, liblua5.1-0,
-    lua-cjson, lua-cmsgpack and lua-bitop.
-  It keeps no state directory.
-- To upgrade: build on a build server, package bin/mimir-node and lib/ (libmimir,
-  libdannan), unpack to `/opt/mimir`, `systemctl restart mimir`. Entries
-  come back with the registrar's next refresh.
+- On each build server: the packages `mimir` and `libdannan0.10` (Debian's
+  Lua and library packages come with them), the package's unit as the mimir
+  user, and the deployment's own `/etc/mimir/config.yaml` (kept over the
+  package's: notifications, port 6390, plaintext AUTH; no `cluster`
+  section, so a cluster of one with its state in the unit's private /tmp)
+  and `secrets.yaml` (mode 600, owned by mimir). The old `/opt/mimir` build,
+  its unit and `/etc/mimir` as they were are kept in
+  `/opt/mimir/before-0.1.0` for rollback.
+- Checked after the move on all four, as a client from outside: both users
+  AUTH, a wrong password is refused, the registrar's HSET and EXPIRE on
+  `node:*` read back by the reader; the reader's ACL does not grant
+  MIMIR NODES (NOPERM), as configured.
+- To upgrade: build the release's debs from its tag (`tools/ci.sh package`
+  in a container), post a board note, then on each server in turn
+  `apt-get install -o Dpkg::Options::=--force-confold` the debs and check;
+  entries come back with the registrar's next refresh. Never purge: the
+  package's purge deletes `/etc/mimir`, the users with it.
 - It moves to one four-node cluster when stage 3's gate passes (ruling 34).
   Each build server's state is made first with `mimir-node --cluster-state DIR
   --init-state`, and the four printed ids go in every node's
