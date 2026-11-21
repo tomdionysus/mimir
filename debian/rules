@@ -32,8 +32,11 @@ ifeq ($(TESTS),ON)
 	debian/build/mimir_tests
 endif
 
+# The mimir user (debian/mimir.sysusers), made before the unit's snippets
+# run: compat 13's sequence has no dh_installsysusers, so it is called here.
 # The packaged settings are a cluster of one on loopback, so the service is
 # installed disabled and not started. An upgrade restarts it if it is enabled
 # or running.
 override_dh_installsystemd:
+	dh_installsysusers
 	dh_installsystemd --no-enable

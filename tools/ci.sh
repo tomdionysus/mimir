@@ -20,7 +20,8 @@
 #
 #   The sanitizer steps build Dannan from source with their flags, never an
 #   installed copy, and fail unless it carries the sanitizer's symbols.
-#   tools/ci.sh package    Dannan's packages at the pinned tag, then Mimir's, linted
+#   tools/ci.sh package    Dannan's packages at the pinned tag, then Mimir's, linted,
+#                          installed, checked and purged (in a container or runner)
 #   tools/ci.sh tidy       clang-tidy's bugprone-use-after-move over every source
 #                          and Mimir's headers, warnings as errors
 #
@@ -167,6 +168,25 @@ case "$step" in
     $sudo apt-get build-dep -y "$top"
     (cd "$top" && tools/build-deb.sh)
     lintian --fail-on error,warning "$top"/build-deb/mimir_*.changes
+    # Installed, checked and purged: the user, the site's files and their
+    # modes, and the binary. This installs the package, so run the step in a
+    # container or a CI runner, never on a host that runs mimir.
+    deb=$(ls "$top"/build-deb/mimir_*_"$(dpkg --print-architecture)".deb)
+    $sudo apt-get install -y "$deb"
+    id mimir
+    for check in "/etc/mimir/secrets.yaml mimir 600" "/etc/mimir/cluster.key mimir 600" "/var/lib/mimir mimir 700"; do
+      set -- $check
+      [ "$(stat -c '%U %a' "$1")" = "$2 $3" ] || {
+        echo "$1: $(stat -c '%U %a' "$1"), not $2 $3" >&2
+        exit 1
+      }
+    done
+    mimir-node --version
+    $sudo apt-get purge -y mimir
+    if [ -e /etc/mimir ] || [ -e /var/lib/mimir ]; then
+      echo "purge left /etc/mimir or /var/lib/mimir" >&2
+      exit 1
+    fi
     ;;
   tidy)
     # Configured, not built: clang-tidy needs only the compile database.
