@@ -33,31 +33,38 @@ list is "The converged plan" -> "Mimir" in
    interface (dannan-node moves its own in 0.11.0 the same way). Done the next time mimir-node's settings are touched, after
    0.1.0, never mid-release.
 
-Items 2, 3, 5, 6 and 7 wait for Dannan's next minor. Until replica sets
+Items 3, 5 (AUTH throttling), 6 and 7 wait on Dannan. Until replica sets
 ship, Dannan's operator rule holds: never retire a genesis member while
 slots are still on genesis (this covers the registrar's move).
-Meanwhile, stage 3 work that waits on nobody: cluster-wide keyspace
-commands (3.6).
 
-State on 2026-11-20:
+Cluster-wide keyspace commands (3.6), looked at 2026-11-21: while every
+slot is on the genesis set and commit notices go to every genesis node, a
+genesis node's view already answers KEYS, SCAN, DBSIZE and RANDOMKEY for
+the whole cluster (stale only as ruling 5 allows). Asking a replica slot by
+slot adds something only on a node that is not a replica, which today
+cannot serve a plain GET either: that is routing (3.3), built with
+placement (3.4). So 3.6 goes with them, not before. Meanwhile, work that
+waits on nobody: coverage toward 100%, then CONFIG SET cluster-wide, then
+stage 3's gates (3.10: the differential against a cluster of three, and
+Dannan's SimNodes with the checkers, which 0.10.0 exports).
 
-- `develop` is pushed; hosted CI green, coverage uploaded to Codecov with
-  the repository's token (91.9% of lines on 2026-11-20).
-- Last gate: release 363 passed, and ASan and TSan 363 each
-  (node-c, 2026-11-20). The per-case differential
-  (`tools/differential.sh build-ci/release`) shows 233 differing replies,
-  all accounted for: ruling 35 refusals (157 replies carry its words), 4
-  undeclared-key script writes (ruling 36), and the rest cases whose setup
-  used a refused command. NotificationsCollections varies by one between
-  runs: `SMOVE s s2 b` is refused (ruling 35), so Mimir's `s` holds "b" and
-  "c" where Valkey's holds "c", and the next `SPOP s` picks at random. A
-  knock-on of the refusal, not a defect; it goes with the atomic commit.
-- Dannan is pinned at 0.10.0 (2026-11-20, tag e893cad). On a build server,
-  fetch it from its GitHub repository (`MIMIR_DANNAN_REPOSITORY`).
-- The build servers were wiped to bare OS on 2026-11-18. The work tree is back on
-  node-c only (`/root/mimir-work`, with Dannan, the Lua dev
-  packages and Valkey 8.1.1). Another build server needs the same: see "How work is
-  done".
+State on 2026-11-21:
+
+- 0.1.0 is released (main and develop at 7da897b, tag 0.1.0); hosted CI
+  green. Coverage was 91.9% of lines on 2026-11-20.
+- Last gate: the 0.1.0 gate (COMPLETED.md): release, clang, ASan and TSan
+  365 each, client 9/9 and under ASan, the differential's 233 differing
+  replies all accounted for (ruling 35 refusals, 4 undeclared-key script
+  writes, and cases whose setup used a refused command).
+  NotificationsCollections varies by one between runs: `SMOVE s s2 b` is
+  refused (ruling 35), so Mimir's `s` holds "b" and "c" where Valkey's
+  holds "c", and the next `SPOP s` picks at random. A knock-on of the
+  refusal, not a defect; it goes with the atomic commit.
+- Dannan is pinned at 0.10.1 (tag 840b08f), fetched from its GitHub
+  repository on a build server, or libdannan-dev for the package.
+- Builds run in a throwaway debian:trixie container on a build server,
+  pinned to the cores claimed (`build/gate-0.1.0.sh` is the gate's driver,
+  kept here, not in git).
 
 ## The differential gate
 
