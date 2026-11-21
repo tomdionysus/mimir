@@ -12,8 +12,8 @@ list is "The converged plan" -> "Mimir" in
 
 1. Pin 0.9.2. Done. Pin 0.10.0, Dannan's next minor: done with the
    packaging (see "Release" below for what it changed).
-2. `mimir/cluster/store.*` onto Dannan's in-memory AcceptorStore when it
-   lands (all six of Mimir's conditions accepted); Dagda's durable
+2. `mimir/cluster/store.*` onto Dannan's in-memory AcceptorStore: written
+   on `feature/memory-store` for 0.10.1 (see "Releases"); Dagda's durable
    value-less form at stage 5.
 3. Routes 600 and 601, operation ids and `version_of` onto Dannan's
    register layer when it lands (held(slot) becomes a catch_up exchange).
@@ -203,19 +203,30 @@ sanitation and fuzzing, and tagging and merging to main, pushing. You must
 maintain a release badge."
 
 Only minor or patch versions are bumped (the maintainer, 2026-11-20); a major
-version is his. Mimir has cut no release yet (0.1.0 in CMake). The first is cut when the
+version is the maintainer's. 0.1.0 is cut (2026-11-21; the record is in COMPLETED.md); the
+next is 0.1.1 or 0.2.0. How the first was cut, for the next: when the
 work above is done: README rewritten for installation and use (the design
 and status move to docs/ or TODO/); a deb package of mimir-node (binary,
 libmimir, the systemd unit and a default config.yaml, depending on the
 Debian packages it links); the full tests once on the cluster (release,
 ASan, TSan, the differential, and the fuzz targets for a bounded time);
 then develop merged to main, tagged x.y.z, both pushed. The release badge
-is in the README already. The first release (0.1.0) is built on Dannan
-0.10.0: repinned and rebuilt against it, since 0.9.2's agreement leaks, and
-reads a freed node, when a node stops with a store completion in flight
-(Dannan's fix/agreement-lifetime). Its release gate's ASan client run must be
-clean. The packaging and the README for installation and use are on
-`feature/packaging`, squashed with the repin.
+is in the README already. The first release (0.1.0) waited for Dannan
+0.10.1 (the maintainer, 2026-11-20: "I would say wait"), so it ships on
+Dannan's store rather than Mimir's own. Its gate ran once, whole, on that
+tree; its ASan client run was clean (0.9.2's agreement
+leaked, and read a freed node, when a node stopped with a store completion
+in flight; fixed in 0.10.0). The packaging and the README for installation
+and use are on `feature/packaging`, the store on `feature/memory-store`
+(off it); each is squashed onto `develop` as its own commit.
+
+The partial gate on 0.10.0 (feature/packaging 0ebf4ad and 59b407b, the
+build servers, 2026-11-20) is superseded, not counted: check passed,
+release 364, the differential 233 differing replies (163 ruling 35, 4
+undeclared script keys), clang 364, client 9/9; package was OOM-killed
+building Dannan's packages at -j4 in a 1.5 GB container, since 0.10.0's
+install-debs dropped the caller's parallel= (fixed in 0.10.1). Until then,
+a gate container is pinned with --cpuset-cpus to the cores claimed.
 
 The repin, reviewed against Dannan 0.10.0's changelog and its "Adopting
 0.10.0" (tag e893cad, which carries fix/agreement-lifetime):
@@ -230,14 +241,17 @@ The repin, reviewed against Dannan 0.10.0's changelog and its "Adopting
   before the space they hold by reference) stays. The ASan client run is
   the check.
 - `agree::MemoryStore`: the same store as Mimir's `cluster::Store`, which
-  should go (no duplication). Not yet: Mimir reads `held(slot)` (every name a
-  slot holds, with its state) for catch-up and to fill a node's view, and
-  MemoryStore has no such reader. Dannan adds `each_held(slot, visit)` in
-  0.10.1 (a visitor under the store's lock that returns false to stop, with
-  an optional `after` name to resume from; Mimir copies out, then applies).
-  With the pin to 0.10.1 Mimir's Store goes, and the shard-names request
-  pages by the last name sent, not an index: a name removed between pages
-  shifts the indices and a peer catching up would miss one.
+  goes (no duplication), on `feature/memory-store`, pinned to 0.10.1 when
+  it is tagged. Mimir read `held(slot)` for catch-up and to fill a node's
+  view; it now uses 0.10.1's `each_held(slot, after, visit)` (under the
+  store's lock: the view's fill copies out, then applies). The shard-names
+  request pages after the last name given, not by index: a name removed
+  between pages shifted the indices, and a peer catching up would miss one.
+  `Agreements` takes the page size (tests use 3 to cross pages). Checked
+  against Mimir's store with Dannan: the summary (SHA-256), deltas asked
+  for whole, held-not-carried, value() by the base's default, and records()
+  (an unserved record clears a clear bit in the advert: nothing published).
+  Mimir's store tests stay, now holding MemoryStore to what Mimir relies on.
 - `durable_sync_directory`: --init-state's marker removal uses
   `posix_file_system().remove` and `sync_directory`; equivalent, but the
   stack's helper is the one to use. Done.
