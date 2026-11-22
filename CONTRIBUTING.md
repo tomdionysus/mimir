@@ -62,8 +62,13 @@ clang, client, package, tidy and coverage steps on each push to `develop` or
 `main` that changes more than documents, and no sanitizer step; a feature
 branch's gate runs on the build servers. CodeQL runs on `main` and weekly.
 `tools/ci.sh client` builds `mimir_client_tests` (libhiredis-dev), which drives
-three real mimir-node processes with hiredis (ruling 44). The differential gate
-against a Valkey 8 server runs by hand on the build servers.
+three real mimir-node processes with hiredis (ruling 44); `client-asan` runs it
+with every node under ASan. `tools/ci.sh fuzz` runs each libFuzzer target for
+`MIMIR_FUZZ_SECONDS` (300). `tools/ci.sh package` builds, lints, installs,
+checks and purges the package, so run it in a container or a CI runner. The
+sanitizer and fuzz steps build Dannan instrumented and fail unless it carries
+the sanitizer's symbols. The differential gate against a Valkey 8 server runs
+by hand on the build servers.
 
 The tests need GoogleTest (`libgtest-dev`). Build options: `MIMIR_BUILD_TESTING`,
 `MIMIR_BUILD_CLIENT_TESTS` (`mimir_client_tests`: hiredis against a real
@@ -91,8 +96,8 @@ MIMIR_DIFF_MIMIR_PORT=7380 MIMIR_DIFF_VALKEY_PORT=7379 ./build/mimir_tests --gte
 
 ## Dependencies
 
-Dannan, Dagda (from the persistence stage), Boost (Asio), OpenSSL, yaml-cpp
-(through Dannan's configuration reader), Lua 5.1 with lua-cjson, lua-cmsgpack
+Dannan, Dagda (from the persistence stage), Boost (Asio), OpenSSL and yaml-cpp
+(both through Dannan, never linked by Mimir itself), Lua 5.1 with lua-cjson, lua-cmsgpack
 and lua-bitop as system packages (scripting), plus GoogleTest for the test
 build and hiredis for the real-client gate (test-only, ruling 44).
 Prefer writing something by hand over adding a library, and say so if a

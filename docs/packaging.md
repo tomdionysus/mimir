@@ -25,7 +25,10 @@ tools/ci.sh package
 `tools/ci.sh package` clones Dannan at the pinned tag and runs its
 `tools/ci.sh install-debs <tag>`, installs Mimir's build dependencies, runs
 `tools/build-deb.sh` and checks the result with lintian, failing on any error
-or warning. The package is written to `build-deb/`. The tests run inside the
+or warning. Then it installs the package, checks the `mimir` user, the site's
+files with their owners and modes, and `mimir-node --version`, and purges it,
+checking the purge left nothing: run it in a container or a CI runner, never
+on a host that runs mimir. The package is written to `build-deb/`. The tests run inside the
 build; `DEB_BUILD_OPTIONS=nocheck` skips them. CI builds the package on x86-64
 and arm64.
 

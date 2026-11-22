@@ -67,6 +67,9 @@ server.
 
 ## Where it stands
 
+**Released:** 0.1.0 (2026-11-21), on Dannan 0.10.1, packaged for Debian 13 on x86-64
+and arm64.
+
 **Done.** Every Valkey type and command family over RESP2 and RESP3, transactions,
 scripting and functions, pub/sub and keyspace notifications, and ACL with `AUTH`, each
 checked against Valkey 8.1.1 by the differential gate. Every write, on every node, a
@@ -88,14 +91,19 @@ cluster of one included, commits through Dannan's leaderless agreement on a majo
 
 - a write naming more than one key, which waits for Dannan's atomic commit across
   replica sets;
-- placement: every node is in every key's replica set until shards move as nodes join
-  and leave;
-- `KEYS`, `SCAN` and `DBSIZE` across the cluster.
+- placement: every node of the founding set is in every key's replica set until
+  shards move as nodes join and leave, and a node outside that set cannot yet serve
+  reads, `KEYS` and `SCAN` among them, by asking a replica.
 
 **Next**, in order (`TODO/ACTIVE.md`):
 
-1. Merging writes and the rule at heal: a value agreed by a majority is never overturned
-   by a merging write made on the minority side of a split.
-2. Persistence in Dagda: `ephemeral`, `persisted`, `decided` and `replicated`
+1. Test coverage toward 100%, `CONFIG SET` holding on every node, and the cluster's
+   own gates: the differential against three nodes, and linearizability checked
+   under faults.
+2. Placement and routing, as Dannan's replica sets arrive; then every multi-key write,
+   on Dannan's atomic commit.
+3. Merging writes and the rule at heal: a value agreed by a majority is never
+   overturned by a merging write made on the minority side of a split.
+4. Persistence in Dagda: `ephemeral`, `persisted`, `decided` and `replicated`
    acknowledgement levels, per command or per session.
-3. Eviction that works whichever node a client talks to, then the Lugh plugin.
+5. Eviction that works whichever node a client talks to, then the Lugh plugin.

@@ -43,8 +43,28 @@ The record, newest first. Each entry says what landed, with its gate counts.
   - The gate script's DEB_BUILD_OPTIONS lost its parallel= to a missing
     space, so the first package build ran make -j4, held to the two claimed
     cores by the container's CPU set; the rerun ran -j2.
-- Before it: the partial gate on Dannan 0.10.0 (superseded, recorded in
-  ACTIVE.md's history of this release).
+- Before it, superseded and not counted: a partial gate on Dannan 0.10.0
+  (feature/packaging 0ebf4ad and 59b407b, 2026-11-20): check passed,
+  release 364, the differential's 233, clang 364, client 9/9; the package
+  step was OOM-killed building Dannan's packages at -j4 in a 1.5 GB
+  container, since 0.10.0's install-debs dropped the caller's parallel=
+  (reported; fixed in 0.10.1). The maintainer then chose to wait for 0.10.1
+  ("I would say wait"), so 0.1.0 ships on Dannan's store.
+- The repin, read against Dannan 0.10.0's and 0.10.1's changelogs and their
+  "Adopting" notes. Adopted: identity::sha1 and encoding::hex,
+  durable_sync_directory, MemoryStore with each_held (asked of Dannan,
+  shaped with it: a stopping visitor and an `after` name), the teardown's
+  posted turns deleted, install-debs in the package step, DANNAN_SANITIZE.
+  Kept: `valid_hash` (acl.cpp) checks lower-case hex by hand, as Valkey
+  requires, which a decoder does not. Not adopted, with why:
+  Completion<T>/Outcome<T> (every callback changes: a feature of its own);
+  SwappableSink (the sink is made before the first line); RetryPolicy's
+  unbounded form, RandomId and dannan::testing (no use: RANDOMKEY's source
+  is not a secret, the fuzz targets are libFuzzer's); Prefix::parse (no
+  prefixes parsed); test::RecordingSink (no test captures log lines). The
+  0.10.1 stop fix concerns a node schedule Mimir does not use.
+- The registrar on the four build servers moved to the 0.1.0 package the
+  same day (ACTIVE.md, "Running").
 
 ## 2026-11-20: The real-client gate: hiredis against a three-node cluster (ruling 44)
 
