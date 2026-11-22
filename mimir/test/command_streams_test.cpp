@@ -36,6 +36,54 @@ TEST(CommandStreams, AddGivesIdsFromTheWallClock) {
   EXPECT_EQ(bed.run({"TYPE", "s"}), "+stream\r\n");
 }
 
+// Valkey 8.1.1's answers (probed): XSETID's options and their refusals in
+// Valkey's order, XADD's LIMIT, and ids past the last possible.
+TEST(CommandStreams, SetidAndTheLastIdsAsValkeyAnswers) {
+  Bed bed;
+  for (const char* id : {"1-1", "2-1"}) bed.run({"XADD", "s", id, "f", "v"});
+  EXPECT_EQ(bed.run({"XADD", "s", "MAXLEN", "~", "1", "LIMIT", "100", "3-1", "f", "v"}), bulk("3-1"));
+  EXPECT_EQ(bed.run({"XLEN", "s"}), integer(3));
+  EXPECT_EQ(bed.run({"XADD", "s", "MAXLEN", "1", "LIMIT", "100", "4-1", "f", "v"}),
+            error("ERR syntax error, LIMIT cannot be used without the special ~ option"));
+  EXPECT_EQ(bed.run({"XRANGE", "s", "-", "+", "COUNT"}), error("ERR syntax error"));
+  EXPECT_EQ(bed.run({"XREAD", "BOGUS", "STREAMS", "s", "0"}), error("ERR syntax error"));
+
+  EXPECT_EQ(bed.run({"XSETID", "s", "5-0", "ENTRIESADDED", "10", "MAXDELETEDID", "4-0"}), ok());
+  EXPECT_EQ(bed.run({"XINFO", "STREAM", "s"}), array({bulk("length"),
+                                                      integer(3),
+                                                      bulk("radix-tree-keys"),
+                                                      integer(1),
+                                                      bulk("radix-tree-nodes"),
+                                                      integer(2),
+                                                      bulk("last-generated-id"),
+                                                      bulk("5-0"),
+                                                      bulk("max-deleted-entry-id"),
+                                                      bulk("4-0"),
+                                                      bulk("entries-added"),
+                                                      integer(10),
+                                                      bulk("recorded-first-entry-id"),
+                                                      bulk("1-1"),
+                                                      bulk("groups"),
+                                                      integer(0),
+                                                      bulk("first-entry"),
+                                                      entry("1-1", {"f", "v"}),
+                                                      bulk("last-entry"),
+                                                      entry("3-1", {"f", "v"})}));
+  EXPECT_EQ(bed.run({"XSETID", "s", "5-0", "ENTRIESADDED", "x"}), error("ERR value is not an integer or out of range"));
+  EXPECT_EQ(bed.run({"XSETID", "s", "5-0", "ENTRIESADDED", "-1"}), error("ERR entries_added must be positive"));
+  EXPECT_EQ(bed.run({"XSETID", "s", "5-0", "BOGUS"}), error("ERR syntax error"));
+  EXPECT_EQ(bed.run({"XSETID", "s", "5-0", "MAXDELETEDID", "6-0"}), error("ERR The ID specified in XSETID is smaller than the provided max_deleted_entry_id"));
+  EXPECT_EQ(bed.run({"XSETID", "s", "5-0", "ENTRIESADDED", "0"}), error("ERR The entries_added specified in XSETID is smaller than the target stream length"));
+  EXPECT_EQ(bed.run({"XSETID", "s", "1-0"}), error("ERR The ID specified in XSETID is smaller than current max_deleted_entry_id"));
+  EXPECT_EQ(bed.run({"XSETID", "nokey", "5-0"}), error("ERR no such key"));
+
+  EXPECT_EQ(bed.run({"XADD", "m", "18446744073709551615-18446744073709551615", "f", "v"}), bulk("18446744073709551615-18446744073709551615"));
+  EXPECT_EQ(bed.run({"XADD", "m", "*", "f", "v"}), error("ERR The stream has exhausted the last possible ID, unable to add more items"));
+  // A last id ahead of the clock, its sequence used up: the next millisecond.
+  EXPECT_EQ(bed.run({"XADD", "n", "9999999999999-18446744073709551615", "f", "v"}), bulk("9999999999999-18446744073709551615"));
+  EXPECT_EQ(bed.run({"XADD", "n", "*", "f", "v"}), bulk("10000000000000-0"));
+}
+
 TEST(CommandStreams, AddWithAGivenIdAndItsRefusals) {
   Bed bed;
   EXPECT_EQ(bed.run({"XADD", "s", "5-1", "a", "1"}), bulk("5-1"));

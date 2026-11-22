@@ -203,13 +203,13 @@ bool has_flag(std::string_view flags, std::string_view flag) {
 bool call_command(lua_State* L, Run& run) {
   const int argc = lua_gettop(L);
   if (argc == 0) {
-    push_error(L, "ERR Please specify at least one argument for this redis lib call");
+    push_error(L, "ERR Please specify at least one argument for this call");
     return false;
   }
   std::vector<std::string> args;
   for (int i = 1; i <= argc; ++i) {
     if (lua_type(L, i) != LUA_TSTRING && lua_type(L, i) != LUA_TNUMBER) {
-      push_error(L, "ERR Lua redis lib command arguments must be strings or integers");
+      push_error(L, "ERR Command arguments must be strings or integers");
       return false;
     }
     size_t n = 0;

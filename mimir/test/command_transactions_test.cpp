@@ -125,6 +125,28 @@ TEST(CommandTransactions, UnwatchAndFlushAndExpiry) {
   EXPECT_EQ(bed.run({"EXEC"}), "*-1\r\n");
 }
 
+// A SELECT queued in a transaction moves the commands after it, and the
+// connection, to that database.
+TEST(CommandTransactions, ASelectInATransactionMovesWhatFollows) {
+  command::DatabaseSettings settings;
+  settings.databases = 2;
+  Bed bed(settings);
+  bed.run({"MULTI"});
+  bed.run({"SET", "k", "zero"});
+  bed.run({"SELECT", "1"});
+  bed.run({"SET", "k", "one"});
+  EXPECT_EQ(bed.run({"EXEC"}), array({ok(), ok(), ok()}));
+  EXPECT_EQ(bed.run({"GET", "k"}), bulk("one"));
+  bed.run({"SELECT", "0"});
+  EXPECT_EQ(bed.run({"GET", "k"}), bulk("zero"));
+  // A SELECT that fails moves nothing.
+  bed.run({"MULTI"});
+  bed.run({"SELECT", "9"});
+  bed.run({"SET", "k", "still"});
+  EXPECT_EQ(bed.run({"EXEC"}), array({error("ERR DB index is out of range"), ok()}));
+  EXPECT_EQ(bed.run({"GET", "k"}), bulk("still"));
+}
+
 TEST(CommandTransactions, ABlockingCommandInATransactionDoesNotWait) {
   Bed bed;
   bed.run({"MULTI"});

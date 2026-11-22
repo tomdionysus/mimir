@@ -241,10 +241,8 @@ void Agreements::change(size_t db, const std::string& key, Change change, std::f
         out.repeatable = true;
         const auto record = decode_value(current.empty() ? std::nullopt : current[0]);
         if (!record) {
-          // Not a record: left as it is, and said so.
+          // Not a record: left as it is; the outcome says why.
           out.values.push_back(current.empty() ? std::nullopt : current[0]);
-          const std::string refusal = "-ERR this key's stored record cannot be read\r\n";
-          out.result.assign(refusal.begin(), refusal.end());
           return out;
         }
         auto changed = change(*record);
@@ -258,9 +256,13 @@ void Agreements::change(size_t db, const std::string& key, Change change, std::f
         out.committed = outcome.committed;
         out.unknown = outcome.unknown;
         out.why = outcome.why;
-        if (outcome.committed) {
-          const auto record = decode_value(outcome.values.empty() ? std::nullopt : outcome.values[0]);
-          if (record) out.record = *record;
+        const auto record = outcome.committed ? decode_value(outcome.values.empty() ? std::nullopt : outcome.values[0]) : std::nullopt;
+        if (outcome.committed && !record) {
+          // The register holds no record: nothing was changed.
+          out.committed = false;
+          out.why = "the key's stored record cannot be read";
+        } else if (outcome.committed) {
+          out.record = *record;
           out.result.assign(outcome.result.begin(), outcome.result.end());
           out.version = version_of(outcome.ballot);
           notify(db, key, out.version, out.record);

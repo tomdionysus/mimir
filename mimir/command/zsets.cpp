@@ -51,13 +51,7 @@ void changed(Call& call, std::string_view event, std::string_view key, const Sor
 }
 
 // A blocking command's source, as lists' blocking_source.
-SortedSet* blocking_source(Call& call, const std::string& key) {
-  if (!call.ready_key) return zset_value(call.keys, key);
-  if (key != *call.ready_key) return nullptr;
-  keyspace::Entry* entry = call.keys.find(key);
-  if (!entry || entry->type() != keyspace::Type::zset) return nullptr;
-  return &std::get<SortedSet>(entry->value);
-}
+SortedSet* blocking_source(Call& call, const std::string& key) { return zset_value(call.keys, key); }
 
 void park(Call& call, std::vector<std::string> keys, double seconds) {
   call.blocked = true;
@@ -326,6 +320,12 @@ std::vector<const SortedSet::Item*> select(const SortedSet& zset, const std::str
   return out;
 }
 
+// The options that parse but do not apply to the range's kind.
+void check_range(const RangeRequest& request) {
+  if (request.limited && request.by == By::index) throw CommandError("ERR syntax error, LIMIT is only supported in combination with either BYSCORE or BYLEX");
+  if (request.with_scores && request.by == By::lex) throw CommandError("ERR syntax error, WITHSCORES not supported in combination with BYLEX");
+}
+
 // ZRANGE's options, from `from` on.
 RangeRequest parse_range(Call& call, size_t from, bool allow_scores) {
   RangeRequest request;
@@ -348,8 +348,7 @@ RangeRequest parse_range(Call& call, size_t from, bool allow_scores) {
       throw CommandError(syntax_error);
     }
   }
-  if (request.limited && request.by == By::index) throw CommandError("ERR syntax error, LIMIT is only supported in combination with either BYSCORE or BYLEX");
-  if (request.with_scores && request.by == By::lex) throw CommandError("ERR syntax error, WITHSCORES not supported in combination with BYLEX");
+  check_range(request);
   return request;
 }
 
@@ -373,16 +372,18 @@ void range_reply(Call& call, const std::string& key, const std::string& start, c
   reply_items(call.reply, select(*zset, start, stop, request), request.with_scores);
 }
 
-// The old-style range commands, as ZRANGE with their implied options.
-void legacy_range(Call& call, By by, bool reverse, bool allow_limit) {
+// The old-style range commands, as ZRANGE with their implied options: each
+// takes WITHSCORES and LIMIT, refused afterwards where they do not apply, as
+// Valkey's shared parser refuses them.
+void legacy_range(Call& call, By by, bool reverse) {
   RangeRequest request;
   request.by = by;
   request.reverse = reverse;
   for (size_t i = 4; i < call.args.size(); ++i) {
     const std::string& option = call.args[i];
-    if (iequals(option, "WITHSCORES") && by != By::lex) {
+    if (iequals(option, "WITHSCORES")) {
       request.with_scores = true;
-    } else if (allow_limit && iequals(option, "LIMIT") && i + 2 < call.args.size()) {
+    } else if (iequals(option, "LIMIT") && i + 2 < call.args.size()) {
       request.limited = true;
       request.offset = integer_argument(call.args[i + 1]);
       request.count = integer_argument(call.args[i + 2]);
@@ -391,6 +392,7 @@ void legacy_range(Call& call, By by, bool reverse, bool allow_limit) {
       throw CommandError(syntax_error);
     }
   }
+  check_range(request);
   range_reply(call, call.args[1], call.args[2], call.args[3], request);
 }
 
@@ -765,11 +767,11 @@ void zrangestore(Call& call) {
   }
 }
 
-void zrevrange(Call& call) { legacy_range(call, By::index, true, false); }
-void zrangebyscore(Call& call) { legacy_range(call, By::score, false, true); }
-void zrevrangebyscore(Call& call) { legacy_range(call, By::score, true, true); }
-void zrangebylex(Call& call) { legacy_range(call, By::lex, false, true); }
-void zrevrangebylex(Call& call) { legacy_range(call, By::lex, true, true); }
+void zrevrange(Call& call) { legacy_range(call, By::index, true); }
+void zrangebyscore(Call& call) { legacy_range(call, By::score, false); }
+void zrevrangebyscore(Call& call) { legacy_range(call, By::score, true); }
+void zrangebylex(Call& call) { legacy_range(call, By::lex, false); }
+void zrevrangebylex(Call& call) { legacy_range(call, By::lex, true); }
 
 namespace {
 void rank_generic(Call& call, bool reverse) {
@@ -778,7 +780,7 @@ void rank_generic(Call& call, bool reverse) {
     if (!iequals(call.args[3], "WITHSCORE")) throw CommandError(syntax_error);
     with_score = true;
   } else if (call.args.size() > 4) {
-    throw CommandError(syntax_error);
+    throw CommandError("ERR wrong number of arguments for '" + lower(call.args[0]) + "' command");
   }
   SortedSet* zset = zset_value(call.keys, call.args[1]);
   auto rank = zset ? zset->rank(call.args[2]) : std::nullopt;

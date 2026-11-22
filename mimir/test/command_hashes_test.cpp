@@ -163,5 +163,15 @@ TEST(CommandHashes, Classes) {
   for (const char* name : {"hincrby", "hincrbyfloat"}) EXPECT_EQ(command::find_spec(name)->cls, Class::configurable) << name;
 }
 
+TEST(CommandHashes, RandFieldAndScanRefuseWhatTheyDoNotTake) {
+  Bed bed;
+  bed.run({"HSET", "h", "f", "v"});
+  EXPECT_EQ(bed.run({"HRANDFIELD", "h", "1", "WITHVALUES", "x"}), error("ERR syntax error"));
+  EXPECT_EQ(bed.run({"HSCAN", "h", "0", "BOGUS"}), error("ERR syntax error"));
+  // RESP3 pairs each field with its value.
+  bed.run({"HELLO", "3"});
+  EXPECT_EQ(bed.run({"HRANDFIELD", "h", "1", "WITHVALUES"}), "*1\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n");
+}
+
 }  // namespace
 }  // namespace mimir::test

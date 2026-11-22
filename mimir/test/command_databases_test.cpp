@@ -99,5 +99,29 @@ TEST(CommandDatabases, WaitsAndWatchesStayInTheirDatabase) {
   EXPECT_EQ(woken, array({bulk("q"), bulk("elsewhere")}));
 }
 
+// A watch breaks when MOVE or COPY ... DB writes its key into its database,
+// and when SWAPDB swaps its database while its key exists in either of the
+// two (Valkey's touchAllWatchedKeysInDb); a watch on a key in neither stands.
+TEST(CommandDatabases, MoveCopyAndSwapdbBreakTheWatchesTheyTouch) {
+  Sixteen s;
+  command::Session other = s.make();
+  const auto exec_after = [&](const std::string& db, const std::string& key, const std::vector<std::string>& write) {
+    s.run({"SELECT", db});
+    s.run({"WATCH", key});
+    s.run(other, write);
+    s.run({"MULTI"});
+    s.run({"PING"});
+    return s.run({"EXEC"});
+  };
+  s.run(other, {"SET", "m", "v"});
+  EXPECT_EQ(exec_after("1", "m", {"MOVE", "m", "1"}), "*-1\r\n");
+  s.run(other, {"SET", "c", "v"});
+  EXPECT_EQ(exec_after("2", "c", {"COPY", "c", "c", "DB", "2"}), "*-1\r\n");
+  s.run(other, {"SELECT", "4"});
+  s.run(other, {"SET", "w", "v"});
+  EXPECT_EQ(exec_after("3", "w", {"SWAPDB", "3", "4"}), "*-1\r\n");
+  EXPECT_EQ(exec_after("3", "absent", {"SWAPDB", "3", "4"}), array({"+PONG\r\n"}));
+}
+
 }  // namespace
 }  // namespace mimir::test

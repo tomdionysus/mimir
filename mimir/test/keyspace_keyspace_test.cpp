@@ -145,6 +145,36 @@ TEST(KeyspaceKeyspace, ARandomKeyIsLive) {
   for (uint64_t seed : {0ull, 1ull << 40, ~0ull}) EXPECT_EQ(keys.random_key(seed), "live");
 }
 
+// An expired key is expired wherever it is met, and told as expired once: a
+// write over it (which then makes a new key), an erase (which then finds
+// nothing), the full listing, and a random pick that finds only the dead.
+TEST(KeyspaceKeyspace, AnExpiredKeyExpiresWhereverItIsMet) {
+  dannan::test::SteppedWall wall;
+  Keyspace keys(wall);
+  std::vector<std::string> expired;
+  std::vector<std::string> created;
+  keys.set_listener({[&](std::string_view k) { expired.emplace_back(k); }, [&](std::string_view k) { created.emplace_back(k); }});
+  for (const char* k : {"put", "erase", "listed", "picked"}) keys.put(k, string_entry("v", wall.unix_ms() + 1));
+  created.clear();
+  wall.advance(1ms);
+  keys.put("put", string_entry("w"));
+  EXPECT_EQ(expired, std::vector<std::string>{"put"});
+  EXPECT_EQ(created, std::vector<std::string>{"put"});
+  EXPECT_EQ(keys.expiring(), 3u);
+  EXPECT_FALSE(keys.erase("erase"));
+  EXPECT_EQ(expired.back(), "erase");
+  keys.erase("put");
+  EXPECT_EQ(keys.keys(), std::vector<std::string>{});
+  EXPECT_EQ(expired.size(), 4u);
+  EXPECT_EQ(keys.size(), 0u);
+
+  for (int i = 0; i < 3; ++i) keys.put("dead" + std::to_string(i), string_entry("v", wall.unix_ms() + 1));
+  wall.advance(1ms);
+  EXPECT_EQ(keys.random_key(0), std::nullopt);
+  EXPECT_EQ(keys.size(), 0u);
+  EXPECT_EQ(expired.size(), 7u);
+}
+
 TEST(KeyspaceKeyspace, PositionsFollowTheSlot) {
   EXPECT_LT(position_of("bar"), position_of("foo"));  // slots 5061 and 12182
   EXPECT_EQ(position_of("{t}a") >> 48, position_of("{t}b") >> 48);

@@ -13,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
 #include <vector>
 
 #include "dannan/test/fixtures/stepped_time.h"
@@ -23,6 +24,18 @@ namespace mimir::test {
 namespace {
 
 using namespace std::chrono_literals;
+
+// A node configured with letters notify-keyspace-events does not take is not
+// made; with Valkey's letters it answers them back in Valkey's order.
+TEST(CommandNotifications, TheSettingTakesOnlyValkeysLetters) {
+  command::DatabaseSettings bad;
+  bad.notify_keyspace_events = "KQ";
+  EXPECT_THROW({ Bed refused(bad); }, std::invalid_argument);
+  command::DatabaseSettings good;
+  good.notify_keyspace_events = "Elg";
+  Bed bed(good);
+  EXPECT_EQ(bed.run({"CONFIG", "GET", "notify-keyspace-events"}), array({bulk("notify-keyspace-events"), bulk("glE")}));
+}
 
 struct World : Bed {
   command::Session& client = session;

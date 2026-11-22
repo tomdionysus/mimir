@@ -54,17 +54,6 @@ constexpr std::string_view help_lines[] = {
     "    Print this help.",
 };
 
-void close_session(Call& call, Session& session) {
-  if (&session == &call.session)
-    call.session.closing = true;
-  else if (session.kill)
-    session.kill();
-}
-
-void close_refused_subscribers(Call& call, const Acl::User& before, const Acl::User& after) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
-  for (Session* session : refused_subscribers(call.database, call.database.sessions_locked(), before, after)) close_session(call, *session);
-}
-
 }  // namespace
 
 std::vector<Session*> refused_subscribers(Database& database, const std::map<int64_t, Session*>& sessions, const Acl::User& before, const Acl::User& after) {
@@ -114,32 +103,24 @@ void syntax(const Call& call) {
 
 }  // namespace
 
-// Called under the database's lock, as every handler is.
+// Called under the database's lock, as every handler is. SETUSER and DELUSER
+// run only by agreement, on the users as agreed (ruling 27): the connections
+// a change refuses close when it commits (Database::install_acl_locked).
 void acl(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   const std::string sub = lower(call.args[1]);
   const size_t argc = call.args.size();
   Acl& users = call.database.acl_locked();
   if (sub == "setuser") {
     if (argc < 3) wrong_arity(sub);
-    const Acl::User* existing = users.find(call.args[2]);
-    std::optional<Acl::User> before;
-    if (existing) before = *existing;
     if (auto error = users.set_user(call.args[2], std::span<const std::string>(call.args).subspan(3))) throw CommandError(*error);
-    if (before) close_refused_subscribers(call, *before, *users.find(call.args[2]));
     call.reply.simple("OK");
   } else if (sub == "deluser") {
     if (argc < 3) wrong_arity(sub);
     for (size_t i = 2; i < argc; ++i)
       if (call.args[i] == "default") throw CommandError("ERR The 'default' user cannot be removed");
     int64_t deleted = 0;
-    for (size_t i = 2; i < argc; ++i) {
-      if (!users.delete_user(call.args[i])) continue;
-      ++deleted;
-      std::vector<Session*> theirs;
-      for (const auto& [id, session] : call.database.sessions_locked())
-        if (session->user == call.args[i]) theirs.push_back(session);
-      for (Session* session : theirs) close_session(call, *session);
-    }
+    for (size_t i = 2; i < argc; ++i)
+      if (users.delete_user(call.args[i])) ++deleted;
     call.reply.integer(deleted);
   } else if (sub == "getuser") {
     if (argc != 3) wrong_arity(sub);

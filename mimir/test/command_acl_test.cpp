@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -260,6 +261,17 @@ TEST(Acl, ExecChecksAgainEachQueuedCommand) {
                          "allowed for the following reason: no permission to execute the command or subcommand"),
                    "+PONG\r\n"}));
   EXPECT_EQ(bed.run({"EXISTS", "k"}), integer(0));
+  // A key or a channel taken away between queueing and EXEC, in Valkey's words.
+  ASSERT_EQ(bed.run({"ACL", "SETUSER", "x", "allchannels"}), ok());
+  EXPECT_EQ(bed.run_as(other, {"MULTI"}), ok());
+  EXPECT_EQ(bed.run_as(other, {"GET", "k"}), "+QUEUED\r\n");
+  EXPECT_EQ(bed.run_as(other, {"PUBLISH", "news", "m"}), "+QUEUED\r\n");
+  ASSERT_EQ(bed.run({"ACL", "SETUSER", "x", "resetkeys", "~a*", "resetchannels"}), ok());
+  const std::string changed =
+      "NOPERM ACLs rules changed between the moment the transaction was accumulated and the EXEC call. This command is no longer allowed "
+      "for the following reason: ";
+  EXPECT_EQ(bed.run_as(other, {"EXEC"}), array({error(changed + "no permission to touch the specified keys"),
+                                                error(changed + "no permission to access one of the channels used as arguments")}));
 }
 
 TEST(Acl, ScriptsRunAsTheirCaller) {
@@ -335,6 +347,19 @@ TEST(Acl, PlaintextAuthIsRefusedUnlessEnabled) {
 TEST(Acl, TheSubcommandsAnswerAsValkeys) {
   AclBed bed;
   EXPECT_EQ(bed.run({"ACL", "CAT", "nosuch"}), error("ERR Unknown category 'nosuch'"));
+  EXPECT_EQ(bed.run({"ACL", "CAT", "read", "write"}), error("ERR unknown subcommand or wrong number of arguments for 'CAT'. Try ACL HELP."));
+  EXPECT_EQ(bed.run({"ACL", "GENPASS", "8", "9"}), error("ERR unknown subcommand or wrong number of arguments for 'GENPASS'. Try ACL HELP."));
+  // A password removed by its hash ('!'), as Valkey 8.1.1 answers it.
+  const std::string hash = "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8";
+  EXPECT_EQ(bed.run({"ACL", "SETUSER", "h", "#" + hash}), ok());
+  EXPECT_EQ(bed.run({"ACL", "SETUSER", "h", "!" + std::string(64, '0')}),
+            error("ERR Error in ACL SETUSER modifier '!" + std::string(64, '0') + "': The password you are trying to remove from the user does not exist"));
+  EXPECT_EQ(
+      bed.run({"ACL", "SETUSER", "h", "!bad"}),
+      error("ERR Error in ACL SETUSER modifier '!bad': The password hash must be exactly 64 characters and contain only lowercase hexadecimal characters"));
+  EXPECT_EQ(bed.run({"ACL", "SETUSER", "h", "!" + hash}), ok());
+  EXPECT_EQ(bed.run({"ACL", "GETUSER", "h"}).find(bulk("passwords") + array({})) != std::string::npos, true);
+  ASSERT_EQ(bed.run({"ACL", "DELUSER", "h"}), integer(1));
   const std::string cats = bed.run({"ACL", "CAT"});
   EXPECT_EQ(cats.rfind("*21\r\n$8\r\nkeyspace\r\n$4\r\nread\r\n", 0), 0u);
   EXPECT_NE(cats.find("$9\r\nscripting\r\n"), std::string::npos);
@@ -401,6 +426,59 @@ TEST(Acl, DeletingAUserClosesItsConnections) {
   EXPECT_EQ(bed.run({"ACL", "DELUSER", "u"}), integer(1));
   EXPECT_TRUE(killed);
   EXPECT_EQ(bed.run_as(theirs, {"GET", "k"}), error("NOPERM User u has no permissions to run the 'get' command"));
+}
+
+// ACL SETUSER that narrows a user's channels disconnects that user's clients
+// subscribed to what is no longer allowed (Valkey's ACL page): a channel
+// checked against the new patterns, a pattern subscription only if it is one
+// of them. Other users' clients, and the user's other clients, stay.
+TEST(Acl, NarrowingChannelsClosesTheSubscribersRefused) {
+  AclBed bed;
+  ASSERT_EQ(bed.run({"ACL", "SETUSER", "u", "on", "nopass", "+@all", "~*", "allchannels"}), ok());
+  struct Client {
+    command::Session session;
+    bool killed = false;
+  };
+  std::vector<std::unique_ptr<Client>> clients;
+  const auto client = [&](const std::string& user, std::vector<std::string> subscribe) {
+    auto made = std::make_unique<Client>();
+    made->session = bed.make();
+    made->session.push = [](std::string) {};
+    Client* raw = made.get();
+    made->session.kill = [raw] { raw->killed = true; };
+    if (user != "default") {
+      EXPECT_EQ(bed.run_as(made->session, {"AUTH", user, "x"}), ok());
+    }
+    if (!subscribe.empty()) bed.run_as(made->session, subscribe);
+    clients.push_back(std::move(made));
+    return raw;
+  };
+  Client* allowed = client("u", {"SUBSCRIBE", "chan1"});
+  Client* refused_channel = client("u", {"SUBSCRIBE", "news"});
+  Client* refused_pattern = client("u", {"PSUBSCRIBE", "chan1*"});
+  Client* kept_pattern = client("u", {"PSUBSCRIBE", "chan*"});
+  Client* not_subscribed = client("u", {});
+  Client* someone_else = client("default", {"SUBSCRIBE", "news"});
+  EXPECT_EQ(bed.run({"ACL", "SETUSER", "u", "resetchannels", "&chan*"}), ok());
+  EXPECT_FALSE(allowed->killed);
+  EXPECT_TRUE(refused_channel->killed);
+  EXPECT_TRUE(refused_pattern->killed);
+  EXPECT_FALSE(kept_pattern->killed);
+  EXPECT_FALSE(not_subscribed->killed);
+  EXPECT_FALSE(someone_else->killed);
+  // Widening closes nothing.
+  for (auto& c : clients) c->killed = false;
+  EXPECT_EQ(bed.run({"ACL", "SETUSER", "u", "&other"}), ok());
+  for (auto& c : clients) EXPECT_FALSE(c->killed);
+}
+
+// The users' record as agreed is bytes from the cluster: one that does not
+// decode refuses the next change rather than being trusted.
+TEST(Acl, AUsersRecordThatDoesNotDecodeIsRefused) {
+  AclBed bed;
+  ASSERT_EQ(bed.run({"ACL", "SETUSER", "u"}), ok());
+  bed.agreements->record(0xffff, "acl").payload = std::string("\x00\x00\x00\x02\x00", 5);
+  EXPECT_EQ(bed.run({"ACL", "SETUSER", "v"}), error("ERR the users' stored record cannot be read"));
 }
 
 TEST(Acl, UsersAreSeededFromTheSettings) {

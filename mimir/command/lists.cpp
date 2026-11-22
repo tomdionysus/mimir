@@ -46,16 +46,11 @@ void popped(Call& call, std::string_view key, const List& list, bool left) {
   drop_if_empty(call, key, list);
 }
 
-// A blocking command's source list. Serving a woken wait, only the ready key
-// counts and a value of another type is no list (the wait goes on); otherwise
-// another type is WRONGTYPE, as for any list command.
-List* blocking_source(Call& call, const std::string& key) {
-  if (!call.ready_key) return list_value(call.keys, key);
-  if (key != *call.ready_key) return nullptr;
-  keyspace::Entry* entry = call.keys.find(key);
-  if (!entry || entry->type() != keyspace::Type::list) return nullptr;
-  return &std::get<List>(entry->value);
-}
+// A blocking command's source list: another type is WRONGTYPE, as for any
+// list command. A woken pop is proposed again and runs over every key it
+// names, as Valkey 8 reruns it (probed: woken by writes to both of its keys,
+// BLPOP a b takes from a).
+List* blocking_source(Call& call, const std::string& key) { return list_value(call.keys, key); }
 
 void park(Call& call, std::vector<std::string> keys, double seconds, bool null_bulk) {
   call.blocked = true;

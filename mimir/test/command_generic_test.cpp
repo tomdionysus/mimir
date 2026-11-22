@@ -19,6 +19,33 @@ namespace {
 
 using namespace std::chrono_literals;
 
+// Each class's name, and the keys and classes the table finds from a call's
+// arguments: MIGRATE's key after AUTH or AUTH2's arguments (its page), and ACL
+// SETUSER and DELUSER as cluster state by agreement (ruling 27).
+TEST(CommandGeneric, TheTablesNamesKeysAndClasses) {
+  using command::Class;
+  EXPECT_EQ(command::class_name(Class::read), "read");
+  EXPECT_EQ(command::class_name(Class::merge), "merge");
+  EXPECT_EQ(command::class_name(Class::agreement), "agreement");
+  EXPECT_EQ(command::class_name(Class::configurable), "configurable");
+  EXPECT_EQ(command::class_name(Class::connection), "connection");
+  EXPECT_EQ(command::class_name(Class::admin), "admin");
+  const auto keys = [](std::vector<std::string> args) {
+    std::vector<std::string> out;
+    for (auto key : command::keys_of(*command::find_spec(args[0]), args)) out.emplace_back(key);
+    return out;
+  };
+  EXPECT_EQ(keys({"MIGRATE", "h", "1", "k", "0", "10"}), (std::vector<std::string>{"k"}));
+  EXPECT_EQ(keys({"MIGRATE", "h", "1", "", "0", "10", "AUTH", "pw", "KEYS", "a", "b"}), (std::vector<std::string>{"a", "b"}));
+  EXPECT_EQ(keys({"MIGRATE", "h", "1", "", "0", "10", "AUTH2", "u", "pw", "KEYS", "c"}), (std::vector<std::string>{"c"}));
+  EXPECT_EQ(keys({"MIGRATE", "h", "1", "k", "0", "10", "COPY", "REPLACE"}), (std::vector<std::string>{"k"}));
+  const auto cls = [](std::vector<std::string> args) { return command::class_of(*command::find_spec(args[0]), args); };
+  EXPECT_EQ(cls({"ACL", "SETUSER", "u"}), Class::agreement);
+  EXPECT_EQ(cls({"ACL", "deluser", "u"}), Class::agreement);
+  EXPECT_EQ(cls({"ACL", "WHOAMI"}), Class::connection);
+  EXPECT_EQ(cls({"ACL"}), Class::connection);
+}
+
 TEST(CommandGeneric, DelExistsTouchType) {
   Bed bed;
   bed.run({"SET", "key1", "Hello"});
@@ -237,6 +264,14 @@ TEST(CommandTable, KeysAreFoundByPosition) {
   std::vector<std::string> two{"RENAME", "x", "y"};
   EXPECT_EQ(command::keys_of(*rename, two), (std::vector<std::string_view>{"x", "y"}));
   EXPECT_TRUE(command::keys_of(*command::find_spec("ping"), {"PING"}).empty());
+}
+
+TEST(CommandGeneric, FlushallCopyAndRestoreRefuseUnknownOptions) {
+  Bed bed;
+  bed.run({"SET", "a", "1"});
+  EXPECT_EQ(bed.run({"FLUSHALL", "BOGUS"}), error("ERR syntax error"));
+  EXPECT_EQ(bed.run({"COPY", "a", "b", "BOGUS"}), error("ERR syntax error"));
+  EXPECT_EQ(bed.run({"RESTORE", "r", "0", "payload", "FREQ", "300"}), error("ERR Invalid FREQ value, must be >= 0 and <= 255"));
 }
 
 }  // namespace

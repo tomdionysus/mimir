@@ -140,6 +140,10 @@ TEST(CommandTracking, RefusesWhatValkeyRefuses) {
   EXPECT_EQ(a.run({"CLIENT", "TRACKING", "ON", "BOGUS"}), error("ERR syntax error"));
   EXPECT_EQ(a.run({"CLIENT", "TRACKING", "ON", "BCAST", "PREFIX", "ab", "PREFIX", "a"}),
             error("ERR Prefix 'ab' overlaps with another provided prefix 'a'. Prefixes for a single client must not overlap."));
+  EXPECT_EQ(a.run({"CLIENT", "TRACKING", "ON", "OPTIN"}), ok());
+  EXPECT_EQ(a.run({"CLIENT", "CACHING", "MAYBE"}), error("ERR syntax error"));
+  EXPECT_EQ(a.run({"CLIENT", "TRACKING", "ON", "OPTOUT"}),
+            error("ERR You can't switch OPTIN/OPTOUT mode before disabling tracking for this client, and then re-enabling it with a different mode."));
 }
 
 TEST(CommandTracking, ResptwoIsToldThroughARedirectedSubscriber) {

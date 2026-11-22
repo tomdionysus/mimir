@@ -30,7 +30,7 @@ TEST(CommandIntrospection, EveryContainerAnswersHelp) {
   Bed bed;
   const std::vector<std::pair<std::string, size_t>> containers{{"CLIENT", 78},  {"COMMAND", 21}, {"CONFIG", 11},     {"FUNCTION", 39}, {"MEMORY", 14},
                                                                {"PUBSUB", 14},  {"SCRIPT", 19},  {"SLOWLOG", 12},    {"XGROUP", 17},   {"XINFO", 9},
-                                                               {"LATENCY", 17}, {"MODULE", 11},  {"COMMANDLOG", 16}, {"ACL", 29}};
+                                                               {"LATENCY", 17}, {"MODULE", 11},  {"COMMANDLOG", 16}, {"ACL", 29},      {"OBJECT", 15}};
   for (const auto& [name, lines] : containers) {
     const std::string help = bed.run({name, "HELP"});
     EXPECT_EQ(help.rfind("*" + std::to_string(lines) + "\r\n+" + name + " <subcommand> [<arg> [value] [opt] ...]. Subcommands are:\r\n", 0), 0u)
@@ -106,6 +106,19 @@ TEST(CommandIntrospection, GetKeysFindsKeysByValkeysKeySpecs) {
   EXPECT_EQ(flags({"COPY", "a", "b"}),
             array({array({bulk("a"), array({simple("RO"), simple("access")})}), array({bulk("b"), array({simple("OW"), simple("update")})})}));
   EXPECT_EQ(flags({"BITFIELD", "k", "GET", "u8", "0"}), array({array({bulk("k"), array({simple("RO"), simple("access")})})}));
+  // Valkey 8.1.1's answers (probed) for the commands whose flags depend on
+  // their arguments.
+  const std::string rw_update = array({simple("RW"), simple("access"), simple("update")});
+  const std::string rw_delete = array({simple("RW"), simple("access"), simple("delete")});
+  EXPECT_EQ(flags({"BITFIELD", "k", "OVERFLOW", "WRAP", "GET", "u8", "0"}), array({array({bulk("k"), array({simple("RO"), simple("access")})})}));
+  EXPECT_EQ(flags({"BITFIELD", "k", "SET", "u8", "0", "1"}), array({array({bulk("k"), rw_update})}));
+  EXPECT_EQ(flags({"BITFIELD", "k", "BOGUS"}), array({array({bulk("k"), rw_update})}));
+  EXPECT_EQ(flags({"MIGRATE", "h", "1", "", "0", "10", "AUTH2", "u", "p", "KEYS", "a", "b"}),
+            array({array({bulk("a"), rw_delete}), array({bulk("b"), rw_delete})}));
+  EXPECT_EQ(flags({"MIGRATE", "h", "1", "k", "0", "10"}), array({array({bulk("k"), rw_delete})}));
+  EXPECT_EQ(flags({"SORT", "k", "LIMIT", "0", "1", "BY", "w", "GET", "x", "STORE", "d"}),
+            array({array({bulk("k"), array({simple("RO"), simple("access")})}), array({bulk("d"), array({simple("OW"), simple("update")})})}));
+  EXPECT_EQ(flags({"SORT_RO", "k"}), array({array({bulk("k"), array({simple("RO"), simple("access")})})}));
 }
 
 TEST(CommandIntrospection, ClientReplyOffAndSkipSilenceReplies) {
@@ -176,6 +189,22 @@ TEST(CommandIntrospection, MonitorSeesEveryCommandButSecretsAndAdministration) {
   EXPECT_NE(lines[2].find(" [0 lua] \"get\" \"k\""), std::string::npos) << lines[2];
 }
 
+// MONITOR quotes an argument as Valkey's sdscatrepr does, and hides HELLO's
+// AUTH username and password.
+TEST(CommandIntrospection, MonitorQuotesAsValkeyAndHidesHelloAuth) {
+  Bed bed;
+  command::Session watcher = bed.make_session();
+  std::vector<std::string> lines;
+  watcher.push = [&](std::string bytes) { lines.push_back(std::move(bytes)); };
+  std::string out;
+  bed.database.execute(watcher, {"MONITOR"}, out);
+  bed.run({"SET", "k", std::string("\\\r\t\a\b\x01\x7f\xff", 8)});
+  bed.run({"HELLO", "2", "AUTH", "default", "anything", "SETNAME", "n"});
+  ASSERT_EQ(lines.size(), 2u);
+  EXPECT_NE(lines[0].find("\"SET\" \"k\" \"\\\\\\r\\t\\a\\b\\x01\\x7f\\xff\"\r\n"), std::string::npos) << lines[0];
+  EXPECT_NE(lines[1].find("\"HELLO\" \"2\" \"AUTH\" \"(redacted)\" \"(redacted)\" \"SETNAME\" \"n\"\r\n"), std::string::npos) << lines[1];
+}
+
 // CLIENT PAUSE, as Valkey 8.1.1 behaves (probed by timing): WRITE holds what
 // writes or may replicate, ALL holds everything, CLIENT UNPAUSE included; a
 // later pause keeps the later end and the stricter mode.
@@ -223,6 +252,33 @@ TEST(CommandIntrospection, ClientPauseHoldsCommandsUntilItEnds) {
   out.clear();
   EXPECT_FALSE(run({"PING"}, out).wait.has_value());
   EXPECT_EQ(out, "+PONG\r\n");
+}
+
+// A write pause holds EXEC when its queue writes, and only then. A write is
+// held even as it is queued (Valkey checks the pause before MULTI's queue),
+// so the queue that writes is made before the pause.
+TEST(CommandIntrospection, AWritePauseHoldsAnExecThatWrites) {
+  Bed bed;
+  command::Session reader = bed.make_session();
+  command::Session writer = bed.make_session();
+  const auto run = [&](command::Session& on, Args args, std::string& out) { return bed.database.execute(on, args, out, [](std::string) {}); };
+  std::string out;
+  run(writer, {"MULTI"}, out);
+  run(writer, {"GET", "k"}, out);
+  run(writer, {"SET", "k", "v"}, out);
+  EXPECT_EQ(bed.run({"CLIENT", "PAUSE", "1000", "WRITE"}), ok());
+  run(reader, {"MULTI"}, out);
+  run(reader, {"GET", "k"}, out);
+  out.clear();
+  EXPECT_FALSE(run(reader, {"EXEC"}, out).postponed);
+  EXPECT_EQ(out, array({nil()}));
+  out.clear();
+  EXPECT_TRUE(run(writer, {"EXEC"}, out).postponed);
+  EXPECT_EQ(out, "");
+  // So is a write queued during it.
+  run(reader, {"MULTI"}, out);
+  out.clear();
+  EXPECT_TRUE(run(reader, {"SET", "k", "v"}, out).postponed);
 }
 
 TEST(CommandIntrospection, ClientPauseRefusesWhatValkeyRefuses) {
@@ -308,6 +364,20 @@ TEST(CommandIntrospection, ScriptShowAndDebug) {
   EXPECT_EQ(bed.run({"SCRIPT", "SHOW", sha}), bulk("return 7"));
   EXPECT_EQ(bed.run({"SCRIPT", "SHOW", std::string(40, '0')}), error("NOSCRIPT No matching script."));
   EXPECT_EQ(bed.run({"SCRIPT", "DEBUG", "NO"}), ok());
+}
+
+// COMMAND LIST names every command COMMAND COUNT counts; COMMAND DOCS has no
+// documentation to give, Valkey's being its own text; HELLO names an option it
+// does not take.
+TEST(CommandIntrospection, CommandListDocsAndHelloOptions) {
+  Bed bed;
+  const std::string count = bed.run({"COMMAND", "COUNT"});
+  ASSERT_EQ(count.front(), ':');
+  const std::string listed = bed.run({"COMMAND", "LIST"});
+  EXPECT_EQ(listed.substr(0, listed.find("\r\n")), "*" + count.substr(1, count.size() - 3));
+  EXPECT_NE(listed.find("$3\r\nget\r\n"), std::string::npos);
+  EXPECT_EQ(bed.run({"COMMAND", "DOCS", "get"}), array({}));
+  EXPECT_EQ(bed.run({"HELLO", "3", "BOGUS"}), error("ERR Syntax error in HELLO option 'BOGUS'"));
 }
 
 }  // namespace

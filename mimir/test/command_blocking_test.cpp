@@ -177,6 +177,29 @@ TEST(CommandBlocking, SortedSetPops) {
   EXPECT_EQ(m.woken, array({bulk("y"), array({bulks({"q", "2"}), bulks({"p", "1"})})}));
 }
 
+// A woken XREAD runs again over every stream it names, as Valkey 8.1.1 reruns
+// it (probed): two streams written at once are both answered, in the order
+// named; a key that became another type keeps it waiting, and is WRONGTYPE
+// once a stream it names wakes it.
+TEST(CommandBlocking, AWokenXreadRunsAgainOverEveryStream) {
+  Bed bed;
+  Waiter both{bed};
+  EXPECT_EQ(both.run({"XREAD", "BLOCK", "0", "STREAMS", "s1", "s2", "0-0", "0-0"}), "");
+  bed.run({"MULTI"});
+  bed.run({"XADD", "s2", "2-1", "f", "v"});
+  bed.run({"XADD", "s1", "1-1", "f", "v"});
+  bed.run({"EXEC"});
+  EXPECT_EQ(both.woken, array({array({bulk("s1"), array({array({bulk("1-1"), bulks({"f", "v"})})})}),
+                               array({bulk("s2"), array({array({bulk("2-1"), bulks({"f", "v"})})})})}));
+
+  Waiter typed{bed};
+  EXPECT_EQ(typed.run({"XREAD", "BLOCK", "0", "STREAMS", "u", "w", "0-0", "0-0"}), "");
+  bed.run({"SET", "u", "str"});
+  EXPECT_FALSE(typed.woken.has_value());
+  bed.run({"XADD", "w", "1-1", "f", "v"});
+  EXPECT_EQ(typed.woken, error("WRONGTYPE Operation against a key holding the wrong kind of value"));
+}
+
 TEST(CommandBlocking, ListMPop) {
   Bed bed;
   Waiter w{bed};

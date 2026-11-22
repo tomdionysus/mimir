@@ -251,7 +251,12 @@ uint64_t estimate(const Registers& regs) {
   }
   z += m * sigma(static_cast<long double>(histogram[0]) / m);
   const long double alpha = 0.721347520444481703680L;
-  return static_cast<uint64_t>(std::llroundl(alpha * m * m / z));
+  const long double e = alpha * m * m / z;
+  // As Valkey's hllCount: the rounded estimate held in a double, then taken
+  // as unsigned. One at or past 2^63 (infinite when every register is at the
+  // largest rank) is 2^63, which PFCOUNT shows as the least 64-bit integer.
+  if (!(e < 9223372036854775807.0L)) return uint64_t{1} << 63;
+  return static_cast<uint64_t>(static_cast<double>(std::llroundl(e)));
 }
 
 std::optional<uint64_t> cached(std::string_view bytes) noexcept {

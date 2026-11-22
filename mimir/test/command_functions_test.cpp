@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include "mimir/keyspace/rdb.h"
 #include "mimir/test/fixtures/bed.h"
 
 namespace mimir::test {
@@ -37,6 +38,34 @@ TEST(CommandFunctions, LoadAndCall) {
   EXPECT_EQ(bed.run({"FCALL", "put", "1", "k", "v"}), ok());
   EXPECT_EQ(bed.run({"FCALL_RO", "get", "1", "k"}), bulk("v"));
   EXPECT_EQ(bed.run({"FCALL", "get", "1", "k"}), bulk("v"));
+}
+
+// The libraries' record as agreed is bytes from the cluster: one that does not
+// read as FUNCTION DUMP's payload refuses the next change.
+TEST(CommandFunctions, ALibrariesRecordThatDoesNotDecodeIsRefused) {
+  Bed bed;
+  EXPECT_EQ(bed.run({"FUNCTION", "LOAD", library}), bulk("lib1"));
+  bed.agreements->record(0xffff, "functions").payload = std::string("not a payload");
+  EXPECT_EQ(bed.run({"FUNCTION", "FLUSH"}), error("ERR the libraries' stored record cannot be read"));
+}
+
+// One that decodes but holds a library that does not load is refused too, and
+// changes nothing.
+TEST(CommandFunctions, ALibrariesRecordWhoseCodeDoesNotLoadIsRefused) {
+  Bed bed;
+  EXPECT_EQ(bed.run({"FUNCTION", "LOAD", library}), bulk("lib1"));
+  bed.agreements->record(0xffff, "functions").payload = keyspace::rdb::dump_functions({"#!lua name=bad\nthis is not lua"});
+  EXPECT_EQ(bed.run({"FUNCTION", "FLUSH"}), error("ERR the libraries' stored record cannot be read"));
+  EXPECT_EQ(bed.run({"FCALL", "echo", "1", "k", "a"}), array({bulk("k"), bulk("a")}));
+}
+
+// A function's description, as FUNCTION LIST gives it.
+TEST(CommandFunctions, ListGivesADescription) {
+  Bed bed;
+  bed.run({"FUNCTION", "LOAD", "#!lua name=one\nredis.register_function{function_name='f', callback=function() return 1 end, description='says one'}"});
+  EXPECT_EQ(bed.run({"FUNCTION", "LIST"}),
+            array({array({bulk("library_name"), bulk("one"), bulk("engine"), bulk("LUA"), bulk("functions"),
+                          array({array({bulk("name"), bulk("f"), bulk("description"), bulk("says one"), bulk("flags"), array({})})})})}));
 }
 
 TEST(CommandFunctions, LoadRefusesAnExistingLibraryUnlessReplacing) {

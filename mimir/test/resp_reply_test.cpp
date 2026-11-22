@@ -15,7 +15,9 @@
 #include <cstdlib>
 #include <limits>
 
+#include "mimir/resp/parser.h"
 #include "mimir/resp/reply.h"
+#include "mimir/resp/reply_reader.h"
 
 namespace mimir::resp {
 namespace {
@@ -89,6 +91,76 @@ TEST(RespReply, DoublesAreTheShortestThatReadsBack) {
     // strtod, not stod: stod throws on a subnormal such as 5e-324.
     EXPECT_EQ(std::strtod(format_double(v).c_str(), nullptr), v) << v;
   }
+}
+
+// Reading another server's replies (MIGRATE's): each RESP2 and RESP3 type
+// whole, a reply that has not all arrived yet, and what is refused.
+TEST(RespReplyReader, ReadsEachTypeWhole) {
+  ReplyReader reader;
+  reader.feed("$3\r\nabc\r\n$-1\r\n=8\r\ntxt:abcd\r\n!3\r\nERR\r\n:5\r\n");
+  for (const auto& [type, text] : std::vector<std::pair<char, std::string>>{{'$', "abc"}, {'$', ""}, {'=', "txt:abcd"}, {'!', "ERR"}, {':', "5"}}) {
+    auto item = reader.next();
+    ASSERT_TRUE(item);
+    EXPECT_EQ(item->type, type);
+    EXPECT_EQ(item->text, text);
+  }
+  EXPECT_FALSE(reader.next());
+  EXPECT_EQ(reader.buffered(), 0u);
+  // An aggregate is read whole and its elements passed over: arrays, sets,
+  // pushes, maps and attributes (two items per entry), and a null array.
+  reader.feed("*2\r\n:1\r\n$1\r\na\r\n~1\r\n+x\r\n>1\r\n+y\r\n%1\r\n+k\r\n*1\r\n:2\r\n|1\r\n+k\r\n+v\r\n*-1\r\n");
+  for (char type : {'*', '~', '>', '%', '|', '*'}) {
+    auto item = reader.next();
+    ASSERT_TRUE(item);
+    EXPECT_EQ(item->type, type);
+  }
+  EXPECT_EQ(reader.buffered(), 0u);
+}
+
+TEST(RespReplyReader, WaitsForTheRestOfAReply) {
+  ReplyReader reader;
+  reader.feed("$5\r\nhel");
+  EXPECT_FALSE(reader.next());
+  reader.feed("lo\r\n*2\r\n:1\r\n");
+  auto bulk = reader.next();
+  ASSERT_TRUE(bulk);
+  EXPECT_EQ(bulk->text, "hello");
+  EXPECT_FALSE(reader.next());
+  reader.feed(":2\r\n");
+  auto array = reader.next();
+  ASSERT_TRUE(array);
+  EXPECT_EQ(array->type, '*');
+}
+
+TEST(RespReplyReader, RefusesWhatIsNotRespOrIsTooLarge) {
+  ReplyReader::Limits limits;
+  limits.max_line = 16;
+  limits.max_bulk = 8;
+  limits.max_elements = 4;
+  limits.max_depth = 2;
+  const auto refused = [&](std::string bytes) {
+    ReplyReader reader(limits);
+    reader.feed(bytes);
+    try {
+      reader.next();
+    } catch (const ProtocolError&) {
+      return true;
+    }
+    return false;
+  };
+  EXPECT_TRUE(refused("$x\r\n"));
+  EXPECT_TRUE(refused("$\r\n"));
+  EXPECT_TRUE(refused("*123456789012345678901\r\n"));
+  EXPECT_TRUE(refused("$9\r\n"));
+  EXPECT_TRUE(refused("*5\r\n"));
+  EXPECT_TRUE(refused("$3\r\nabcXY"));
+  EXPECT_TRUE(refused("*1\r\n*1\r\n*1\r\n:1\r\n"));
+  EXPECT_TRUE(refused("?\r\n"));
+  EXPECT_TRUE(refused("\r\n"));
+  EXPECT_TRUE(refused("+" + std::string(20, 'a')));
+  EXPECT_TRUE(refused("+" + std::string(20, 'a') + "\r\n"));
+  EXPECT_FALSE(refused("*1\r\n*1\r\n:1\r\n"));
+  EXPECT_FALSE(refused("$8\r\n12345678\r\n"));
 }
 
 }  // namespace

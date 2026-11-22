@@ -75,6 +75,10 @@ TEST(CommandPubSub, Resp3MessagesArePushes) {
   EXPECT_EQ(l.pushed[1], ">3\r\n" + bulk("message") + bulk("c") + bulk("m"));
   // RESP3 is not held to subscribed mode.
   EXPECT_EQ(l.run({"GET", "k"}), "_\r\n");
+  // HELLO 2 there: the subscription's messages come in RESP2's array form.
+  l.run({"HELLO", "2"});
+  bed.run({"PUBLISH", "c", "n"});
+  EXPECT_EQ(l.pushed.back(), bulks({"message", "c", "n"}));
 }
 
 TEST(CommandPubSub, UnsubscribeEndsOneOrAll) {

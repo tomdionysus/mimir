@@ -177,9 +177,11 @@ struct Call {
   // notify_locked). Called after the change it announces.
   void notify(char cls, std::string_view event, std::string_view key);
 
-  // A blocking command (BLPOP and its kin). Serving a waiter that a write woke,
-  // `ready_key` is the key that became ready and the only one the command may
-  // take from. A blocking command that finds nothing to take writes no reply
+  // A blocking command (BLPOP and its kin). Serving a waiter that a write woke
+  // here (XREAD; a blocking write is proposed again instead), `ready_key` is
+  // the key that became ready: the command is served only if it holds the
+  // type it waits for, and then runs over every key it names, as Valkey
+  // reruns it. A blocking command that finds nothing to take writes no reply
   // and sets `blocked`, the keys it waits on and its timeout in seconds (zero:
   // for ever); the database then parks it, or answers its timeout reply at
   // once where it may not wait.

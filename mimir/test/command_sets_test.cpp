@@ -179,5 +179,13 @@ TEST(CommandSets, Classes) {
   for (const char* name : {"spop", "smove", "sinterstore", "sunionstore", "sdiffstore"}) EXPECT_EQ(command::find_spec(name)->cls, Class::agreement) << name;
 }
 
+TEST(CommandSets, RandMemberMoveAndScanEdges) {
+  Bed bed;
+  bed.run({"SADD", "s", "a"});
+  EXPECT_EQ(bed.run({"SRANDMEMBER", "s"}), bulk("a"));
+  EXPECT_EQ(bed.run({"SMOVE", "nosuch", "s", "x"}), integer(0));
+  EXPECT_EQ(bed.run({"SSCAN", "s", "0", "BOGUS"}), error("ERR syntax error"));
+}
+
 }  // namespace
 }  // namespace mimir::test

@@ -146,12 +146,8 @@ void config(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
 }
 
 void object(Call& call) {
+  if (help::reply_help(call, "object")) return;
   const std::string sub = lower(call.args[1]);
-  if (sub == "help") {
-    call.reply.array(1);
-    call.reply.simple("OBJECT <subcommand> [<arg> [value] [opt] ...]. Subcommands are: ENCODING, FREQ, IDLETIME, REFCOUNT.");
-    return;
-  }
   if (sub != "encoding" && sub != "refcount" && sub != "idletime" && sub != "freq") {
     throw CommandError("ERR unknown subcommand '" + call.args[1] + "'. Try OBJECT HELP.");
   }
@@ -231,7 +227,11 @@ void slowlog(Call& call) {
   if (help::reply_help(call, "slowlog")) return;
   const std::string sub = lower(call.args[1]);
   if (sub == "get") {
-    if (call.args.size() == 3) integer_argument(call.args[2]);
+    if (call.args.size() > 3) throw CommandError("ERR unknown subcommand or wrong number of arguments for '" + call.args[1] + "'. Try SLOWLOG HELP.");
+    if (call.args.size() == 3) {
+      auto count = parse_integer(call.args[2]);
+      if (!count || *count < -1) throw CommandError("ERR count should be greater than or equal to -1");
+    }
     call.reply.array(0);
   } else if (sub == "len") {
     call.reply.integer(0);

@@ -12,36 +12,30 @@ order of the stages.
   documents only.
 - Dannan is pinned at 0.10.1 (tag `840b08f`), fetched from GitHub on a
   build server, or `libdannan-dev` for the package.
-- Coverage: 92.14% of lines on 0.1.0 (Codecov, 849 of 10,802 lines short).
-  This is the next work (see "Next").
+- Coverage: 97.9% of lines on develop (the coverage feature, squashed
+  2026-11-22; COMPLETED.md has its fixes and gate). What is left is mostly
+  lines gcov misattributes and defensive branches; keep it there as code
+  lands (the maintainer, 2026-11-20: "~100% code coverage on all code").
+- The maintainer, 2026-11-22: after the coverage squash, the Valkey gaps
+  next (item 1), with no release first.
 - The registrar on the four build servers runs the 0.1.0 package (see
   "Running").
-- Nothing is running on the cluster and no claim is held. On 2026-11-21 the
-  maintainer stopped every session; resume only when the maintainer says so.
+- The maintainer resumed work on 2026-11-22 ("continue autonomously"); the
+  merged feature branches were deleted locally and on the remote that day.
 
 ## Next, in order (none waits on anyone)
 
-1. **Coverage toward 100%** (the maintainer, 2026-11-20: "You will maintain
-   ~100% code coverage on all code"). Read the gaps from Codecov's API, no
-   build needed:
-   `https://api.codecov.io/api/v2/github/tomdionysus/repos/mimir/report/?branch=develop`
-   (per file) and `.../file_report/<path>?branch=develop` (lines). Largest
-   on 0.1.0: `keyspace/rdb.cpp` 115 lines, `command/database.cpp` 100,
-   `command/stream_groups.cpp` 79, `command/zsets.cpp` 68,
-   `command/server_commands.cpp` 48, `command/scripting.cpp` 41,
-   `command/connection.cpp` 39, `command/lua_struct.cpp` 34,
-   `cluster/agreements.cpp` 32, `server/server.cpp` 28, `command/geo.cpp`
-   27, `resp/reply_reader.cpp` 26. Started with rdb.cpp: its gaps are the
-   encoder's larger lengths (a 16 KB incompressible string, 32-bit integer
-   strings, listpack entries of 64 bytes to 2 MB) and the decoder's older
-   encodings (plain list, ziplist with every entry kind, quicklist v1, a
-   quicklist2 plain node, the original sorted-set format, a ziplist sorted
-   set). Expected bytes come from Valkey 8.1.1 itself: DUMP for the
-   encoder, RESTORE of hand-built payloads (checksums skipped with `DEBUG
-   SET-SKIP-CHECKSUM-VALIDATION 1`) for the decoder. A draft driver for
-   that, not yet run and with its hex still to check, is
-   `build/rdb-reference.sh` (not in git). A 5-byte listpack back-length
-   needs a 256 MB entry and stays uncovered.
+1. **Found by the probes, not yet done** (the maintainer, 2026-11-22: these
+   next). Each is Valkey 8.1.1's behaviour Mimir lacks, to be probed and
+   tested first as the coverage work was (`build/cov-probe*.sh`; the kept
+   `mimir-dev:trixie` image on a build server, the tree rsynced with
+   `--checksum` and no times, `build/dev-run.sh`; node-d's resolver drops
+   lookups now and then, so a container there is given public resolvers):
+   XINFO STREAM key FULL [COUNT n]; a stream node closed at
+   stream-node-max-bytes (4096) as well as by entries, which DUMP's bytes
+   and approximate trims show; LATENCY HISTOGRAM's per-command histograms
+   (Valkey tracks them by default); redis.setresp(3) changing a script's
+   conversions; PFDEBUG (also item 4).
 2. **CONFIG SET cluster-wide**: a setting that must hold on every node
    (notify-keyspace-events first) becomes cluster state by agreement, as ACL
    users and function libraries did (no special node).

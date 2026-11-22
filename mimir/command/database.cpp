@@ -1318,6 +1318,22 @@ void Database::propose(std::shared_ptr<Proposal> proposal) {
       [this, proposal](Agreements::Outcome outcome) { decided(proposal, std::move(outcome)); });
 }
 
+namespace {
+
+// The database a transaction leaves its connection in: each SELECT its queue
+// ran moved it, as Valkey's EXEC runs SELECT on the client itself. A SELECT
+// that failed moved nothing.
+size_t database_after_exec(const Session& queued_in, size_t databases) {
+  size_t at = queued_in.db;
+  for (const auto& queued : queued_in.queued) {
+    if (queued.size() != 2 || !iequals(queued[0], "SELECT")) continue;
+    if (const auto chosen = parse_integer(queued[1]); chosen && *chosen >= 0 && static_cast<size_t>(*chosen) < databases) at = static_cast<size_t>(*chosen);
+  }
+  return at;
+}
+
+}  // namespace
+
 void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Outcome outcome) {
   // Whether it took effect is not known: proposed again, it finds its own
   // operation if it did, and is applied once.
@@ -1392,9 +1408,11 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
       _touched.clear();
       // A transaction's reads are its caller's to track (they ran in its
       // speculation, which tracks nothing), before its own writes are told.
-      if (session && proposal->spec && proposal->spec->name == "exec")
+      if (session && proposal->spec && proposal->spec->name == "exec") {
         for (const auto& queued : proposal->session.queued)
           if (const Spec* each = find_spec(queued[0])) track_reads_locked(*session, *each, queued);
+        session->db = database_after_exec(proposal->session, _dbs.size());
+      }
       if (result->wrote && proposal->db != system_db) {
         // A flush breaks its databases' watches and tells every tracking
         // connection once, as a flush here does.
@@ -1654,9 +1672,11 @@ void Database::decided_keys(const std::shared_ptr<Proposal>& proposal, Agreement
       _touched.clear();
       // A transaction's reads are its caller's to track (they ran in its
       // speculation, which tracks nothing), before its own writes are told.
-      if (session && proposal->spec->name == "exec")
+      if (session && proposal->spec->name == "exec") {
         for (const auto& queued : proposal->session.queued)
           if (const Spec* each = find_spec(queued[0])) track_reads_locked(*session, *each, queued);
+        session->db = database_after_exec(proposal->session, _dbs.size());
+      }
       if (result->wrote) {
         const std::string_view command = proposal->spec->name;
         // A flush breaks its databases' watches and tells every tracking
@@ -1746,7 +1766,9 @@ std::vector<Agreements::Name> Database::names_locked(const Spec& spec, const std
       const Spec* each = find_spec(queued[0]);
       if (!each) continue;
       if (each->name == "select" && queued.size() > 1) {
-        if (const auto chosen = parse_integer(queued[1]); chosen && *chosen >= 0) at = static_cast<size_t>(*chosen);
+        // One out of range fails, and moves nothing.
+        if (const auto chosen = parse_integer(queued[1]); chosen && *chosen >= 0 && static_cast<size_t>(*chosen) < _dbs.size())
+          at = static_cast<size_t>(*chosen);
         continue;
       }
       if (!has_flag(each->flags, "write") && each->name != "eval" && each->name != "evalsha" && each->name != "fcall" && !reads_its_keys(*each)) continue;
@@ -2114,39 +2136,15 @@ void Database::touch(const Spec& spec, const std::vector<std::string>& args, siz
       for (Session* s : found->second) s->watch_touched = true;
     if (!_waiting_on.empty()) _touched.push_back(std::move(named));
   }
-  // MOVE and COPY ... DB name a key in another database too.
-  if (spec.name == "move" || spec.name == "copy") {
-    for (size_t i = 0; i + 1 < args.size(); ++i) {
-      if (spec.name == "copy" && !iequals(args[i], "DB")) continue;
-      auto target = parse_integer(args[spec.name == "move" ? 2 : i + 1]);
-      if (!target || *target < 0) break;
-      const std::string& key = args[spec.name == "move" ? 1 : 2];
-      invalidate_locked(key, modifier);
-      std::string named = scoped(static_cast<size_t>(*target), key);
-      auto found = _watchers.find(named);
-      if (found != _watchers.end())
-        for (Session* s : found->second) s->watch_touched = true;
-      if (!_waiting_on.empty()) _touched.push_back(std::move(named));
-      break;
-    }
-  }
+  // MOVE, COPY and SWAPDB run only by agreement: the keys they name in the
+  // other database are touched at their commit, by the proposal's names.
 }
 
 void Database::swap_locked(size_t a, size_t b) {
-  // SWAPDB by agreement exchanges its own keyspaces; the live ones take the
-  // commit.
-  if (_speculating) {
-    if (!_scratches.count(a) || !_scratches.count(b)) throw CommandError("ERR Mimir runs SWAPDB by agreement on the databases it names");
-    std::swap(_scratches.at(a), _scratches.at(b));
-    return;
-  }
-  std::swap(_dbs.at(a), _dbs.at(b));
-  bind_listeners();
-  for (auto& [key, sessions] : _watchers) {
-    const size_t db = unscoped(key).first;
-    if (db != a && db != b) continue;
-    for (Session* s : sessions) s->watch_touched = true;
-  }
+  // SWAPDB runs only by agreement, exchanging its own keyspaces; the live
+  // ones take the commit, every key of either installed in the other.
+  if (!_speculating || !_scratches.count(a) || !_scratches.count(b)) throw CommandError("ERR Mimir runs SWAPDB by agreement on the databases it names");
+  std::swap(_scratches.at(a), _scratches.at(b));
 }
 
 void Database::watch_locked(Session& session, const std::string& key) {

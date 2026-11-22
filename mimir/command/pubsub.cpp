@@ -78,15 +78,6 @@ std::vector<std::string> PubSub::names_of(Kind kind, int64_t id) {
   return out;
 }
 
-size_t PubSub::count_of(Kind kind, int64_t id) {
-  dannan::contract::Lock lock(_mutex);
-  size_t count = 0;
-  for (const auto& [name, subscribers] : table(kind)) count += subscribers.count(id);
-  return count;
-}
-
-size_t PubSub::count_of(int64_t id) { return count_of(Kind::channel, id) + count_of(Kind::pattern, id) + count_of(Kind::shard, id); }
-
 void PubSub::set_protocol(int64_t id, resp::Protocol protocol) {
   dannan::contract::Lock lock(_mutex);
   for (Table* t : {&_channels, &_patterns, &_shard})

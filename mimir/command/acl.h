@@ -133,6 +133,8 @@ class Acl {
   static std::optional<std::vector<std::string>> commands_in(std::string_view category);
   // COMMAND INFO's categories of a command ("@write", ...).
   static std::vector<std::string> categories_of(std::string_view command);
+  // Every command and subcommand by full name ("config", "config|get").
+  static std::vector<std::string> command_names();
 
   // The log of refusals, newest first (ACL LOG).
   struct LogEntry {

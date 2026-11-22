@@ -233,6 +233,88 @@ TEST(CommandScripting, SelectInAScriptIsTheScriptsOwn) {
   EXPECT_EQ(bed.session.db, 0u);
 }
 
+// Valkey 8.1.1's answers (probed) for scripts that call the library wrongly,
+// and for the helpers redis.sha1hex, replicate_commands, setresp and os.clock.
+TEST(CommandScripting, CallingTheLibraryWronglyAsValkeyAnswers) {
+  Bed bed;
+  const auto eval = [&](const std::string& body) { return bed.run({"EVAL", body, "0"}); };
+  const auto failed = [](const std::string& body, const std::string& message) { return error(message + suffix(command::sha1_hex(body), 1)); };
+  EXPECT_EQ(eval("return redis.call()"), failed("return redis.call()", "ERR Please specify at least one argument for this call"));
+  EXPECT_EQ(eval("return redis.call({})"), failed("return redis.call({})", "ERR Command arguments must be strings or integers"));
+  EXPECT_EQ(eval("return redis.pcall()"), error("ERR Please specify at least one argument for this call"));
+  EXPECT_EQ(eval("return redis.call('nosuch')"), failed("return redis.call('nosuch')", "ERR Unknown command called from script"));
+  EXPECT_EQ(eval("return redis.call('get')"), failed("return redis.call('get')", "ERR Wrong number of args calling command from script"));
+  EXPECT_EQ(eval("return redis.call('subscribe', 'c')"), failed("return redis.call('subscribe', 'c')", "ERR This Redis command is not allowed from script"));
+  // A null array reply is false in Lua.
+  EXPECT_EQ(bed.run({"EVAL", "return tostring(redis.call('BLPOP', KEYS[1], '0'))", "1", "nokey"}), bulk("false"));
+
+  EXPECT_EQ(eval("return redis.sha1hex('')"), bulk("da39a3ee5e6b4b0d3255bfef95601890afd80709"));
+  EXPECT_EQ(eval("return redis.sha1hex('abc')"), bulk("a9993e364706816aba3e25717850c26c9cd0d89d"));
+  EXPECT_EQ(eval("return redis.replicate_commands()"), integer(1));
+  EXPECT_EQ(eval("redis.setresp(4) return 1"), failed("redis.setresp(4) return 1", "ERR RESP version must be 2 or 3."));
+  EXPECT_EQ(eval("redis.setresp(3) return 1"), integer(1));
+  EXPECT_EQ(eval("return type(os.clock())"), bulk("number"));
+}
+
+// struct.pack, unpack and size as Valkey 8.1.1's scripts answer them (probed),
+// bytes shown in hex.
+TEST(CommandScripting, StructAsValkeysScriptsSeeIt) {
+  Bed bed;
+  const std::string hex = "local function hex(s) return (s:gsub('.', function(c) return string.format('%02x', string.byte(c)) end)) end ";
+  const auto eval = [&](const std::string& body) { return bed.run({"EVAL", hex + body, "0"}); };
+  const auto failed = [&](const std::string& body, const std::string& message) {
+    return error("ERR user_script:1: " + message + suffix(command::sha1_hex(hex + body), 1));
+  };
+  EXPECT_EQ(eval("return hex(struct.pack('>l', 1))"), bulk("0000000000000001"));
+  EXPECT_EQ(eval("return hex(struct.pack('<L', 2))"), bulk("0200000000000000"));
+  EXPECT_EQ(eval("return hex(struct.pack('T', 5))"), bulk("0500000000000000"));
+  EXPECT_EQ(eval("return hex(struct.pack('<f', 1.5))"), bulk("0000c03f"));
+  EXPECT_EQ(eval("return hex(struct.pack('>f', 1.5))"), bulk("3fc00000"));
+  EXPECT_EQ(eval("return hex(struct.pack('>d', 1.5))"), bulk("3ff8000000000000"));
+  EXPECT_EQ(eval("return hex(struct.pack(' b', 1))"), bulk("01"));
+  EXPECT_EQ(eval("return hex(struct.pack('!4 b i', 1, 2))"), bulk("0100000002000000"));
+  EXPECT_EQ(eval("return hex(struct.pack('s', 'ab'))"), bulk("616200"));
+  EXPECT_EQ(eval("return hex(struct.pack('c3', 'abcd'))"), bulk("616263"));
+  EXPECT_EQ(eval("return hex(struct.pack('<i17', 1))"), bulk("0100000000000000000000000000000000"));
+  EXPECT_EQ(eval("return hex(struct.pack('<i9', -1))"), bulk("ffffffffffffffff00"));
+  EXPECT_EQ(eval("return hex(struct.pack('>i9', -2))"), bulk("00fffffffffffffffe"));
+
+  EXPECT_EQ(eval("return struct.unpack('>i2', '\\1\\2')"), integer(258));
+  EXPECT_EQ(eval("return struct.unpack('<i2', '\\1\\2')"), integer(513));
+  EXPECT_EQ(eval("return struct.unpack('x b', '\\0\\5')"), integer(5));
+  EXPECT_EQ(eval("return tostring(struct.unpack('<f', struct.pack('<f', 1.5)))"), bulk("1.5"));
+  EXPECT_EQ(eval("return tostring(struct.unpack('>f', struct.pack('>f', -2.25)))"), bulk("-2.25"));
+  EXPECT_EQ(eval("return {struct.unpack('s', 'ab\\0c')}"), array({bulk("ab"), integer(4)}));
+  EXPECT_EQ(eval("return {struct.unpack('b c0', '\\2xy')}"), array({bulk("xy"), integer(4)}));
+  EXPECT_EQ(eval("return struct.unpack('<i9', struct.pack('<i9', -3))"), integer(-3));
+  EXPECT_EQ(eval("return struct.unpack('<I9', '\\1\\0\\0\\0\\0\\0\\0\\0\\1')"), integer(1));
+  EXPECT_EQ(eval("return struct.size('!8 b d')"), integer(16));
+  EXPECT_EQ(eval("return struct.size('>l')"), integer(8));
+
+  EXPECT_EQ(eval("return struct.unpack('s', 'abc')"), failed("return struct.unpack('s', 'abc')", "unfinished string in data"));
+  EXPECT_EQ(eval("return struct.unpack('c0', 'xy')"), failed("return struct.unpack('c0', 'xy')", "format 'c0' needs a previous size"));
+  EXPECT_EQ(eval("return struct.size('s')"), failed("return struct.size('s')", "bad argument #1 to 'size' (option 's' has no fixed size)"));
+  EXPECT_EQ(eval("return struct.size('c0')"), failed("return struct.size('c0')", "bad argument #1 to 'size' (option 'c0' has no fixed size)"));
+  EXPECT_EQ(eval("return struct.pack('y', 1)"), failed("return struct.pack('y', 1)", "bad argument #1 to 'pack' (invalid format option 'y')"));
+  EXPECT_EQ(eval("return struct.pack('!3 b', 1)"), failed("return struct.pack('!3 b', 1)", "alignment 3 is not a power of 2"));
+  EXPECT_EQ(eval("return struct.pack('i33', 1)"), failed("return struct.pack('i33', 1)", "integral size 33 is larger than limit of 32"));
+  EXPECT_EQ(eval("return struct.unpack('b', '')"), failed("return struct.unpack('b', '')", "bad argument #2 to 'unpack' (data string too short)"));
+  EXPECT_EQ(eval("return struct.unpack('b', 'a', 0)"),
+            failed("return struct.unpack('b', 'a', 0)", "bad argument #3 to 'unpack' (offset must be 1 or greater)"));
+}
+
+TEST(CommandScripting, ScriptSubcommandsRefuseWhatTheyDoNotTake) {
+  Bed bed;
+  EXPECT_EQ(bed.run({"SCRIPT", "FLUSH", "LATER"}), error("ERR SCRIPT FLUSH only support SYNC|ASYNC option"));
+  EXPECT_EQ(bed.run({"SCRIPT", "FLUSH", "ASYNC", "SYNC"}), error("ERR SCRIPT FLUSH only support SYNC|ASYNC option"));
+  EXPECT_EQ(bed.run({"SCRIPT", "DEBUG", "NO"}), ok());
+  EXPECT_EQ(bed.run({"SCRIPT", "DEBUG", "MAYBE"}), error("ERR Use SCRIPT DEBUG YES/SYNC/NO"));
+  // Mimir has no Lua debugger.
+  EXPECT_EQ(bed.run({"SCRIPT", "DEBUG", "YES"}), error("ERR Mimir has no Lua debugger: SCRIPT DEBUG takes only NO"));
+  EXPECT_EQ(bed.run({"SCRIPT", "DEBUG", "SYNC"}), error("ERR Mimir has no Lua debugger: SCRIPT DEBUG takes only NO"));
+  EXPECT_EQ(bed.run({"SCRIPT", "WHAT"}), error("ERR unknown subcommand 'WHAT'. Try SCRIPT HELP."));
+}
+
 TEST(CommandScripting, ScriptsInTransactions) {
   Bed bed;
   EXPECT_EQ(bed.run({"MULTI"}), ok());

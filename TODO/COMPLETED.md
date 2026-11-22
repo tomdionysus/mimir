@@ -2,6 +2,76 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-22: Coverage to 97.9% of lines, and the differences it found (feature/coverage, squashed)
+
+- Later batches on the branch: cluster tests on real Dannan nodes (strict
+  reads, malformed commit notices and catch-up requests, a several-key
+  change refused, a subscriber that returns), server tests over a socket
+  (a blocking timeout, a paused write resumed, CLIENT KILL in both forms,
+  MIGRATE with AUTH and to targets that close, stay silent or answer
+  garbage), and the rest of the reachable edges of the scripting, server,
+  connection, type, SORT, ACL and agreement paths.
+- Found and fixed, each test first: a write to a register that holds no
+  record answered "committed, but its reply cannot be read" (now
+  CLUSTERDOWN with the reason); after EXEC a transaction's SELECT was lost,
+  and a failed SELECT in the queue moved the keys after it to a database
+  that does not exist; a woken XREAD read only the ready key where Valkey
+  reruns it over every stream it names (WRONGTYPE for one of another
+  type). Each probed from Valkey 8.1.1. Valkey also reruns a woken BLPOP
+  over its keys in order, as Mimir's re-proposal does, so the ready-key
+  branches of the blocking pops and XREADGROUP were dead and were removed.
+- Measured at ab811c4 (coverage build, node-d): 97.9% of lines (11,159 of
+  11,399), 99.1% of functions, 414 tests; later commits add tests only and
+  the fixes above. What is left is mostly a switch's `default:` and a
+  function's closing brace that gcov counts against code tests pass
+  through, and defensive branches no input reaches.
+- Red runs: the register refusal 1; the transaction SELECT 1, then the
+  failed SELECT 1 (found by the extended test); the woken XREAD 1 (both of
+  its checks). Two wrong tests corrected (a SELECT 1 with one database, a
+  GEOSEARCH below its arity).
+- Gate, once, at 01f56dc on node-d (arm64, -j1, nice 19, one container,
+  each step its own claim): check clean; ASan with UBSan 425 of 425 (the
+  differential tests skip: no Valkey server in the step), no reports, 60
+  min; TSan 425 of 425, no reports, 26 min; the client gate under ASan 9 of
+  9, no reports; fuzz, 300 s each, no crash: resp_request 7,822,784 runs,
+  resp_reply 13,828,801, rdb_restore 2,869,939. The maintainer ruled the
+  Valkey gaps (ACTIVE.md item 1 now) next, with no release first.
+
+## 2026-11-22: Coverage, first two batches (feature/coverage)
+
+- The merged feature branches (hiredis-gate, memory-store, packaging) were
+  checked to hold nothing develop lacks and deleted, locally and on the
+  remote.
+- On `feature/coverage`, pushed: tests for rdb.cpp, sorted sets, stream
+  groups and streams, the server and connection commands, ACL, Lua's
+  struct library and helpers, geo, SORT, HyperLogLog, the request parser's
+  inline form, the reply reader, the keyspace's expiry, pub/sub and the
+  command table. Every expected answer was probed from Valkey 8.1.1 in a
+  container on a build server (`build/cov-probe*.sh`,
+  `build/rdb-reference*.sh`, not in git).
+- The probes found eighteen differences from Valkey, each fixed with a
+  failing test first: a list element over 8,192 bytes DUMPed packed where
+  Valkey gives it a plain node; a ziplist string header 0x81..0xBF refused
+  where Valkey reads it; ZRANK's arity error; ZREVRANGE ... LIMIT and
+  ZRANGEBYLEX ... WITHSCORES errors; XGROUP SETID's unknown-subcommand
+  error; SLOWLOG GET's count check; OBJECT HELP's text; CLIENT LIST ID and
+  CLIENT KILL's filters (TYPE, LADDR, MAXAGE, SKIPME yes|no); COMMAND LIST
+  FILTERBY; redis.call's two argument errors; XSETID below the deleted
+  maximum; a HyperLogLog estimate rounded through a double as hllCount
+  does. Removed as unreachable: the ACL handler's connection closing (an
+  ACL change runs only by agreement; install_acl_locked closes at commit),
+  PubSub::count_of, and the live MOVE, COPY and SWAPDB paths. Still open,
+  each Valkey's behaviour Mimir lacks: `ACTIVE.md`, "Found by the probes".
+- Red runs: the RDB tests failed 2 (the plain node, the 0x81 header); the
+  next batch 10, of which 9 were the fixed differences and one a wrong
+  test (a write queued in MULTI under a write pause is itself held, as
+  Valkey holds it), corrected; the third batch 1 (XSETID); the HLL test 1
+  (the estimate's rounding).
+- Gate, once, on node-d (arm64, release, -j1, in the kept development
+  image): 395 of 395 tests; clang-format 19 clean over the tree. No
+  sanitizers yet: they run once when the feature is complete, before its
+  squash. Hosted CI and Codecov see it only on develop.
+
 ## 2026-11-21: Release 0.1.0: packaging, Dannan 0.10.1 and Dannan's store
 
 - Built on `feature/packaging` and `feature/memory-store` (off it), each

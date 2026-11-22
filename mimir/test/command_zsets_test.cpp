@@ -233,6 +233,77 @@ TEST(CommandZsets, RangeStoreRandMemberScan) {
   EXPECT_EQ(bed.run({"ZSCAN", "srczset", "0", "NOSCORES"}), array({bulk("0"), bulks({"one", "two", "three", "four"})}));
 }
 
+// Valkey 8.1.1's answers (probed) for the old range commands' options, the
+// aggregates, stores that make nothing, a missing key, and the refusals.
+TEST(CommandZsets, OptionsMissingKeysAndRefusalsAsValkeyAnswers) {
+  Bed bed;
+  const std::string syntax = error("ERR syntax error");
+  bed.run({"ZADD", "z", "1", "a", "2", "b", "3", "c"});
+  EXPECT_EQ(bed.run({"ZRANGE", "z", "0", "-1", "BOGUS"}), syntax);
+  EXPECT_EQ(bed.run({"ZRANGE", "nokey", "0", "-1"}), array({}));
+  EXPECT_EQ(bed.run({"ZREVRANGE", "z", "0", "-1", "WITHSCORES"}), bulks({"c", "3", "b", "2", "a", "1"}));
+  EXPECT_EQ(bed.run({"ZREVRANGE", "z", "0", "-1", "LIMIT", "0", "1"}),
+            error("ERR syntax error, LIMIT is only supported in combination with either BYSCORE or BYLEX"));
+  EXPECT_EQ(bed.run({"ZRANGEBYSCORE", "z", "-inf", "+inf", "WITHSCORES", "LIMIT", "1", "1"}), bulks({"b", "2"}));
+  EXPECT_EQ(bed.run({"ZRANGEBYLEX", "z", "-", "+", "WITHSCORES"}), error("ERR syntax error, WITHSCORES not supported in combination with BYLEX"));
+
+  bed.run({"ZADD", "z2", "10", "a", "20", "d"});
+  EXPECT_EQ(bed.run({"ZUNION", "2", "z", "z2", "AGGREGATE", "SUM", "WITHSCORES"}), bulks({"b", "2", "c", "3", "a", "11", "d", "20"}));
+  EXPECT_EQ(bed.run({"ZUNION", "2", "z", "z2", "AGGREGATE", "MIN", "WITHSCORES"}), bulks({"a", "1", "b", "2", "c", "3", "d", "20"}));
+  EXPECT_EQ(bed.run({"ZUNION", "2", "z", "z2", "AGGREGATE", "MAX", "WITHSCORES"}), bulks({"b", "2", "c", "3", "a", "10", "d", "20"}));
+  EXPECT_EQ(bed.run({"ZUNION", "2", "z", "z2", "AGGREGATE", "BOGUS"}), syntax);
+  EXPECT_EQ(bed.run({"ZINTER", "2", "z", "z2", "WITHSCORES"}), bulks({"a", "11"}));
+  EXPECT_EQ(bed.run({"ZINTER", "2", "z", "z2", "AGGREGATE", "MAX", "WITHSCORES"}), bulks({"a", "10"}));
+
+  // A store that makes nothing removes its destination, whatever it held.
+  bed.run({"SET", "dst", "x"});
+  EXPECT_EQ(bed.run({"ZUNIONSTORE", "dst", "1", "nokey"}), integer(0));
+  EXPECT_EQ(bed.run({"EXISTS", "dst"}), integer(0));
+  EXPECT_EQ(bed.run({"ZDIFFSTORE", "dst", "2", "z", "z2"}), integer(2));
+  EXPECT_EQ(bed.run({"ZRANGE", "dst", "0", "-1", "WITHSCORES"}), bulks({"b", "2", "c", "3"}));
+  EXPECT_EQ(bed.run({"ZRANGESTORE", "d", "z", "(1", "(3", "BYSCORE"}), integer(1));
+  EXPECT_EQ(bed.run({"ZRANGE", "d", "0", "-1", "WITHSCORES"}), bulks({"b", "2"}));
+  EXPECT_EQ(bed.run({"ZRANGESTORE", "d", "z", "[a", "(c", "BYLEX"}), integer(2));
+  EXPECT_EQ(bed.run({"ZRANGE", "d", "0", "-1"}), bulks({"a", "b"}));
+  EXPECT_EQ(bed.run({"ZRANGESTORE", "d", "nokey", "0", "-1"}), integer(0));
+  EXPECT_EQ(bed.run({"EXISTS", "d"}), integer(0));
+
+  EXPECT_EQ(bed.run({"ZADD", "nokey", "XX", "INCR", "1", "a"}), nil());
+  EXPECT_EQ(bed.run({"ZADD", "inf", "INCR", "+inf", "a"}), bulk("inf"));
+  EXPECT_EQ(bed.run({"ZADD", "inf", "INCR", "-inf", "a"}), error("ERR resulting score is not a number (NaN)"));
+  EXPECT_EQ(bed.run({"ZSCORE", "inf", "a"}), bulk("inf"));
+
+  for (const char* name : {"ZCOUNT", "ZREMRANGEBYSCORE"}) EXPECT_EQ(bed.run({name, "nokey", "0", "1"}), integer(0)) << name;
+  for (const char* name : {"ZLEXCOUNT", "ZREMRANGEBYLEX"}) EXPECT_EQ(bed.run({name, "nokey", "-", "+"}), integer(0)) << name;
+  EXPECT_EQ(bed.run({"ZREMRANGEBYRANK", "nokey", "0", "1"}), integer(0));
+  EXPECT_EQ(bed.run({"ZREM", "nokey", "a"}), integer(0));
+
+  EXPECT_EQ(bed.run({"ZRANK", "z", "a", "BOGUS"}), syntax);
+  EXPECT_EQ(bed.run({"ZRANK", "z", "a", "WITHSCORE", "extra"}), error("ERR wrong number of arguments for 'zrank' command"));
+  EXPECT_EQ(bed.run({"ZREVRANK", "z", "nosuch", "WITHSCORE"}), "*-1\r\n");
+  EXPECT_EQ(bed.run({"ZREVRANK", "z", "a", "WITHSCORE"}), array({integer(2), bulk("1")}));
+
+  EXPECT_EQ(bed.run({"ZRANDMEMBER", "z", "1", "BOGUS"}), syntax);
+  EXPECT_EQ(bed.run({"ZRANDMEMBER", "z", "1", "WITHSCORES", "extra"}), syntax);
+  EXPECT_EQ(bed.run({"ZRANDMEMBER", "z", "9223372036854775807", "WITHSCORES"}), error("ERR value is out of range"));
+  // Fewer than the set holds: that many distinct members.
+  const std::string two = bed.run({"ZRANDMEMBER", "z", "2"});
+  ASSERT_EQ(two.substr(0, 4), "*2\r\n") << two;
+  EXPECT_NE(two.substr(4, 7), two.substr(11, 7)) << two;
+  EXPECT_EQ(bed.run({"ZSCAN", "z", "0", "BOGUS"}), syntax);
+  EXPECT_EQ(bed.run({"ZINTERCARD", "1", "z", "BOGUS"}), syntax);
+  EXPECT_EQ(bed.run({"ZMPOP", "1", "z", "MIN", "COUNT", "1", "COUNT", "1"}), syntax);
+}
+
+// With a count, RESP3 nests each popped pair; RESP2 flattens them.
+TEST(CommandZsets, PopsWithACountNestInResp3) {
+  Bed bed;
+  bed.run({"ZADD", "z", "1", "a", "2", "b", "3", "c"});
+  bed.run({"HELLO", "3"});
+  EXPECT_EQ(bed.run({"ZPOPMIN", "z", "2"}), "*2\r\n*2\r\n$1\r\na\r\n,1\r\n*2\r\n$1\r\nb\r\n,2\r\n");
+  EXPECT_EQ(bed.run({"ZPOPMAX", "z"}), "*2\r\n$1\r\nc\r\n,3\r\n");
+}
+
 TEST(CommandZsets, Classes) {
   using command::Class;
   const auto cls = [](std::vector<std::string> args) { return command::class_of(*command::find_spec(args[0]), args); };
@@ -243,6 +314,15 @@ TEST(CommandZsets, Classes) {
   for (const char* name : {"ZPOPMIN", "ZPOPMAX", "ZMPOP", "ZREMRANGEBYRANK", "ZUNIONSTORE", "ZRANGESTORE"}) {
     EXPECT_EQ(command::find_spec(name)->cls, Class::agreement) << name;
   }
+}
+
+TEST(CommandZsets, RandMemberWithoutACountOrWithNone) {
+  Bed bed;
+  bed.run({"ZADD", "z", "1", "a"});
+  EXPECT_EQ(bed.run({"ZRANDMEMBER", "z"}), bulk("a"));
+  EXPECT_EQ(bed.run({"ZRANDMEMBER", "z", "0"}), array({}));
+  EXPECT_EQ(bed.run({"ZRANDMEMBER", "nosuch", "3"}), array({}));
+  EXPECT_EQ(bed.run({"ZRANGEBYSCORE", "z", "0", "1", "BOGUS"}), error("ERR syntax error"));
 }
 
 }  // namespace

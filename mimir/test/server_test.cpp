@@ -21,7 +21,10 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/read.hpp>
 #include <boost/asio/write.hpp>
+#include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "dannan/listen/listener.h"
 #include "dannan/test/fixtures/stepped_time.h"
@@ -88,6 +91,16 @@ struct Client {
     boost::system::error_code error;
     const size_t got = asio::read(socket, asio::buffer(out), error);
     out.resize(got);
+    return out;
+  }
+  // One line, its CRLF included.
+  std::string line() {
+    std::string out;
+    while (out.size() < 2 || out.compare(out.size() - 2, 2, "\r\n") != 0) {
+      const std::string got = read(1);
+      if (got.empty()) return out;
+      out += got;
+    }
     return out;
   }
   // Everything until the server closes.
@@ -268,6 +281,110 @@ TEST(Server, MigrateToNoServerIsAnIoError) {
   s.send("MULTI\r\nMIGRATE 127.0.0.1 1 k 0 500\r\nEXEC\r\n");
   const std::string transaction = "+OK\r\n+QUEUED\r\n*1\r\n-ERR MIGRATE cannot run inside a transaction or a script on Mimir\r\n";
   EXPECT_EQ(s.read(transaction.size()), transaction);
+}
+
+// A target that answers `answer` to whatever it is sent, then closes at once
+// or holds the connection until the source closes it.
+struct FakeTarget {
+  asio::io_context io;
+  asio::ip::tcp::acceptor acceptor{io, asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0)};
+  std::thread thread;
+
+  FakeTarget(std::string answer, bool close) {
+    thread = std::thread([this, answer = std::move(answer), close] {
+      asio::ip::tcp::socket socket(io);
+      acceptor.accept(socket);
+      boost::system::error_code error;
+      if (!answer.empty()) asio::write(socket, asio::buffer(answer), error);
+      if (close) return;
+      char chunk[4096];
+      while (!error) socket.read_some(asio::buffer(chunk), error);
+    });
+  }
+  ~FakeTarget() { thread.join(); }
+  std::string port() const { return std::to_string(acceptor.local_endpoint().port()); }
+};
+
+// A target that closes, says nothing in time, or answers what is not RESP:
+// the read failed, and the key stays here.
+TEST(Server, MigrateWhoseTargetCannotBeReadKeepsTheKey) {
+  ServerBed source;
+  Client s(source.listener.port());
+  s.send("SET k v\r\n");
+  EXPECT_EQ(s.read(5), "+OK\r\n");
+  const std::string failed = "-IOERR error or timeout reading to target instance\r\n:1\r\n";
+  for (const auto& [answer, close] : std::vector<std::pair<std::string, bool>>{{"", true}, {"", false}, {"?what\r\n", false}}) {
+    FakeTarget target(answer, close);
+    s.send("MIGRATE 127.0.0.1 " + target.port() + " k 0 200\r\nEXISTS k\r\n");
+    EXPECT_EQ(s.read(failed.size()), failed) << "answer '" << answer << "' close " << close;
+  }
+}
+
+// MIGRATE's AUTH and AUTH2 go first, and a target that refuses them is
+// relayed: this one takes no password in clear (ruling 28).
+TEST(Server, MigrateAuthenticatesFirst) {
+  ServerBed source;
+  ServerBed target;
+  const std::string port = std::to_string(target.listener.port());
+  Client s(source.listener.port());
+  s.send("SET k v\r\n");
+  EXPECT_EQ(s.read(5), "+OK\r\n");
+  const std::string refused =
+      "-ERR Target instance replied with error: ERR AUTH needs a TLS connection on this server: a password is never taken in clear (auth.plaintext is "
+      "off)\r\n:1\r\n";
+  s.send("MIGRATE 127.0.0.1 " + port + " k 0 1000 AUTH secret\r\nEXISTS k\r\n");
+  EXPECT_EQ(s.read(refused.size()), refused);
+  s.send("MIGRATE 127.0.0.1 " + port + " k 0 1000 AUTH2 default secret\r\nEXISTS k\r\n");
+  EXPECT_EQ(s.read(refused.size()), refused);
+}
+
+// A blocking command whose time runs out gets the timeout's reply, then its
+// pipeline runs.
+TEST(Server, ABlockedClientWhoseTimeRunsOutIsAnsweredNull) {
+  ServerBed bed;
+  Client waiting(bed.listener.port());
+  waiting.send("BLPOP jobs 0.05\r\nPING\r\n");
+  EXPECT_EQ(waiting.read(12), "*-1\r\n+PONG\r\n");
+}
+
+// A write CLIENT PAUSE holds runs when the pause ends, its pipeline after it.
+TEST(Server, AWriteHeldByAPauseRunsWhenItEnds) {
+  ServerBed bed;
+  Client pausing(bed.listener.port());
+  Client writing(bed.listener.port());
+  pausing.send("CLIENT PAUSE 100000 WRITE\r\n");
+  EXPECT_EQ(pausing.read(5), "+OK\r\n");
+  writing.send("SET k v\r\nPING\r\n");
+  for (int i = 0; i < 100000 && bed.database.waiting() == 0; ++i) std::this_thread::yield();
+  ASSERT_EQ(bed.database.waiting(), 1u);
+  pausing.send("CLIENT UNPAUSE\r\n");
+  EXPECT_EQ(pausing.read(5), "+OK\r\n");
+  EXPECT_EQ(writing.read(12), "+OK\r\n+PONG\r\n");
+  pausing.send("GET k\r\n");
+  EXPECT_EQ(pausing.read(7), "$1\r\nv\r\n");
+}
+
+// CLIENT KILL closes another connection's socket.
+TEST(Server, ClientKillClosesTheOtherConnection) {
+  ServerBed bed;
+  Client victim(bed.listener.port());
+  Client killer(bed.listener.port());
+  victim.send("CLIENT ID\r\n");
+  const std::string id = victim.line();
+  ASSERT_EQ(id.front(), ':');
+  killer.send("CLIENT KILL ID " + id.substr(1, id.size() - 3) + "\r\n");
+  EXPECT_EQ(killer.read(4), ":1\r\n");
+  EXPECT_EQ(victim.read_to_end(), "");
+  // The old form names the address, and answers OK.
+  Client old(bed.listener.port());
+  old.send("CLIENT INFO\r\n");
+  const std::string size = old.line();
+  ASSERT_EQ(size.front(), '$');
+  const std::string info = old.read(std::stoul(size.substr(1)) + 2);
+  const size_t at = info.find("addr=") + 5;
+  killer.send("CLIENT KILL " + info.substr(at, info.find(' ', at) - at) + "\r\n");
+  EXPECT_EQ(killer.read(5), "+OK\r\n");
+  EXPECT_EQ(old.read_to_end(), "");
 }
 
 }  // namespace

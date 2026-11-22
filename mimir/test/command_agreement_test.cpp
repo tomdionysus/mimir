@@ -64,14 +64,24 @@ class Registers final : public Agreements {
   void on_committed(Committed told) override { committed = std::move(told); }
 
   // As Mimir's cluster is until Dannan's atomic commit: several keys refused.
+  // Told to, a cluster that can commit several keys, whose change is refused
+  // for want of a majority, or commits with a result that cannot be read.
+  enum class Several { unsupported, refused, unreadable };
+  Several several = Several::unsupported;
   void change_keys(std::vector<Name>, ChangeKeys, std::function<void(KeysOutcome)> done) override {
-    boost::asio::post(_io, [done = std::move(done)] {
-      KeysOutcome refused;
-      refused.why = "a change of several keys waits for Dannan's atomic commit across replica sets (ruling 35)";
-      done(refused);
+    boost::asio::post(_io, [this, done = std::move(done)] {
+      KeysOutcome outcome;
+      if (several == Several::unreadable) {
+        outcome.committed = true;
+        outcome.result = "not a result";
+      } else {
+        outcome.why = several == Several::refused ? "no majority of the keys' replicas answered"
+                                                  : "a change of several keys waits for Dannan's atomic commit across replica sets (ruling 35)";
+      }
+      done(outcome);
     });
   }
-  bool several_keys() const override { return false; }
+  bool several_keys() const override { return several != Several::unsupported; }
 
   void read(size_t db, const std::string& key, std::function<void(Outcome)> done) override {
     ++reads;
@@ -211,6 +221,35 @@ TEST(CommandAgreement, AWriteTheClusterCannotDecideIsRefused) {
   bed.registers->refuse_next = 1;
   EXPECT_EQ(bed.run({"SET", "k", "v"}), "-CLUSTERDOWN no majority of the key's replicas answered\r\n");
   EXPECT_EQ(bed.run({"GET", "k"}), "$-1\r\n");
+}
+
+// A change of several keys the cluster cannot decide is refused with its
+// reason; one that commits with a result that cannot be read says so.
+TEST(CommandAgreement, AChangeOfSeveralKeysTheClusterCannotDecideIsRefused) {
+  AgreementBed bed;
+  bed.registers->several = Registers::Several::refused;
+  EXPECT_EQ(bed.run({"MSET", "a", "1", "b", "2"}), "-CLUSTERDOWN no majority of the keys' replicas answered\r\n");
+  EXPECT_EQ(bed.run({"EXISTS", "a", "b"}), ":0\r\n");
+  bed.registers->several = Registers::Several::unreadable;
+  EXPECT_EQ(bed.run({"MSET", "a", "1", "b", "2"}), "-ERR the write committed, but its reply cannot be read\r\n");
+}
+
+// A write called with no way to wait for its agreement is refused, never run
+// unagreed.
+TEST(CommandAgreement, AWriteWithNowhereToWaitIsRefused) {
+  AgreementBed bed;
+  const std::string refused = "-ERR this write needs a connection that can wait for its agreement\r\n";
+  for (const std::vector<std::string>& args : {std::vector<std::string>{"SET", "k", "v"}, {"ACL", "SETUSER", "someone"}, {"SCRIPT", "LOAD", "return 1"}}) {
+    std::string out;
+    bed.database->execute(bed.session, args, out);
+    EXPECT_EQ(out, refused) << args[0];
+  }
+  EXPECT_EQ(bed.registers->proposals + bed.registers->system_proposals, 0);
+  // WATCH, with no strict read to wait for, watches this node's view.
+  std::string out;
+  bed.database->execute(bed.session, {"WATCH", "k"}, out);
+  EXPECT_EQ(out, "+OK\r\n");
+  EXPECT_EQ(bed.registers->reads, 0);
 }
 
 TEST(CommandAgreement, ErrorsAndExpiriesCommitAsTheyWouldRunHere) {

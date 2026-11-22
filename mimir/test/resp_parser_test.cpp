@@ -99,6 +99,16 @@ TEST(RespParser, InlineQuotingFollowsValkey) {
   EXPECT_EQ(split_inline("SET k 'a\\nb'"), (Args{"SET", "k", "a\\nb"}));
   EXPECT_EQ(split_inline("SET k \"\""), (Args{"SET", "k", ""}));
   EXPECT_EQ(split_inline("  "), Args{});
+  // Upper-case hex digits, and the rest of sdssplitargs's escapes.
+  EXPECT_EQ(split_inline("SET k \"\\xAb\\x0F\\r\\t\\b\\a\\q\""), (Args{"SET", "k", "\xab\x0f\r\t\b\aq"}));
+}
+
+TEST(RespParser, AnInlineLineWithoutItsEndWaits) {
+  RequestParser parser;
+  parser.feed("PIN");
+  EXPECT_FALSE(parser.next());
+  parser.feed("G\r\n");
+  EXPECT_EQ(parser.next(), (std::optional<Args>(Args{"PING"})));
 }
 
 TEST(RespParser, UnbalancedQuotesAreRefused) {

@@ -794,6 +794,12 @@ std::optional<std::vector<std::string>> Acl::commands_in(std::string_view catego
   return names;
 }
 
+std::vector<std::string> Acl::command_names() {
+  std::vector<std::string> names;
+  for (const auto& entry : table().entries) names.emplace_back(entry.name);
+  return names;
+}
+
 std::vector<std::string> Acl::categories_of(std::string_view command) {
   std::vector<std::string> out;
   auto id = id_of(command);

@@ -194,5 +194,12 @@ TEST(CommandLists, Classes) {
   }
 }
 
+TEST(CommandLists, MpopTakesOneCountAndLremOfNothingIsZero) {
+  Bed bed;
+  bed.run({"RPUSH", "l", "a"});
+  EXPECT_EQ(bed.run({"LMPOP", "1", "l", "LEFT", "COUNT", "1", "COUNT", "2"}), error("ERR syntax error"));
+  EXPECT_EQ(bed.run({"LREM", "nosuch", "0", "x"}), integer(0));
+}
+
 }  // namespace
 }  // namespace mimir::test

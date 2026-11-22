@@ -105,5 +105,15 @@ TEST(CommandBitmaps, Field) {
   EXPECT_EQ(bed.run({"EXISTS", "nosuch"}), integer(0));
 }
 
+TEST(CommandBitmaps, OverflowRulesAndEmptyRanges) {
+  Bed bed;
+  EXPECT_EQ(bed.run({"BITFIELD", "b", "OVERFLOW", "WRAP", "INCRBY", "u8", "0", "300"}), array({integer(44)}));
+  EXPECT_EQ(bed.run({"BITFIELD", "c", "OVERFLOW", "FAIL", "SET", "u8", "0", "300"}), array({nil()}));
+  EXPECT_EQ(bed.run({"BITFIELD", "b", "BOGUS"}), error("ERR syntax error"));
+  // A start past the end counts nothing and finds nothing.
+  EXPECT_EQ(bed.run({"BITCOUNT", "b", "5", "2"}), integer(0));
+  EXPECT_EQ(bed.run({"BITPOS", "b", "1", "5", "2"}), integer(-1));
+}
+
 }  // namespace
 }  // namespace mimir::test

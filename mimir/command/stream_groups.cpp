@@ -181,18 +181,20 @@ void xgroup(Call& call) {
     call.notify('t', "xgroup-create", key);
     call.reply.simple("OK");
   } else if (sub == "setid") {
-    need(5, 7, "setid");
+    need(5, SIZE_MAX, "setid");
+    // As Valkey's: the option parsed only in its own form, then the key and
+    // the group, then any other form refused as an unknown subcommand.
+    const std::string unknown = "ERR unknown subcommand or wrong number of arguments for '" + call.args[1] + "'. Try XGROUP HELP.";
     std::optional<uint64_t> entries_read;
     if (call.args.size() == 7) {
-      if (!iequals(call.args[5], "ENTRIESREAD")) throw CommandError(syntax_error);
+      if (!iequals(call.args[5], "ENTRIESREAD")) throw CommandError(unknown);
       auto n = parse_integer(call.args[6]);
       if (!n) throw CommandError(not_integer);
       if (*n < 0 && *n != -1) throw CommandError("ERR value for ENTRIESREAD must be positive or -1");
       if (*n >= 0) entries_read = static_cast<uint64_t>(*n);
-    } else if (call.args.size() == 6) {
-      throw CommandError(syntax_error);
     }
     StreamGroup& group = xgroup_group(call);
+    if (call.args.size() != 5 && call.args.size() != 7) throw CommandError(unknown);
     Stream* stream = stream_of(call.keys, call.args[2]);
     group.last_delivered = call.args[4] == "$" ? stream->last_id : id_of(call.args[4]);
     group.entries_read = entries_read;
@@ -280,13 +282,10 @@ void xreadgroup(Call& call) {
   bool any = false;
   // Groups first: every named stream must have the group.
   for (size_t s = 0; s < streams; ++s) {
-    const std::string& key = call.args[keys_at + s];
-    if (call.ready_key) continue;
-    group_of(call, key, group_name, " in XREADGROUP with GROUP option");
+    group_of(call, call.args[keys_at + s], group_name, " in XREADGROUP with GROUP option");
   }
   for (size_t s = 0; s < streams; ++s) {
     const std::string& key = call.args[keys_at + s];
-    if (call.ready_key && key != *call.ready_key) continue;
     keyspace::Entry* entry = call.keys.find(key);
     if (!entry || entry->type() != keyspace::Type::stream) continue;
     auto& stream = std::get<Stream>(entry->value);

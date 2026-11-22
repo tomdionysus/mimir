@@ -299,6 +299,7 @@ void xsetid(Call& call) {
   if (added && *added < stream->entries.size()) {
     throw CommandError("ERR The entries_added specified in XSETID is smaller than the target stream length");
   }
+  if (id < stream->max_deleted) throw CommandError("ERR The ID specified in XSETID is smaller than current max_deleted_entry_id");
   if (!stream->entries.empty() && id < stream->entries.rbegin()->first) {
     throw CommandError("ERR The ID specified in XSETID is smaller than the target stream top item");
   }
@@ -355,15 +356,15 @@ void xread(Call& call) {
   };
   std::vector<Found> found;
   const size_t limit = count && *count > 0 ? static_cast<size_t>(*count) : SIZE_MAX;
-  for (size_t s = 0; s < streams; ++s) {
+  // Woken, it runs again over every stream it names, as Valkey reruns it; a
+  // ready key that is not a stream (written as another type) wakes nothing.
+  const keyspace::Entry* ready = call.ready_key ? call.keys.find(*call.ready_key) : nullptr;
+  const bool served = !call.ready_key || (ready && ready->type() == keyspace::Type::stream);
+  for (size_t s = 0; served && s < streams; ++s) {
     const std::string& key = call.args[keys_at + s];
-    if (call.ready_key && key != *call.ready_key) continue;
     keyspace::Entry* entry = call.keys.find(key);
     if (!entry) continue;
-    if (entry->type() != keyspace::Type::stream) {
-      if (call.ready_key) continue;
-      throw CommandError(wrong_type);
-    }
+    if (entry->type() != keyspace::Type::stream) throw CommandError(wrong_type);
     auto& stream = std::get<Stream>(entry->value);
     Found f{key, {}};
     for (auto it = stream.entries.upper_bound(after[s]); it != stream.entries.end() && f.entries.size() < limit; ++it)

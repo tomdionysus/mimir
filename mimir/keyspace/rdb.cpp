@@ -243,21 +243,29 @@ void put_id_raw(std::string& out, const StreamId& id) {
 
 void dump_list(std::string& out, const List& list) {
   // Nodes of at most 8 KB of listpack, as Valkey's quicklist holds a list
-  // built by pushes.
-  std::vector<std::string> nodes;
+  // built by pushes; an element over 8 KB is a plain node of its own.
+  enum : uint8_t { plain_node = 1, packed_node = 2 };
+  std::vector<std::pair<uint8_t, std::string>> nodes;
   Listpack node;
+  const auto close_node = [&] {
+    if (node.count() == 0) return;
+    nodes.emplace_back(packed_node, node.take());
+    node = Listpack();
+  };
   for (const auto& element : list) {
-    if (node.count() > 0 && node.size_with(element) > list_node_bytes) {
-      nodes.push_back(node.take());
-      node = Listpack();
+    if (element.size() > list_node_bytes) {
+      close_node();
+      nodes.emplace_back(plain_node, element);
+      continue;
     }
+    if (node.count() > 0 && node.size_with(element) > list_node_bytes) close_node();
     node.add(element);
   }
-  if (node.count() > 0) nodes.push_back(node.take());
+  close_node();
   out.push_back(static_cast<char>(type_list_quicklist_2));
   put_length(out, nodes.size());
-  for (const auto& bytes : nodes) {
-    put_length(out, 2);  // a packed node
+  for (const auto& [container, bytes] : nodes) {
+    put_length(out, container);
     put_string(out, bytes);
   }
 }
@@ -612,7 +620,7 @@ std::vector<std::string> read_ziplist(std::string_view bytes) {
         out.emplace_back(r.raw((static_cast<size_t>(enc & 0x3f) << 8) | r.byte()));
         continue;
       case 2:
-        if (enc != 0x80) throw Malformed{};
+        // Valkey reads any 10xxxxxx as a 32-bit length, its low bits ignored.
         out.emplace_back(r.raw(static_cast<size_t>(r.be(4))));
         continue;
       default:

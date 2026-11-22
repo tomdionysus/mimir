@@ -71,5 +71,70 @@ TEST(CommandGeo, Errors) {
   EXPECT_EQ(bed.run({"GEORADIUS", "k", "1", "2", "1", "km"}), array({}));
 }
 
+// Valkey 8.1.1's answers (probed) for the rest of the refusals and the less
+// used forms: the replies' extra fields, the read-only variants, and a store
+// that finds nothing.
+TEST(CommandGeo, RefusalsAndFormsAsValkeyAnswers) {
+  Bed bed;
+  sicily(bed);
+  EXPECT_EQ(bed.run({"GEOADD", "Sicily", "200", "100", "bad"}), error("ERR invalid longitude,latitude pair 200.000000,100.000000"));
+  EXPECT_EQ(bed.run({"GEORADIUSBYMEMBER", "Sicily", "nosuch", "10", "km"}), error("ERR could not decode requested zset member"));
+  EXPECT_EQ(bed.run({"GEOSEARCH", "Sicily", "FROMMEMBER", "nosuch", "BYRADIUS", "10", "km"}), error("ERR could not decode requested zset member"));
+  EXPECT_EQ(bed.run({"GEOSEARCH", "Sicily", "FROMLONLAT", "15", "37", "BYBOX", "-1", "10", "km"}), error("ERR height or width cannot be negative"));
+  EXPECT_EQ(bed.run({"GEOSEARCH", "Sicily", "FROMLONLAT", "15", "37", "BYBOX", "x", "10", "km"}), error("ERR need numeric width"));
+  EXPECT_EQ(bed.run({"GEOSEARCH", "Sicily", "FROMLONLAT", "15", "37", "BYBOX", "10", "x", "km"}), error("ERR need numeric height"));
+  EXPECT_EQ(bed.run({"GEOSEARCH", "Sicily", "FROMLONLAT", "15", "37", "BYRADIUS", "-1", "km"}), error("ERR radius cannot be negative"));
+  EXPECT_EQ(bed.run({"GEOSEARCHSTORE", "d", "Sicily", "FROMLONLAT", "15", "37", "BYRADIUS", "200", "km", "WITHDIST"}),
+            error("ERR GEOSEARCHSTORE is not compatible with WITHDIST, WITHHASH and WITHCOORD options"));
+  EXPECT_EQ(bed.run({"GEORADIUS", "Sicily", "15", "37", "200", "km", "STORE", "d", "WITHDIST"}),
+            error("ERR STORE option in GEORADIUS is not compatible with WITHDIST, WITHHASH and WITHCOORD options"));
+  EXPECT_EQ(bed.run({"GEORADIUS", "Sicily", "15", "37", "200", "km", "COUNT", "0"}), error("ERR COUNT must be > 0"));
+  EXPECT_EQ(bed.run({"GEORADIUS", "Sicily", "15", "37", "200", "km", "BOGUS"}), error("ERR syntax error"));
+  EXPECT_EQ(bed.run({"GEORADIUS", "Sicily", "15", "37", "x", "km"}), error("ERR need numeric radius"));
+  EXPECT_EQ(bed.run({"GEORADIUS", "Sicily", "15", "37", "200", "parsec"}), error("ERR unsupported unit provided. please use M, KM, FT, MI"));
+  EXPECT_EQ(bed.run({"GEORADIUS_RO", "Sicily", "15", "37", "200", "km", "STORE", "d"}), error("ERR syntax error"));
+
+  EXPECT_EQ(bed.run({"GEORADIUS", "Sicily", "15", "37", "200", "km", "COUNT", "1", "ANY"}), bulks({"Palermo"}));
+  EXPECT_EQ(bed.run({"GEORADIUS", "Sicily", "15", "37", "200", "km", "WITHCOORD", "WITHHASH", "WITHDIST", "ASC"}),
+            array({array({bulk("Catania"), bulk("56.4413"), integer(3479447370796909), bulks({"15.08726745843887329", "37.50266842333162032"})}),
+                   array({bulk("Palermo"), bulk("190.4424"), integer(3479099956230698), bulks({"13.36138933897018433", "38.11555639549629859"})})}));
+  EXPECT_EQ(bed.run({"GEORADIUS", "Sicily", "15", "37", "200", "km", "DESC"}), bulks({"Palermo", "Catania"}));
+  EXPECT_EQ(bed.run({"GEORADIUS", "Sicily", "0", "0", "1", "km"}), array({}));
+  EXPECT_EQ(bed.run({"GEORADIUSBYMEMBER_RO", "Sicily", "Palermo", "200", "km"}), bulks({"Palermo", "Catania"}));
+
+  // A store that finds nothing, or reads a missing key, removes its destination.
+  bed.run({"SET", "d", "x"});
+  EXPECT_EQ(bed.run({"GEORADIUS", "nokey", "15", "37", "200", "km", "STORE", "d"}), integer(0));
+  EXPECT_EQ(bed.run({"EXISTS", "d"}), integer(0));
+  bed.run({"SET", "d", "x"});
+  EXPECT_EQ(bed.run({"GEORADIUS", "Sicily", "0", "0", "1", "km", "STORE", "d"}), integer(0));
+  EXPECT_EQ(bed.run({"EXISTS", "d"}), integer(0));
+  EXPECT_EQ(bed.run({"GEOSEARCHSTORE", "d", "Sicily", "FROMLONLAT", "15", "37", "BYRADIUS", "200", "km", "STOREDIST"}), integer(2));
+  // Valkey's scores were 56.44125787015819 and 190.44242984775792 on arm64;
+  // their last digits follow whether the compiler fused multiply-adds (an
+  // optimised build does, a debug build and x86-64's baseline do not), in
+  // Valkey as here, so they are compared to a part in 10^12.
+  const std::string stored = bed.run({"ZRANGE", "d", "0", "-1", "WITHSCORES"});
+  ASSERT_EQ(stored.substr(0, 17), "*4\r\n$7\r\nCatania\r\n") << stored;
+  const auto score_after = [&](const std::string& member) {
+    const size_t at = stored.find(member + "\r\n$") + member.size() + 2;
+    const size_t text = stored.find("\r\n", at) + 2;
+    return std::stod(stored.substr(text, stored.find("\r\n", text) - text));
+  };
+  EXPECT_NEAR(score_after("Catania"), 56.44125787015819, 56.44125787015819 * 1e-12);
+  EXPECT_NEAR(score_after("Palermo"), 190.44242984775792, 190.44242984775792 * 1e-12);
+
+  EXPECT_EQ(bed.run({"GEODIST", "Sicily", "Palermo", "Catania", "km", "extra"}), error("ERR syntax error"));
+  EXPECT_EQ(bed.run({"GEOHASH", "Sicily", "Palermo", "nosuch"}), array({bulk("sqc8b49rny0"), nil()}));
+  EXPECT_EQ(bed.run({"GEOHASH", "nokey", "a"}), array({nil()}));
+  EXPECT_EQ(bed.run({"GEOPOS", "nokey", "a"}), array({"*-1\r\n"}));
+}
+
+TEST(CommandGeo, SearchNeedsAShape) {
+  Bed bed;
+  EXPECT_EQ(bed.run({"GEOSEARCH", "g", "FROMLONLAT", "0", "0", "ASC", "WITHDIST"}),
+            error("ERR exactly one of BYRADIUS and BYBOX can be specified for geosearch"));
+}
+
 }  // namespace
 }  // namespace mimir::test

@@ -23,6 +23,26 @@ std::string bulks(const std::vector<std::string>& items) {
   return array(out);
 }
 
+// Valkey 8.1.1's answers (probed): a sorted set sorted, a list and a sorted set
+// left unsorted in reverse, and ALPHA by a pattern some elements have no
+// value for (those first, in their own order).
+TEST(CommandSort, SortedSetsUnsortedDescAndMissingWeightsAsValkey) {
+  Bed bed;
+  bed.run({"RPUSH", "l", "3", "1", "2"});
+  EXPECT_EQ(bed.run({"SORT", "l", "ASC"}), bulks({"1", "2", "3"}));
+  bed.run({"ZADD", "z", "3", "c", "1", "a", "2", "b"});
+  EXPECT_EQ(bed.run({"SORT", "z", "ALPHA"}), bulks({"a", "b", "c"}));
+  EXPECT_EQ(bed.run({"SORT", "z", "BY", "nosort", "DESC"}), bulks({"c", "b", "a"}));
+  EXPECT_EQ(bed.run({"SORT", "l", "BY", "nosort", "DESC"}), bulks({"2", "1", "3"}));
+  bed.run({"RPUSH", "la", "a", "b", "c"});
+  bed.run({"SET", "w_a", "2"});
+  bed.run({"SET", "w_c", "1"});
+  EXPECT_EQ(bed.run({"SORT", "la", "BY", "w_*", "ALPHA"}), bulks({"b", "c", "a"}));
+  EXPECT_EQ(bed.run({"SORT", "la", "BY", "w_*", "ALPHA", "DESC"}), bulks({"a", "c", "b"}));
+  bed.run({"RPUSH", "l2", "x", "y"});
+  EXPECT_EQ(bed.run({"SORT", "l2", "BY", "nokey_*", "ALPHA"}), bulks({"x", "y"}));
+}
+
 TEST(CommandSort, NumbersAlphaDescLimit) {
   Bed bed;
   bed.run({"RPUSH", "l", "3", "10", "1", "2.5"});
@@ -63,6 +83,13 @@ TEST(CommandSort, Store) {
   EXPECT_EQ(bed.run({"EXISTS", "out"}), integer(0));
   EXPECT_EQ(bed.run({"SORT_RO", "l", "STORE", "out"}), error("ERR syntax error"));
   EXPECT_EQ(bed.run({"SORT_RO", "l"}), bulks({"1", "2", "3"}));
+  // A GET pattern with no * names no key, as Valkey's lookupKeyByPattern.
+  bed.run({"SET", "fixed", "x"});
+  EXPECT_EQ(bed.run({"SORT", "l", "BY", "nosort", "GET", "fixed", "STORE", "out"}), integer(3));
+  EXPECT_EQ(bed.run({"LRANGE", "out", "0", "-1"}), bulks({"", "", ""}));
+  // A source that is not a list, set or sorted set is refused, BY and GET
+  // patterns or not.
+  EXPECT_EQ(bed.run({"SORT", "fixed", "BY", "w_*", "STORE", "out"}), error("WRONGTYPE Operation against a key holding the wrong kind of value"));
 }
 
 TEST(CommandSort, AnUnsortedSetIsSortedWhereItMustBeDeterministic) {

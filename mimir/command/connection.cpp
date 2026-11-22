@@ -13,6 +13,7 @@
 #include "mimir/command/args.h"
 #include "mimir/command/database.h"
 #include "mimir/command/handlers.h"
+#include "mimir/keyspace/glob.h"
 #include "mimir/version.h"
 
 namespace mimir::command::connection {
@@ -344,7 +345,8 @@ void client(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
       } else if (iequals(call.args[i], "ID") && i + 1 < call.args.size()) {
         while (i + 1 < call.args.size()) {
           auto id = parse_integer(call.args[++i]);
-          if (!id || *id <= 0) throw CommandError("ERR Invalid client ID");
+          if (!id) throw CommandError(syntax_error);
+          if (*id <= 0) throw CommandError("ERR client-id should be greater than 0");
           ids.push_back(*id);
         }
       } else {
@@ -375,31 +377,60 @@ void client(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
     }
     std::optional<int64_t> by_id;
     std::optional<std::string> by_addr;
+    std::optional<std::string> by_laddr;
     std::optional<std::string> by_user;
+    std::optional<std::string> by_type;
+    std::optional<uint64_t> max_age_s;
     bool skipme = true;
     for (size_t i = 2; i + 1 < call.args.size(); i += 2) {
       const std::string filter = lower(call.args[i]);
+      const std::string& value = call.args[i + 1];
       if (filter == "user") {
-        by_user = call.args[i + 1];
+        by_user = value;
         if (!call.database.acl_locked().find(*by_user)) throw CommandError("ERR No such user '" + *by_user + "'");
       } else if (filter == "id") {
-        auto id = parse_integer(call.args[i + 1]);
-        if (!id || *id <= 0) throw CommandError("ERR client-id should be greater than 0");
+        auto id = parse_integer(value);
+        if (!id) throw CommandError(syntax_error);
+        if (*id <= 0) throw CommandError("ERR client-id should be greater than 0");
         by_id = *id;
       } else if (filter == "addr") {
-        by_addr = call.args[i + 1];
+        by_addr = value;
+      } else if (filter == "laddr") {
+        by_laddr = value;
+      } else if (filter == "type") {
+        by_type = lower(value);
+        if (*by_type != "normal" && *by_type != "pubsub" && *by_type != "master" && *by_type != "replica" && *by_type != "slave")
+          throw CommandError("ERR Unknown client type '" + value + "'");
+      } else if (filter == "maxage") {
+        auto age = parse_integer(value);
+        if (!age) throw CommandError(syntax_error);
+        max_age_s = static_cast<uint64_t>(std::max<int64_t>(*age, 0));
       } else if (filter == "skipme") {
-        skipme = !iequals(call.args[i + 1], "no");
+        if (iequals(value, "yes"))
+          skipme = true;
+        else if (iequals(value, "no"))
+          skipme = false;
+        else
+          throw CommandError(syntax_error);
       } else {
         throw CommandError(syntax_error);
       }
     }
     if (call.args.size() % 2 != 0) throw CommandError(syntax_error);
     int64_t killed = 0;
+    const uint64_t now = call.keys.now_ms();
     for (const auto& [id, session] : call.database.sessions_locked()) {
       if (by_id && id != *by_id) continue;
       if (by_addr && session->address != *by_addr) continue;
+      // Mimir's sessions keep no local address: only an empty one matches.
+      if (by_laddr && !by_laddr->empty()) continue;
       if (by_user && session->user != *by_user) continue;
+      if (by_type) {
+        const bool pubsub = session->subscriptions > 0 || session->shard_subscriptions > 0;
+        if (*by_type != (pubsub ? "pubsub" : "normal")) continue;
+      }
+      // MAXAGE: only connections older than that many seconds (0 is no limit).
+      if (max_age_s && *max_age_s > 0 && (now - std::min(now, session->created_ms)) / 1000 <= *max_age_s) continue;
       if (skipme && id == call.session.id) continue;
       if (session->kill) session->kill();
       ++killed;
@@ -545,10 +576,27 @@ void command(Call& call) {
         call.reply.null();
     }
   } else if (sub == "list") {
-    if (call.args.size() != 2) throw CommandError(syntax_error);
-    auto specs = all_specs();
-    call.reply.array(specs.size());
-    for (const Spec& spec : specs) call.reply.bulk(spec.name);
+    if (call.args.size() == 2) {
+      auto specs = all_specs();
+      call.reply.array(specs.size());
+      for (const Spec& spec : specs) call.reply.bulk(spec.name);
+      return;
+    }
+    // FILTERBY names subcommands too, by full name, as Valkey's does; Mimir
+    // loads no modules.
+    if (call.args.size() != 5 || !iequals(call.args[2], "FILTERBY")) throw CommandError(syntax_error);
+    const std::string filter = lower(call.args[3]);
+    std::vector<std::string> names;
+    if (filter == "aclcat") {
+      names = Acl::commands_in(call.args[4]).value_or(std::vector<std::string>{});
+    } else if (filter == "pattern") {
+      for (auto& name : Acl::command_names())
+        if (keyspace::glob_match(call.args[4], name, true)) names.push_back(std::move(name));
+    } else if (filter != "module") {
+      throw CommandError(syntax_error);
+    }
+    call.reply.array(names.size());
+    for (const auto& name : names) call.reply.bulk(name);
   } else if (sub == "getkeys" || sub == "getkeysandflags") {
     if (call.args.size() < 3) wrong_arity("command|" + sub);
     const std::vector<std::string> args(call.args.begin() + 2, call.args.end());

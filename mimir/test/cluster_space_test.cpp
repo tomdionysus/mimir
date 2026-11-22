@@ -24,6 +24,8 @@
 
 #include "dannan/identity/cluster_key.h"
 #include "dannan/identity/node_identity.h"
+#include "dannan/net/codec.h"
+#include "dannan/net/message.h"
 #include "dannan/node.h"
 #include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
@@ -197,6 +199,30 @@ class Cluster {
         },
         {}, 5s, _io.get_executor(), [done](agree::Outcome outcome) { done->set_value(std::move(outcome)); });
     return wait(got);
+  }
+
+  // `key`'s register holding `bytes` as they are, with no notice sent.
+  agree::Outcome put_raw(size_t at, const std::string& key, agree::Bytes bytes) {
+    auto done = std::make_shared<std::promise<agree::Outcome>>();
+    auto got = done->get_future();
+    nodes.at(at)->context().agreement().change(
+        std::string(space), shard_of(key, shards), {name_of(0, key)}, ids, 0,
+        [bytes = std::move(bytes)](std::span<const std::optional<agree::Bytes>>) {
+          agree::Changed out;
+          out.values.push_back(bytes);
+          return out;
+        },
+        {}, 5s, _io.get_executor(), [done](agree::Outcome outcome) { done->set_value(std::move(outcome)); });
+    return wait(got);
+  }
+
+  // Node `from` calling node `to` with a message of `type`, waited for.
+  dannan::net::CallOutcome ask(size_t from, size_t to, dannan::net::MessageType type, dannan::net::Bytes payload) {
+    for (const auto& record : nodes.at(from)->context().nodes().active())
+      if (record.id == ids.at(to))
+        return nodes.at(from)->context().routes().call_and_wait(record, type, std::move(payload), dannan::sched::FrameType::control, 5s);
+    ADD_FAILURE() << "node " << to << " is not active at node " << from;
+    return {};
   }
 
   agree::Outcome read(size_t at, const std::string& key) {
@@ -375,6 +401,12 @@ TEST(ClusterSpace, EveryNodeListsWhereEveryNodeTakesClients) {
   database.execute(session, {"MIMIR", "WHAT"}, out);
   EXPECT_EQ(out, "-ERR unknown subcommand 'WHAT'. Try MIMIR HELP.\r\n");
   out.clear();
+  database.execute(session, {"MIMIR", "HELP"}, out);
+  EXPECT_EQ(out.rfind("*5\r\n+MIMIR <subcommand> [<arg> [value] [opt] ...]. Subcommands are:\r\n+NODES\r\n", 0), 0u) << out;
+  out.clear();
+  database.execute(session, {"MIMIR", "HELP", "x"}, out);
+  EXPECT_EQ(out, "-ERR wrong number of arguments for 'mimir|help' command\r\n");
+  out.clear();
   session.tls = true;
   database.execute(session, {"AUTH", "watcher", "x"}, out);
   ASSERT_EQ(out, "+OK\r\n");
@@ -444,6 +476,27 @@ TEST(ClusterDatabase, APublishMadeAfterSubscribeIsConfirmedReachesTheSubscriberF
   }
 }
 
+// A node that loses its last subscriber stops routing the channel, and routes
+// it again before a new SUBSCRIBE is confirmed.
+TEST(ClusterDatabase, ASubscriberThatLeavesAndComesBackIsReachedAgain) {
+  Cluster cluster(3);
+  ASSERT_TRUE(cluster.converged());
+  ASSERT_TRUE(cluster.found(0).committed);
+  auto heard = std::make_shared<Heard>();
+  cluster.sessions[2].push = [heard](std::string bytes) {
+    std::lock_guard guard(heard->mutex);
+    heard->pushes.push_back(std::move(bytes));
+  };
+  cluster.run(2, {"SUBSCRIBE", "news"});
+  ASSERT_TRUE(heard->saw("subscribe"));
+  // Answered in its reply or pushed, as the connection takes it.
+  const std::string left = cluster.run(2, {"UNSUBSCRIBE", "news"});
+  ASSERT_TRUE(left.find("unsubscribe") != std::string::npos || heard->saw("unsubscribe")) << left;
+  cluster.run(2, {"SUBSCRIBE", "news"});
+  EXPECT_EQ(cluster.run(0, {"PUBLISH", "news", "again"}), ":0\r\n");
+  EXPECT_TRUE(eventually_heard(*heard, "again"));
+}
+
 TEST(ClusterDatabase, ANodeRestartedWithoutItsStateCatchesUpBeforeItVotes) {
   Cluster cluster(3);
   ASSERT_TRUE(cluster.converged());
@@ -505,6 +558,81 @@ TEST(ClusterDatabase, AnExpiryIsHeardOnceWhereverItIsFound) {
   for (const auto& push : heard->pushes)
     if (push.find("expired") != std::string::npos) ++expiries;
   EXPECT_EQ(expiries, 1u);
+}
+
+// A strict read asks a majority, whichever node took the write.
+TEST(ClusterDatabase, AStrictReadOnAnyNodeSeesTheCommit) {
+  Cluster cluster(3);
+  ASSERT_TRUE(cluster.converged());
+  ASSERT_TRUE(cluster.found(0).committed);
+  EXPECT_EQ(cluster.run(0, {"SET", "k", "v"}), "+OK\r\n");
+  EXPECT_EQ(cluster.run(1, {"CLIENT", "STRICT", "ON"}), "+OK\r\n");
+  EXPECT_EQ(cluster.run(1, {"GET", "k"}), "$1\r\nv\r\n");
+  EXPECT_EQ(cluster.run(1, {"GET", "never"}), "$-1\r\n");
+}
+
+// A register that does not hold a record is neither read nor written over,
+// and the client is told why.
+TEST(ClusterDatabase, ARegisterThatHoldsNoRecordIsRefused) {
+  Cluster cluster(3);
+  ASSERT_TRUE(cluster.converged());
+  ASSERT_TRUE(cluster.found(0).committed);
+  ASSERT_TRUE(cluster.put_raw(0, "bad", {'n', 'o', 't'}).committed);
+  EXPECT_EQ(cluster.run(1, {"CLIENT", "STRICT", "ON"}), "+OK\r\n");
+  EXPECT_EQ(cluster.run(1, {"GET", "bad"}), "-CLUSTERDOWN the key's stored record cannot be read\r\n");
+  EXPECT_EQ(cluster.run(0, {"SET", "bad", "x"}), "-CLUSTERDOWN the key's stored record cannot be read\r\n");
+  const auto still = cluster.read(2, "bad");
+  ASSERT_TRUE(still.committed) << still.why;
+  EXPECT_EQ(still.values.at(0), (agree::Bytes{'n', 'o', 't'}));
+}
+
+dannan::net::Bytes notice(size_t version_bytes, std::optional<agree::Bytes> carried) {
+  dannan::net::Writer out;
+  out.u16(0);
+  out.bytes(agree::Bytes{'k'});
+  out.bytes(agree::Bytes(version_bytes, 0));
+  out.u8(carried ? 1 : 0);
+  if (carried) out.bytes(*carried);
+  return out.take();
+}
+
+std::string refusal(const dannan::net::CallOutcome& outcome) {
+  if (!outcome.reply) return "<no reply: " + outcome.failure + ">";
+  const auto refused = dannan::net::refusal_of(*outcome.reply);
+  if (!refused) return "";
+  return std::to_string(refused->status) + " " + refused->code + " " + refused->message;
+}
+
+// The notice and the catch-up's request are untrusted bytes: what cannot be
+// read is refused, and nothing of it is kept.
+TEST(ClusterDatabase, NoticesAndNameRequestsThatCannotBeReadAreRefused) {
+  Cluster cluster(2);
+  ASSERT_TRUE(cluster.converged());
+  ASSERT_TRUE(cluster.found(0).committed);
+  EXPECT_EQ(refusal(cluster.ask(0, 1, commit_notice, {1, 2})), "400 bad_notice the notice cannot be read");
+  EXPECT_EQ(refusal(cluster.ask(0, 1, commit_notice, notice(3, std::nullopt))), "400 bad_notice a version is 40 bytes");
+  EXPECT_EQ(refusal(cluster.ask(0, 1, commit_notice, notice(40, agree::Bytes{'z', 'z'}))), "400 bad_notice the record cannot be read");
+  // A notice that carries no record is taken, and changes nothing.
+  EXPECT_EQ(refusal(cluster.ask(0, 1, commit_notice, notice(40, std::nullopt))), "");
+  EXPECT_EQ(cluster.run(1, {"EXISTS", "k"}), ":0\r\n");
+  EXPECT_EQ(refusal(cluster.ask(0, 1, shard_names, {1, 2})), "400 bad_request the request cannot be read");
+}
+
+// A change of several keys waits for Dannan's atomic commit across replica
+// sets: refused, posted rather than called inline.
+TEST(ClusterDatabase, AChangeOfSeveralKeysIsRefusedUntilItCanBeAtomic) {
+  Cluster cluster(1);
+  EXPECT_FALSE(cluster.agreements[0]->several_keys());
+  auto done = std::make_shared<std::promise<command::Agreements::KeysOutcome>>();
+  auto got = done->get_future();
+  cluster.agreements[0]->change_keys(
+      {{0, "a"}, {0, "b"}}, [](const std::vector<Record>&) { return command::Agreements::ChangedKeys{}; },
+      [done](command::Agreements::KeysOutcome outcome) { done->set_value(std::move(outcome)); });
+  ASSERT_EQ(got.wait_for(5s), std::future_status::ready);
+  const auto outcome = got.get();
+  EXPECT_FALSE(outcome.committed);
+  EXPECT_FALSE(outcome.unknown);
+  EXPECT_NE(outcome.why.find("atomic commit"), std::string::npos) << outcome.why;
 }
 
 }  // namespace

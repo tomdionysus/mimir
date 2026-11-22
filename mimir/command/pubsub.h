@@ -44,9 +44,6 @@ class PubSub {
                    size_t& count);
   // The names connection `id` holds of `kind`, sorted.
   std::vector<std::string> names_of(Kind kind, int64_t id);
-  // How many subscriptions of every kind connection `id` holds.
-  size_t count_of(int64_t id);
-  size_t count_of(Kind kind, int64_t id);
   // A connection's protocol changed (HELLO).
   void set_protocol(int64_t id, resp::Protocol protocol);
   // Ends every subscription of connection `id` (its close, RESET).

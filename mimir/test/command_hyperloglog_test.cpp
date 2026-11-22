@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdint>
 
 #include "mimir/keyspace/hll.h"
 #include "mimir/test/fixtures/bed.h"
@@ -21,6 +22,37 @@ namespace mimir::test {
 namespace {
 
 namespace hll = keyspace::hll;
+
+// Valkey 8.1.1's answers (probed). A dense value written directly, every
+// register at one value: at the largest rank the estimate is infinite, which
+// Valkey's rounding gives as the least 64-bit integer. And the sparse bytes
+// PFADD stores for elements six and seven bytes long.
+TEST(CommandHyperLogLog, CountsAndBytesAsValkeys) {
+  Bed bed;
+  const std::string header = std::string("HYLL") + std::string(4, '\0') + std::string(7, '\0') + std::string(1, '\x80');
+  const auto repeated = [](std::string three, size_t times) {
+    std::string out;
+    for (size_t i = 0; i < times; ++i) out += three;
+    return out;
+  };
+  const std::string fifty_one("\xf3\x3c\xcf", 3);  // four registers at 51
+  bed.run({"SET", "all51", header + repeated(fifty_one, 4096)});
+  EXPECT_EQ(bed.run({"PFCOUNT", "all51"}), integer(INT64_MIN));
+  bed.run({"SET", "half51", header + repeated(fifty_one, 2048) + std::string(3 * 2048, '\0')});
+  EXPECT_EQ(bed.run({"PFCOUNT", "half51"}), integer(13268));
+  bed.run({"SET", "all1", header + repeated(std::string("\x41\x10\x04", 3), 4096)});
+  EXPECT_EQ(bed.run({"PFCOUNT", "all1"}), integer(23637));
+  bed.run({"PFADD", "tails", "abcdef", "abcdefg"});
+  const std::string stored = bed.run({"GET", "tails"});
+  static constexpr char digits[] = "0123456789abcdef";
+  std::string hex;
+  for (unsigned char c : stored.substr(stored.find("\r\n") + 2, stored.size() - stored.find("\r\n") - 4)) {
+    hex.push_back(digits[c >> 4]);
+    hex.push_back(digits[c & 15]);
+  }
+  EXPECT_EQ(hex, "48594c4c0100000000000000000000805601845f4b844aaf");
+  EXPECT_EQ(bed.run({"PFCOUNT", "tails"}), integer(2));
+}
 
 TEST(KeyspaceHll, AnEmptyValueIsSparseValidAndCountsZero) {
   const std::string empty = hll::make_empty();
