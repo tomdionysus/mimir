@@ -67,8 +67,10 @@ server.
 
 ## Where it stands
 
-**Released:** 0.1.0 (2026-11-21), on Dannan 0.10.1, packaged for Debian 13 on x86-64
-and arm64.
+**Released:** 0.1.1 (2026-11-23), on Dannan 0.10.1, packaged for Debian 13 on x86-64
+and arm64. It adds to 0.1.0 the Valkey 8.1.1 behaviour a coverage audit found missing or
+different: XINFO STREAM FULL, redis.setresp(3), PFDEBUG, LATENCY HISTOGRAM, stream nodes
+and DUMP of streams as Valkey's, and a score of replies brought to Valkey's.
 
 **Done.** Every Valkey type and command family over RESP2 and RESP3, transactions,
 scripting and functions, pub/sub and keyspace notifications, and ACL with `AUTH`, each

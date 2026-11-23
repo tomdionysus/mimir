@@ -7,53 +7,42 @@ order of the stages.
 
 ## Resume here
 
-- 0.1.0 is released: main and develop at `7da897b`, annotated tag `0.1.0`,
-  hosted CI green, the release badge showing it. develop has since gained
-  documents only.
+- 0.1.1 is released (2026-11-23): the coverage feature and the Valkey
+  gaps, squashed onto develop, then merged to main and tagged `0.1.1`
+  (COMPLETED.md has the gate). 0.1.0 was `7da897b`.
 - Dannan is pinned at 0.10.1 (tag `840b08f`), fetched from GitHub on a
   build server, or `libdannan-dev` for the package.
 - Coverage: 97.9% of lines on develop (the coverage feature, squashed
   2026-11-22; COMPLETED.md has its fixes and gate). What is left is mostly
   lines gcov misattributes and defensive branches; keep it there as code
   lands (the maintainer, 2026-11-20: "~100% code coverage on all code").
-- The maintainer, 2026-11-22: after the coverage squash, the Valkey gaps
-  next (item 1), with no release first; stream nodes matched to Valkey's
-  exactly; LATENCY HISTOGRAM's tracking configurable; once
-  `feature/valkey-gaps` is squashed, release 0.1.1.
+- The maintainer, 2026-11-22: the Valkey gaps after the coverage squash,
+  stream nodes matched to Valkey's exactly, LATENCY HISTOGRAM's tracking
+  configurable, then release 0.1.1: all done.
 - The registrar on the four build servers runs the 0.1.0 package (see
-  "Running").
+  "Running"); moving it to 0.1.1 is the maintainer's call, not done.
 - The maintainer resumed work on 2026-11-22 ("continue autonomously"); the
   merged feature branches were deleted locally and on the remote that day.
 
 ## Next, in order (none waits on anyone)
 
-1. **Found by the probes, not yet done** (the maintainer, 2026-11-22: these
-   next). Each is Valkey 8.1.1's behaviour Mimir lacks, to be probed and
-   tested first as the coverage work was (`build/cov-probe*.sh`; the kept
-   `mimir-dev:trixie` image on a build server, the tree rsynced with
-   `--checksum` and no times, `build/dev-run.sh`; node-d's resolver drops
-   lookups now and then, so a container there is given public resolvers):
-   all done on `feature/valkey-gaps`: XINFO STREAM key FULL [COUNT n];
-   redis.setresp(3) and the RESP3 script conversions; PFDEBUG; stream
-   nodes closed at 4,096 bytes as well as 100 entries, with deleted
-   entries kept in their nodes as Valkey keeps them (DUMP byte for byte);
-   LATENCY HISTOGRAM behind latency-tracking (on by default; the node's
-   latency.tracking and CONFIG SET change it). Left: the branch's
-   sanitizer gate, its squash, and release 0.1.1. Not done, recorded: INFO
-   has no latencystats section (latency-tracking-info-percentiles is only
-   CONFIG's), and CONFIG SET of stream-node-max-bytes and
-   stream-node-max-entries is taken but changes nothing (the nodes keep
-   Valkey's defaults).
-2. **CONFIG SET cluster-wide**: a setting that must hold on every node
+1. **CONFIG SET cluster-wide**: a setting that must hold on every node
    (notify-keyspace-events first) becomes cluster state by agreement, as ACL
    users and function libraries did (no special node).
-3. **Stage 3's gates** (3.10 below): the differential against a cluster of
+2. **Stage 3's gates** (3.10 below): the differential against a cluster of
    three; Dannan's SimNodes with Mimir's actors under faults, checked with
    `dannan::sim_checkers` (exported since Dannan 0.10.0).
-4. Small things owed from stage 2: MEMORY STATS; acllog-max-len
+3. Small things owed from stage 2: MEMORY STATS; acllog-max-len
    fixed at 128; ACL DRYRUN checks a subcommand against its container's
-   arity.
-5. In the next minor (0.2.0), never mid-release: the two flags that break
+   arity. And from the Valkey gaps: INFO has no latencystats section
+   (latency-tracking-info-percentiles is only CONFIG's); CONFIG SET of
+   stream-node-max-bytes and stream-node-max-entries is taken but changes
+   nothing (the nodes keep Valkey's defaults). Probe and test first, as
+   the coverage work did (`build/cov-probe*.sh`; the kept `mimir-dev:trixie`
+   image, the tree rsynced with `--checksum` and no times,
+   `build/dev-run.sh`; node-d's resolver drops lookups now and then, so a
+   container there is given public resolvers).
+4. In the next minor (0.2.0), never mid-release: the two flags that break
    the stack's settings rule (Dannan's `docs/config.md`: key `a.b` is
    `--a-b` and `MIMIR_A_B`) become `--listen-host` (now `--listen`) and
    `--listen-port` (now `--port`). With it, the node's cluster settings

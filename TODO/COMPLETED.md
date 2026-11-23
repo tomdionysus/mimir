@@ -2,6 +2,43 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-23: Release 0.1.1: the Valkey gaps
+
+- `feature/valkey-gaps`, squashed onto develop as `33329c1`, then 0.1.1 cut
+  from it (the maintainer, 2026-11-22: the gaps next, then release 0.1.1).
+  Each gap probed from Valkey 8.1.1 (`build/gap-probe-*.sh`, not in git) and
+  tested first:
+  - XINFO STREAM key FULL [COUNT n], and XINFO STREAM's other forms refused
+    in Valkey's words (a syntax error before).
+  - redis.setresp(3) taking effect: RESP3 replies to a script's calls,
+    converted to Lua by Valkey's rules, and a script's RESP3 tables and
+    booleans written back, byte for byte as probed. resp::Reply gained
+    RESP3's big number.
+  - PFDEBUG GETREG, DECODE, ENCODING and TODENSE (DECODE's text matched
+    Mimir's sparse form on the first run).
+  - Stream nodes closed at 4,096 bytes as well as 100 entries; deleted
+    entries kept in their nodes, so DUMP of a stream with deletions is
+    Valkey's byte for byte (three probed payloads). The first green run
+    showed the need: each write by agreement rebuilds the stream from its
+    DUMP payload, which had dropped deleted entries' bytes.
+  - LATENCY HISTOGRAM, behind latency-tracking (the maintainer: make it
+    configurable): on by default as Valkey's, the node's latency.tracking
+    or MIMIR_LATENCY_TRACKING at start, CONFIG SET while running.
+- Red runs: XINFO FULL (every form), setresp (34 failing checks), PFDEBUG
+  (2 tests), stream nodes (every sequence); latency's test needed the new
+  settings to compile. Wrong tests corrected: two scripts that wrote keys
+  they did not declare (Mimir refuses that).
+- Gate, once, on node-d (arm64, -j1, nice 19, one container, a claim per
+  step) at 9617bcb: check clean; release 432; the differential 234 differing
+  replies, case for case 0.1.0's but one, the known random SPOP in
+  NotificationsCollections (Mimir refuses the multi-key SMOVE before it,
+  ruling 35); ASan with UBSan 432, no report; TSan 432, no report; the client
+  gate 9/9, and 9/9 under ASan with no node report. clang refused
+  LATENCY's handler for want of the lock annotation every handler carries:
+  fixed at 3901a04 (an annotation, no code change), then clang 432 and fuzz
+  300 s per target with no crash (resp_request 10,409,538 runs, resp_reply
+  18,875,203, rdb_restore 4,032,458).
+
 ## 2026-11-22: Coverage to 97.9% of lines, and the differences it found (feature/coverage, squashed)
 
 - Later batches on the branch: cluster tests on real Dannan nodes (strict
