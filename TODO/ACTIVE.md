@@ -56,7 +56,20 @@ order of the stages.
    cluster.port and cluster.advertise become cluster.listen.address,
    cluster.listen.port and cluster.listen.advertise; cluster.key,
    cluster.bootstrap, cluster.state, cluster.name and cluster.domain keep
-   theirs; cluster.genesis and the cluster of one stay Mimir's.
+   theirs; cluster.genesis and the cluster of one stay Mimir's. The pin
+   moves to Dannan 0.12.0 (tagged 2026-11-23; GIT_TAG 0.12.0,
+   libdannan0.12), whose "Adopting 0.12.0" asks: the node's main becomes
+   `supervise::run_node_program` and Mimir's root (dropping its own
+   reader, signals and drain; Mimir's five needs were sent to Dannan:
+   a pre-start hook, a stop the host can ask for, `--init-state` as a
+   program command, the throwaway cluster of one, event names that do not
+   clash; check each is in); AUTH throttled by Dannan's keyed limits;
+   readiness pushed as checks on `Context::readiness()` (placement now
+   demotes draining and not-ready nodes); a stepped clock in tests now
+   notifies, so waits on it arm no timers; Mimir's notice types registered
+   in SimNodes' new `prepare` hook. Mimir keeps no rate limiter, password
+   hashing or process runner of its own to replace (check). Read the full
+   0.11.0 and 0.12.0 entries when the pin moves.
 
 ## Waiting on others
 
