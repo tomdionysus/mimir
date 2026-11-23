@@ -27,8 +27,12 @@ order of the stages.
 ## Next, in order (none waits on anyone)
 
 1. **CONFIG SET cluster-wide**: a setting that must hold on every node
-   (notify-keyspace-events first) becomes cluster state by agreement, as ACL
-   users and function libraries did (no special node).
+   becomes cluster state by agreement, as ACL users and function libraries
+   did (no special node). The maintainer, 2026-11-23, which: the behaviour
+   settings, cluster-wide: notify-keyspace-events, the encoding thresholds
+   (*-max-listpack-*, set-max-intset-entries, hll-sparse-max-bytes,
+   stream-node-max-*), lua-time-limit and busy-reply-threshold. Per node:
+   latency-tracking, slowlog-*, hz, timeout, maxclients.
 2. **Stage 3's gates** (3.10 below): the differential against a cluster of
    three; Dannan's SimNodes with Mimir's actors under faults, checked with
    `dannan::sim_checkers` (exported since Dannan 0.10.0).
