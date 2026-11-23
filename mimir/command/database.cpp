@@ -273,6 +273,10 @@ struct LatencyRun {
 
 }  // namespace
 
+Database::~Database() {
+  if (_settings.agreements) _settings.agreements->close();
+}
+
 Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings settings)
     : _wall(wall),
       _settings(std::move(settings)),

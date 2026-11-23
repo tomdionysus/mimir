@@ -142,10 +142,12 @@ void Agreements::gather_names(std::shared_ptr<Recovery> recovery, size_t asked) 
   std::optional<dannan::membership::NodeRecord> record;
   for (auto& node : context.nodes().active())
     if (node.id == peer) record = std::move(node);
-  const auto retry = [this, recovery] {
+  const auto retry = [this, open = _open, recovery] {
     // Another peer, a second later.
     ++recovery->peer;
-    _space.context().time().after(std::chrono::seconds(1), [this, recovery] { recover_shard(recovery); });
+    _space.context().time().after(std::chrono::seconds(1), [this, open, recovery] {
+      if (*open) recover_shard(recovery);
+    });
   };
   if (!record) return retry();
   dannan::net::Writer out;
@@ -154,7 +156,8 @@ void Agreements::gather_names(std::shared_ptr<Recovery> recovery, size_t asked) 
   out.u8(recovery->names.empty() ? 0 : 1);
   if (!recovery->names.empty()) out.bytes(recovery->names.back());
   (void)context.routes().call(*record, shard_names, out.take(), dannan::sched::FrameType::control, std::chrono::seconds(5), context.time().executor(),
-                              [this, recovery, asked, retry](dannan::net::CallOutcome outcome) {
+                              [this, open = _open, recovery, asked, retry](dannan::net::CallOutcome outcome) {
+                                if (!*open) return;
                                 if (!outcome.reply || dannan::net::refusal_of(*outcome.reply)) return retry();
                                 try {
                                   dannan::net::Reader in(outcome.reply->payload);
@@ -172,7 +175,8 @@ void Agreements::gather_names(std::shared_ptr<Recovery> recovery, size_t asked) 
                                 const auto& genesis = agreement.table().genesis;
                                 agreement.catch_up(std::string(space), recovery->shard, recovery->names, genesis.nodes, genesis.version,
                                                    std::chrono::seconds(10), _space.context().time().executor(),
-                                                   [this, recovery, retry](agree::Outcome caught) {
+                                                   [this, open, recovery, retry](agree::Outcome caught) {
+                                                     if (!*open) return;
                                                      if (!caught.committed) return retry();
                                                      ++recovery->shard;
                                                      recover_shard(recovery);
@@ -206,6 +210,7 @@ void Agreements::finish_recovery(const std::shared_ptr<Recovery>& recovery) {
 }
 
 Agreements::~Agreements() {
+  close();
   _space.context().routes().unbind(shard_names);
   _space.context().routes().unbind(commit_notice);
   dannan::contract::Lock lock(_hook->mutex);
@@ -235,13 +240,14 @@ void Agreements::change(size_t db, const std::string& key, Change change, std::f
   const auto& genesis = agreement.table().genesis;
   agreement.change(
       std::string(space), shard_of(key, _space.shards()), {name_of(static_cast<uint16_t>(db), key)}, genesis.nodes, genesis.version,
-      [change = std::move(change)](std::span<const std::optional<agree::Bytes>> current) {
+      [open = _open, change = std::move(change)](std::span<const std::optional<agree::Bytes>> current) {
         agree::Changed out;
         // Every one of Mimir's changes finds its own operation in the record.
         out.repeatable = true;
         const auto record = decode_value(current.empty() ? std::nullopt : current[0]);
-        if (!record) {
-          // Not a record: left as it is; the outcome says why.
+        if (!record || !*open) {
+          // Not a record, or no one left to change it: left as it is; the
+          // outcome says why.
           out.values.push_back(current.empty() ? std::nullopt : current[0]);
           return out;
         }
@@ -251,7 +257,8 @@ void Agreements::change(size_t db, const std::string& key, Change change, std::f
         return out;
       },
       {}, _deadline, _space.context().time().executor(),
-      [this, db, key, done = std::move(done)](agree::Outcome outcome) {
+      [this, open = _open, db, key, done = std::move(done)](agree::Outcome outcome) {
+        if (!*open) return;
         Outcome out;
         out.committed = outcome.committed;
         out.unknown = outcome.unknown;
@@ -275,7 +282,8 @@ void Agreements::read(size_t db, const std::string& key, std::function<void(Outc
   auto& agreement = _space.context().agreement();
   const auto& genesis = agreement.table().genesis;
   agreement.read(std::string(space), shard_of(key, _space.shards()), {name_of(static_cast<uint16_t>(db), key)}, genesis.nodes, genesis.version, {}, _deadline,
-                 _space.context().time().executor(), [done = std::move(done)](agree::Outcome outcome) {
+                 _space.context().time().executor(), [open = _open, done = std::move(done)](agree::Outcome outcome) {
+                   if (!*open) return;
                    Outcome out;
                    out.committed = outcome.committed;
                    out.why = outcome.why;
@@ -296,7 +304,9 @@ void Agreements::read(size_t db, const std::string& key, std::function<void(Outc
 void Agreements::change_keys(std::vector<Name>, ChangeKeys, std::function<void(KeysOutcome)> done) {
   KeysOutcome refused;
   refused.why = "a change of several keys waits for Dannan's atomic commit across replica sets (ruling 35)";
-  _space.context().time().after(std::chrono::milliseconds(0), [done = std::move(done), refused] { done(refused); });
+  _space.context().time().after(std::chrono::milliseconds(0), [open = _open, done = std::move(done), refused] {
+    if (*open) done(refused);
+  });
 }
 
 void Agreements::notify(size_t db, const std::string& key, const std::string& version, const Record& record) {

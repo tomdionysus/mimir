@@ -124,6 +124,8 @@ struct MigrateOutcome {
 class Database {
  public:
   Database(const dannan::contract::WallClock& wall, DatabaseSettings settings = {});
+  // Closes its agreements: nothing they were given calls back into it after.
+  ~Database();
 
   // A fresh connection's id: unique and increasing on this node. Thread-safe.
   int64_t next_client_id() noexcept { return _next_client.fetch_add(1); }

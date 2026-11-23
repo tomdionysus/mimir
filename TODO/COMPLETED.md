@@ -2,6 +2,43 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-23: Mimir on Dannan's simulated nodes under faults (feature/sim-faults, squashed)
+
+- `mimir/test/cluster_sim_test.cpp`: Mimir's database on five of Dannan's
+  SimNodes in one seeded world (Space, Agreements and Database per node, as
+  mimir-node assembles them), clients on every node running INCRBY, a lock
+  (SET NX and a release by script) and GETs under CLIENT STRICT ON, while
+  messages are lost (1 in 12), duplicated (1 in 12) and delayed (up to
+  20 ms), with node restarts (each losing its in-memory acceptors, so
+  catching up before it votes) or a split of 2 and 3 that heals. Dannan's
+  `check_linearizable` reads each history against a model of the commands;
+  five seeds per test, `MIMIR_SIM_SEEDS` for more by hand. A mutant reading
+  without CLIENT STRICT ON fails both tests (no order explains a stale GET),
+  so the gate has teeth. Mimir's notice types are not registered on the
+  simulated nodes (SimNodes starts a node before its host; routes freeze at
+  start): harmless there, and Dannan adds a `prepare` hook in 0.12.0.
+- Found by it and fixed: a node stopping failed an agreement run after its
+  database had gone, and the outcome was delivered to it (a crash in
+  Database::decided); mimir-node destroys its database before its node too.
+  cluster::Agreements now shares an open flag with every callback it gives
+  Dannan (speculation, completion, read, recovery), closed by the
+  database's destructor and its own: after it, a speculation leaves its
+  register as it is and an outcome is dropped.
+- Found by the check step: the AthenaSIP differential cases had gone to
+  develop without clang-format (formatted; the bytes sent are the same).
+- Gate, once, on node-a (-j2, nice 19, one container, a claim per step) at
+  6d5f3b1: check clean; release 444 (both ClusterSim tests passing); the
+  differential 238 differing replies on one node and on three, every
+  cluster taking writes; ASan with UBSan 444, no report; clang 444; the
+  client gate 9/9 and under ASan 9/9, no node report; TSan 444, no report
+  (its first attempt could not fetch Dannan for DNS, and was run again).
+  Fuzz not run: no parser changed.
+- Meanwhile, from the other sessions (ACTIVE.md has each): Dannan's
+  node-program helper reviewed (Mimir's five needs sent); DNS is the
+  system resolver's, Dannan 0.13.0's client later, and no project depends
+  on Manannan; Dagda 0.4.0 packaged and D6 public; no preferred build
+  server (the maintainer, 2026-11-23).
+
 ## 2026-11-23: The differential gate against a cluster of three
 
 - `tools/differential.sh` with `MIMIR_DIFF_NODES=n`: each case against a

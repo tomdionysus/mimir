@@ -2000,7 +2000,8 @@ TEST_F(Differential, AthenaSipScripts) {
       "\n    local held = redis.call('GET', KEYS[1])\n    if not held then redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2]) return 1 end\n    if held == "
       "ARGV[1] then redis.call('EXPIRE', KEYS[1], ARGV[2]) return 1 end\n    return 0\n  ";
   const std::string counter_add =
-      "\n    local value = redis.call('INCRBY', KEYS[1], ARGV[1])\n    local lapses = redis.call('TTL', KEYS[1])\n    if tonumber(ARGV[2]) > 0 and lapses < 0 then "
+      "\n    local value = redis.call('INCRBY', KEYS[1], ARGV[1])\n    local lapses = redis.call('TTL', KEYS[1])\n    if tonumber(ARGV[2]) > 0 and lapses < 0 "
+      "then "
       "redis.call('EXPIRE', KEYS[1], ARGV[2]) end\n    if value == 0 and lapses < 0 and tonumber(ARGV[2]) == 0 then redis.call('DEL', KEYS[1]) end\n    return "
       "value\n  ";
   const std::string call_index =
@@ -2066,8 +2067,8 @@ TEST_F(Differential, AthenaSipScripts) {
       {"SMEMBERS", alice},
       // Presence: a delete of nothing touches only its record.
       {"EVAL", presence_delete, "1", record, "athena:index:presence:subscription:", "athena:index:presence-node:", "sub-1", "subscription:sub-1"},
-      {"EVAL", presence_put, "1", record, record_json, "3600", "sub-1", "sip:alice@example.com", "node-a", "athena:index:presence:subscription:",
-       "athena:index:presence-node:", "subscription:sub-1"},
+      {"EVAL", presence_put, "1", record, record_json, "3600", "sub-1", "sip:alice@example.com", "node-a",
+       "athena:index:presence:subscription:", "athena:index:presence-node:", "subscription:sub-1"},
       {"EXISTS", record},
   });
 }

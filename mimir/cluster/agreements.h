@@ -55,6 +55,7 @@ class Agreements final : public command::Agreements {
   void change_keys(std::vector<Name> names, ChangeKeys change, std::function<void(KeysOutcome)> done) override;
   bool several_keys() const override { return false; }
   void on_committed(Committed committed) override;
+  void close() override { _open->store(false); }
 
   // Catches this node up after a restart that lost its acceptor state (the
   // design's restart rule, step 6): for each shard, the names a ready peer
@@ -81,6 +82,9 @@ class Agreements final : public command::Agreements {
     Committed committed DANNAN_GUARDED_BY(mutex);
   };
   std::shared_ptr<Hook> _hook = std::make_shared<Hook>();
+  // Shared with every callback given to Dannan: once closed (or destroyed),
+  // none touches this or its caller again.
+  std::shared_ptr<std::atomic<bool>> _open = std::make_shared<std::atomic<bool>>(true);
 };
 
 }  // namespace mimir::cluster

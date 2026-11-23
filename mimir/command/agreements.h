@@ -97,6 +97,12 @@ class Agreements {
   // replicates, on any thread, in any order (the version orders them). Set
   // once, before the first proposal.
   virtual void on_committed(Committed committed) = 0;
+
+  // No callback given before this returns runs after it: a speculation leaves
+  // its register as it is, an outcome is dropped. The database closes its
+  // agreements as it goes, since a node stopping may still end a run after
+  // the database has gone. Repeatable; thread-safe.
+  virtual void close() {}
 };
 
 }  // namespace mimir::command

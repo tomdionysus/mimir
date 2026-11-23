@@ -7,6 +7,7 @@
 
 add_executable(mimir_tests
   cluster_register_test.cpp
+  cluster_sim_test.cpp
   cluster_space_test.cpp
   cluster_store_test.cpp
   command_acl_test.cpp
@@ -45,6 +46,6 @@ add_executable(mimir_tests
   server_test.cpp
   version_test.cpp
 )
-target_link_libraries(mimir_tests PRIVATE mimir GTest::gtest_main mimir_warnings)
+target_link_libraries(mimir_tests PRIVATE mimir dannan::sim_checkers GTest::gtest_main mimir_warnings)
 # Dannan's fixtures write only inside Mimir's build tree.
 target_compile_definitions(mimir_tests PRIVATE DANNAN_TEST_TEMP_ROOT="${PROJECT_BINARY_DIR}/test-tmp")

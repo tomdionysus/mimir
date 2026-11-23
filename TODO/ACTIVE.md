@@ -30,10 +30,12 @@ order of the stages.
 
 ## Next, in order (none waits on anyone)
 
-1. **Stage 3's gates** (3.10 below): the differential against a cluster of
-   three is done (`MIMIR_DIFF_NODES=3`, in the gate's release step). Left:
-   Dannan's SimNodes with Mimir's actors under faults, checked with
-   `dannan::sim_checkers` (exported since Dannan 0.10.0).
+1. **Stage 3's gates** (3.10 below): both done (2026-11-23): the
+   differential against a cluster of three (`MIMIR_DIFF_NODES=3`, in the
+   gate's release step), and Mimir on SimNodes under faults, linearizable
+   (`ClusterSim.*`). When Dannan 0.12.0's SimNodes `prepare` hook lands,
+   register Mimir's notice types in it. Left of 3.10: the registrar moved
+   to one four-node cluster (the maintainer's call: it serves the board).
 2. Small things owed from stage 2: MEMORY STATS; acllog-max-len
    fixed at 128; ACL DRYRUN checks a subcommand against its container's
    arity. And from the Valkey gaps: INFO has no latencystats section
@@ -67,8 +69,25 @@ order of the stages.
   the peer-witnessed high-water mark (stage 4); its HTTP core (the
   dashboard); a slot table whose count can change (ruling 41).
 - Dagda: contract v2, for persistence (stage 5, ruling 43: Mimir writes no
-  durable file of its own).
+  durable file of its own). Dagda 0.4.0 (on Dannan 0.11.1) is packaged for
+  arm64 (libdagda0.4.0, libdagda-dev, dagda-tools; 2026-11-23); Mimir
+  links none of Dagda until stage 5. Dagda's register map (D6) is public on
+  its develop (00e0a9f, 2026-11-23) for 0.5.0: contract version 3 (1 and 2
+  still served), on Dannan 0.11.1; `dagda::Context::registers()` with open,
+  commit, get, get_register, list and changed, each with a deadline and
+  evidence; HLC stamps ordered by (stamp, node id). Design: Dagda's
+  `TODO/2026-11-20-register-map.md`, "Going public: 0.5.0". Read it when
+  stage 5 starts.
 - Lugh: principal events and status scope, for the Lugh plugin.
+- DNS (the maintainer, 2026-11-23): no project depends on Manannan for DNS,
+  and none should. Names are resolved by the system's resolver (or one in
+  Dannan, if that is ever simpler). Dannan's DNS responder is dropped, and
+  Mimir never used it; its seeds stay HOST:PORT. A name for a Mimir
+  cluster's client addresses is not a dependency of Mimir's: clients are
+  given the nodes' addresses, or ask MIMIR NODES. Dannan 0.13.0 (about
+  2026-12-05) brings an asynchronous DNS client with deadlines; Mimir uses
+  it through Dannan's connector (MIGRATE's target) and the node's seeding,
+  asked for 2026-11-23, and calls nothing directly.
 - The dashboard, when Dannan's HTTP core lands: its UI on Lugh's shared
   shell, @lugh/admin-ui (source in Lugh's lugh/ui, tagged in Lugh 0.6.0
   on Dannan 0.11.0, 2026-11-23; depended on by file path at that tag, compiled
@@ -128,7 +147,7 @@ Still to do:
    in a cluster; a flush, SWAPDB and SORT ... STORE name the keys of this
    node's view until the atomic commit.
 10. **Gates**: the differential against a cluster of one and of three
-    (done, 2026-11-23); SimNodes under faults, checked for linearizability (SimNodes needs
+    (done, 2026-11-23); SimNodes under faults (done, 2026-11-23), checked for linearizability (SimNodes needs
     `DANNAN_TEST_TEMP_ROOT` defined by Mimir's tests); then the registrar
     moved to one four-node cluster.
 
@@ -166,6 +185,16 @@ reviews"):
   to start, never ahead (the maintainer, 2026-11-20), and hold none idle.
   Work that other projects wait on goes first; yield between steps when
   asked.
+- No preferred build server (the maintainer, 2026-11-23): a job takes
+  whichever server has the cores free now, never waiting for one because it
+  holds a warm tree or an earlier build; the tree is rsynced there and built
+  from scratch. A missing tool or -dev package is installed there (one core
+  claimed, `nice -n 19 apt-get install -y`, a board note naming the package
+  and the server). When none has the cores, `claim-board wait --any`. The
+  only exception is a job that must run on one machine (a service that
+  lives there, or node-a for TSan with clang 19), said in the claim's job
+  text. node-d has 3 GB: a gate there runs at -j1, never beside another
+  sanitizer build.
 - Each run is a throwaway `debian:trixie` container on a build server,
   pinned to the claimed cores (`--cpuset-cpus`), so nothing is installed
   on the host and nproc matches the claim. Mount a directory made mode 777
