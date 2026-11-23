@@ -96,6 +96,8 @@ const std::array specs{
     Spec{"pfadd", -2, "write denyoom fast", 1, 1, 1, Class::merge, hyperloglog::pfadd},
     Spec{"pfcount", -2, "readonly may_replicate", 1, -1, 1, Class::read, hyperloglog::pfcount},
     Spec{"pfmerge", -2, "write denyoom", 1, -1, 1, Class::merge, hyperloglog::pfmerge},
+    // GETREG and TODENSE make a sparse value dense: a write, by agreement.
+    Spec{"pfdebug", 3, "write denyoom admin", 2, 2, 1, Class::agreement, hyperloglog::pfdebug},
     // Lists. Pushes merge; what depends on positions or pops commits by agreement.
     Spec{"lpush", -3, "write denyoom fast", 1, 1, 1, Class::merge, lists::lpush},
     Spec{"rpush", -3, "write denyoom fast", 1, 1, 1, Class::merge, lists::rpush},

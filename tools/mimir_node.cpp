@@ -105,6 +105,8 @@ dannan::config::Reader reader() {
       Setting{"acl.users", Setting::Kind::list, "--user", "", "lines of a Valkey ACL file: \"user <name> <rules>...\""},
       Setting{"notify.keyspace_events", Setting::Kind::value, "--notify-keyspace-events", "MIMIR_NOTIFY_KEYSPACE_EVENTS",
               "Valkey's notify-keyspace-events letters, as \"Khgx\""},
+      // On by default, as Valkey's: a flag could only turn it on, so it has none.
+      Setting{"latency.tracking", Setting::Kind::toggle, "", "MIMIR_LATENCY_TRACKING", "whether each command's latency is tracked"},
       Setting{"cluster.key", Setting::Kind::value, "--cluster-key", "MIMIR_CLUSTER_KEY", "the cluster key file"},
       Setting{"cluster.state", Setting::Kind::value, "--cluster-state", "MIMIR_CLUSTER_STATE", "the node's state directory"},
       Setting{"cluster.listen", Setting::Kind::value, "--cluster-listen", "MIMIR_CLUSTER_LISTEN", "an address for the cluster port"},
@@ -298,6 +300,8 @@ int main(int argc, char** argv) {
     database_settings.auth_plaintext = settings.toggle("auth.plaintext").value_or(false);
     database_settings.users = settings.list("acl.users");
     database_settings.notify_keyspace_events = settings.text("notify.keyspace_events").value_or("");
+    // Valkey's latency-tracking: on unless the settings turn it off.
+    database_settings.latency_tracking = settings.toggle("latency.tracking").value_or(true);
     // SHUTDOWN (ruling 31): the stop is posted, never run on the command's
     // thread under the database's lock.
     std::function<void()> stop_node;

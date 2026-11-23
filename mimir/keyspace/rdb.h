@@ -41,6 +41,11 @@ std::optional<std::string> lzf_compress(std::string_view in, size_t limit);
 // The `length` bytes `in` expands to, or none when it is not LZF that does.
 std::optional<std::string> lzf_decompress(std::string_view in, size_t length);
 
+// The bytes one element takes in a listpack as Valkey writes it (an element
+// that is an integer's text is held as the integer), and an integer's.
+size_t listpack_element_size(std::string_view element);
+size_t listpack_integer_size(int64_t value);
+
 // DUMP's payload for `entry`'s value (its expiry is RESTORE's argument).
 std::string dump(const Entry& entry);
 

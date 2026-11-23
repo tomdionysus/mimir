@@ -615,24 +615,102 @@ void xautoclaim(Call& call) {
   for (const auto& id : deleted) call.reply.bulk(id.text());
 }
 
+namespace {
+
+// XINFO STREAM FULL's entries and groups, each list at most `limit` long:
+// each group's pending entries and consumers, and each consumer's own
+// pending entries, in Valkey's order (by id, groups and consumers by name).
+void reply_full(resp::Reply& reply, const Stream& stream, size_t limit) {
+  reply.bulk("entries");
+  const size_t entries = std::min(limit, stream.entries.size());
+  reply.array(entries);
+  auto entry = stream.entries.begin();
+  for (size_t i = 0; i < entries; ++i, ++entry) reply_entry(reply, entry->first, &entry->second);
+  reply.bulk("groups");
+  reply.array(stream.groups.size());
+  for (const auto& [name, group] : stream.groups) {
+    reply.map(7);
+    reply.bulk("name");
+    reply.bulk(name);
+    reply.bulk("last-delivered-id");
+    reply.bulk(group.last_delivered.text());
+    reply.bulk("entries-read");
+    if (group.entries_read)
+      reply.integer(static_cast<int64_t>(*group.entries_read));
+    else
+      reply.null();
+    reply.bulk("lag");
+    if (const auto lag = lag_of(stream, group))
+      reply.integer(static_cast<int64_t>(*lag));
+    else
+      reply.null();
+    reply.bulk("pel-count");
+    reply.integer(static_cast<int64_t>(group.pending.size()));
+    reply.bulk("pending");
+    const size_t pending = std::min(limit, group.pending.size());
+    reply.array(pending);
+    auto it = group.pending.begin();
+    for (size_t i = 0; i < pending; ++i, ++it) {
+      reply.array(4);
+      reply.bulk(it->first.text());
+      reply.bulk(it->second.consumer);
+      reply.integer(static_cast<int64_t>(it->second.delivered_ms));
+      reply.integer(static_cast<int64_t>(it->second.deliveries));
+    }
+    reply.bulk("consumers");
+    reply.array(group.consumers.size());
+    for (const auto& [consumer_name, consumer] : group.consumers) {
+      reply.map(5);
+      reply.bulk("name");
+      reply.bulk(consumer_name);
+      reply.bulk("seen-time");
+      reply.integer(static_cast<int64_t>(consumer.seen_ms));
+      reply.bulk("active-time");
+      reply.integer(consumer.active_ms ? static_cast<int64_t>(consumer.active_ms) : -1);
+      reply.bulk("pel-count");
+      reply.integer(static_cast<int64_t>(consumer.pending.size()));
+      reply.bulk("pending");
+      const size_t own = std::min(limit, consumer.pending.size());
+      reply.array(own);
+      auto id = consumer.pending.begin();
+      for (size_t i = 0; i < own; ++i, ++id) {
+        const auto found = group.pending.find(*id);
+        reply.array(3);
+        reply.bulk(id->text());
+        reply.integer(found == group.pending.end() ? 0 : static_cast<int64_t>(found->second.delivered_ms));
+        reply.integer(found == group.pending.end() ? 0 : static_cast<int64_t>(found->second.deliveries));
+      }
+    }
+  }
+}
+
+}  // namespace
+
 void xinfo(Call& call) {
   if (help::reply_help(call, "xinfo")) return;
   const std::string sub = lower(call.args[1]);
   const uint64_t now = call.keys.now_ms();
   if (sub == "stream") {
-    if (call.args.size() != 3) throw CommandError(syntax_error);
+    // XINFO STREAM key [FULL [COUNT count]], each other form refused in
+    // Valkey's words.
+    const size_t argc = call.args.size();
+    const bool full = argc >= 4 && iequals(call.args[3], "FULL");
+    if (argc != 3 && !(full && (argc == 4 || (argc == 6 && iequals(call.args[4], "COUNT")))))
+      throw CommandError("ERR unknown subcommand or wrong number of arguments for 'STREAM'. Try XINFO HELP.");
+    // Valkey's default is ten; zero or less is every one.
+    int64_t count = 10;
+    if (argc == 6) count = integer_argument(call.args[5]);
+    const size_t limit = count <= 0 ? SIZE_MAX : static_cast<size_t>(count);
     Stream* stream = stream_of(call.keys, call.args[2]);
     if (!stream) throw CommandError("ERR no such key");
-    call.reply.map(10);
+    call.reply.map(full ? 9 : 10);
     call.reply.bulk("length");
     call.reply.integer(static_cast<int64_t>(stream->entries.size()));
     // The radix tree's figures are Valkey's layout; Mimir counts its nodes.
-    std::set<uint64_t> nodes;
-    for (const auto& [id, n] : stream->node_of) nodes.insert(n);
     call.reply.bulk("radix-tree-keys");
-    call.reply.integer(static_cast<int64_t>(nodes.size()));
+    call.reply.integer(static_cast<int64_t>(stream->nodes.size()));
     call.reply.bulk("radix-tree-nodes");
-    call.reply.integer(static_cast<int64_t>(nodes.size() + 1));
+    call.reply.integer(static_cast<int64_t>(stream->nodes.size() + 1));
     call.reply.bulk("last-generated-id");
     call.reply.bulk(stream->last_id.text());
     call.reply.bulk("max-deleted-entry-id");
@@ -641,6 +719,10 @@ void xinfo(Call& call) {
     call.reply.integer(static_cast<int64_t>(stream->entries_added));
     call.reply.bulk("recorded-first-entry-id");
     call.reply.bulk(stream->first_id().text());
+    if (full) {
+      reply_full(call.reply, *stream, limit);
+      return;
+    }
     call.reply.bulk("groups");
     call.reply.integer(static_cast<int64_t>(stream->groups.size()));
     call.reply.bulk("first-entry");

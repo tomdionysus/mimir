@@ -240,6 +240,7 @@
     {"pexpiretime", "@keyspace @read @fast", {{k_R, "RO access", bs_index(1), fk_range(0, 1, 0)}}},
     {"pfadd", "@write @hyperloglog @fast", {{k_W, "RW insert", bs_index(1), fk_range(0, 1, 0)}}},
     {"pfcount", "@read @hyperloglog @slow", {{k_R, "RW access", bs_index(1), fk_range(-1, 1, 0)}}},
+    {"pfdebug", "@write @hyperloglog @admin @slow @dangerous", {{k_RW, "RW access", bs_index(2), fk_range(0, 1, 0)}}},
     {"pfmerge", "@write @hyperloglog @slow", {{k_RW, "RW access insert", bs_index(1), fk_range(0, 1, 0)}, {k_R, "RO access", bs_index(2), fk_range(-1, 1, 0)}}},
     {"pfselftest", "@hyperloglog @admin @slow @dangerous", {}},
     {"ping", "@fast @connection", {}},

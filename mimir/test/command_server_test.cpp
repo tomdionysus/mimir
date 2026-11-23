@@ -12,14 +12,30 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <set>
 
+#include "dannan/contract/time_source.h"
 #include "mimir/test/fixtures/bed.h"
 #include "mimir/version.h"
 
 namespace mimir::test {
 namespace {
+
+// A clock each reading of which is `tick` after the last: a command's run,
+// read at its start and its end, takes one tick.
+class TickingTime final : public dannan::contract::TimeSource {
+ public:
+  explicit TickingTime(std::chrono::nanoseconds tick) : _tick(std::chrono::duration_cast<dannan::contract::Clock::duration>(tick).count()) {}
+  dannan::contract::TimePoint now() const noexcept override {
+    return dannan::contract::TimePoint(dannan::contract::Clock::duration(_at.fetch_add(_tick) + _tick));
+  }
+
+ private:
+  const dannan::contract::Clock::rep _tick;
+  mutable std::atomic<dannan::contract::Clock::rep> _at{0};
+};
 
 std::string bulks(const std::vector<std::string>& items) {
   std::vector<std::string> out;
@@ -191,12 +207,106 @@ TEST(CommandServer, StatelessAnswers) {
   EXPECT_EQ(bed.run({"MODULE", "UNLOAD", "a", "b"}), error("ERR wrong number of arguments for 'module|unload' command"));
   EXPECT_EQ(bed.run({"MODULE", "LOAD"}), error("ERR wrong number of arguments for 'module|load' command"));
   EXPECT_EQ(bed.run({"LATENCY", "DOCTOR"}).substr(0, 1), "$");
-  EXPECT_EQ(bed.run({"LATENCY", "HISTOGRAM"}), array({}));
+  EXPECT_EQ(bed.run({"LATENCY", "HISTOGRAM", "nosuchcommand"}), array({}));
   EXPECT_EQ(bed.run({"REPLCONF", "listening-port", "1"}),
             error("ERR Mimir replicates through its own cluster, with no primary or replica: REPLCONF is not offered"));
   EXPECT_EQ(bed.run({"LOLWUT"}), bulk("Mimir ver. " + std::string(mimir::version) + "\n"));
   // FORCE passes the save, and this node takes no shutdown from a client.
   EXPECT_EQ(bed.run({"SHUTDOWN", "SAVE", "FORCE"}), error("ERR this node cannot be shut down by a client"));
+}
+
+// LATENCY HISTOGRAM and latency-tracking, as Valkey 8.1.1 answers them
+// (probed): each command run once its refusals are past, those a transaction
+// or a script runs included, counted by its full name into power-of-two steps
+// of microseconds, cumulatively; a command with subcommands names each that
+// ran; CONFIG RESETSTAT clears them; latency-tracking no stops the counting.
+// Timed here by a clock each reading of which is 3 us after the last.
+TEST(CommandServer, LatencyHistogramAsValkeysTracking) {
+  TickingTime ticks(std::chrono::microseconds(3));
+  command::DatabaseSettings settings;
+  settings.time = &ticks;
+  Bed bed(settings);
+  const auto one = [](const std::string& name, int64_t calls, const std::vector<std::pair<int64_t, int64_t>>& steps) {
+    std::vector<std::string> flat;
+    for (const auto& [usec, count] : steps) {
+      flat.push_back(integer(usec));
+      flat.push_back(integer(count));
+    }
+    return std::vector<std::string>{bulk(name), array({bulk("calls"), integer(calls), bulk("histogram_usec"), array(flat)})};
+  };
+  const auto histograms = [](const std::vector<std::vector<std::string>>& each) {
+    std::vector<std::string> flat;
+    for (const auto& pair : each) flat.insert(flat.end(), pair.begin(), pair.end());
+    return array(flat);
+  };
+  EXPECT_EQ(bed.run({"CONFIG", "GET", "latency-tracking"}), array({bulk("latency-tracking"), bulk("yes")}));
+  EXPECT_EQ(bed.run({"CONFIG", "GET", "latency-tracking-info-percentiles"}), array({bulk("latency-tracking-info-percentiles"), bulk("50 99 99.9")}));
+  bed.run({"SET", "k", "v"});
+  bed.run({"SET", "k", "v"});
+  bed.run({"GET", "k"});
+  EXPECT_EQ(bed.run({"LATENCY", "HISTOGRAM", "set"}), histograms({one("set", 2, {{4, 2}})}));
+  EXPECT_EQ(bed.run({"LATENCY", "HISTOGRAM", "SET", "get", "nosuchcommand"}), histograms({one("set", 2, {{4, 2}}), one("get", 1, {{4, 1}})}));
+  EXPECT_EQ(bed.run({"LATENCY", "HISTOGRAM", "set", "set"}), histograms({one("set", 2, {{4, 2}}), one("set", 2, {{4, 2}})}));
+  // CONFIG's subcommands, by the container's name or their own.
+  EXPECT_EQ(bed.run({"LATENCY", "HISTOGRAM", "config"}), histograms({one("config|get", 2, {{4, 2}})}));
+  EXPECT_EQ(bed.run({"LATENCY", "HISTOGRAM", "CONFIG|GET"}), histograms({one("config|get", 2, {{4, 2}})}));
+  EXPECT_EQ(bed.run({"LATENCY", "HISTOGRAM", "client|nosuch"}), array({}));
+
+  // A refused command is not counted; one that fails as it runs is.
+  bed.run({"CONFIG", "RESETSTAT"});
+  bed.run({"GET"});
+  bed.run({"NOSUCH"});
+  bed.run({"INCR", "k"});
+  EXPECT_EQ(bed.run({"LATENCY", "HISTOGRAM", "get", "incr", "nosuch"}), histograms({one("incr", 1, {{4, 1}})}));
+
+  // A transaction's commands and a script's, each its own.
+  bed.run({"CONFIG", "RESETSTAT"});
+  bed.run({"MULTI"});
+  bed.run({"INCR", "n"});
+  bed.run({"INCR", "n"});
+  bed.run({"EXEC"});
+  bed.run({"EVAL", "redis.call('INCR',KEYS[1]); return redis.call('GET',KEYS[1])", "1", "m"});
+  EXPECT_EQ(bed.run({"LATENCY", "HISTOGRAM", "incr", "multi", "exec", "eval", "get"}),
+            histograms({one("incr", 3, {{4, 3}}), one("multi", 1, {{4, 1}}), one("exec", 1, {{4, 1}}), one("eval", 1, {{4, 1}}), one("get", 1, {{4, 1}})}));
+  // An EXEC that only reads runs here, its two GETs inside its own run: five
+  // readings, 15 us, the 16 us step; counted beside the first one's 3 us.
+  bed.run({"MULTI"});
+  bed.run({"GET", "a"});
+  bed.run({"GET", "b"});
+  bed.run({"EXEC"});
+  EXPECT_EQ(bed.run({"LATENCY", "HISTOGRAM", "exec"}), histograms({one("exec", 2, {{4, 1}, {16, 2}})}));
+
+  // Tracking off counts nothing; on again, it counts.
+  bed.run({"CONFIG", "RESETSTAT"});
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "latency-tracking", "no"}), ok());
+  bed.run({"SET", "k", "v"});
+  EXPECT_EQ(bed.run({"LATENCY", "HISTOGRAM", "set"}), array({}));
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "latency-tracking", "yes"}), ok());
+  bed.run({"SET", "k", "v"});
+  EXPECT_EQ(bed.run({"LATENCY", "HISTOGRAM", "set"}), histograms({one("set", 1, {{4, 1}})}));
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "latency-tracking", "maybe"}),
+            error("ERR CONFIG SET failed (possibly related to argument 'latency-tracking') - argument must be 'yes' or 'no'"));
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "latency-tracking", "YES"}), ok());
+  EXPECT_EQ(bed.run({"CONFIG", "GET", "latency-tracking"}), array({bulk("latency-tracking"), bulk("yes")}));
+  // RESP3: maps.
+  bed.run({"HELLO", "3"});
+  EXPECT_EQ(bed.run({"LATENCY", "HISTOGRAM", "set"}), "%1\r\n$3\r\nset\r\n%2\r\n$5\r\ncalls\r\n:1\r\n$14\r\nhistogram_usec\r\n%1\r\n:4\r\n:1\r\n");
+
+  // A run that takes no time is counted as 1,024 ns: the 1 us step.
+  TickingTime still(std::chrono::nanoseconds(0));
+  command::DatabaseSettings unmoving;
+  unmoving.time = &still;
+  unmoving.latency_tracking = true;
+  Bed instant(unmoving);
+  instant.run({"PING"});
+  EXPECT_EQ(instant.run({"LATENCY", "HISTOGRAM", "ping"}), histograms({one("ping", 1, {{1, 1}})}));
+  // A node started with it off counts nothing until it is set.
+  command::DatabaseSettings off;
+  off.latency_tracking = false;
+  Bed quiet(off);
+  quiet.run({"PING"});
+  EXPECT_EQ(quiet.run({"CONFIG", "GET", "latency-tracking"}), array({bulk("latency-tracking"), bulk("no")}));
+  EXPECT_EQ(quiet.run({"LATENCY", "HISTOGRAM", "ping"}), array({}));
 }
 
 // MEMORY USAGE's estimate grows with what each type of value holds.
@@ -273,10 +383,9 @@ TEST(CommandServer, CommandListFiltersAsValkeys) {
   };
   EXPECT_EQ(names({"COMMAND", "LIST", "FILTERBY", "PATTERN", "config*"}),
             (std::set<std::string>{"config", "config|get", "config|help", "config|resetstat", "config|rewrite", "config|set"}));
-  // Valkey's are pfadd, pfcount, pfmerge, pfselftest and pfdebug, which Mimir
-  // does not offer yet.
+  // Valkey's are pfadd, pfcount, pfmerge, pfselftest and pfdebug.
   const auto hll = names({"COMMAND", "LIST", "FILTERBY", "ACLCAT", "hyperloglog"});
-  for (const char* name : {"pfadd", "pfcount", "pfmerge", "pfselftest"}) EXPECT_TRUE(hll.count(name)) << name;
+  for (const char* name : {"pfadd", "pfcount", "pfmerge", "pfselftest", "pfdebug"}) EXPECT_TRUE(hll.count(name)) << name;
   for (const auto& name : hll) EXPECT_EQ(name.substr(0, 2), "pf") << name;
   const auto keyspace = names({"COMMAND", "LIST", "FILTERBY", "aclcat", "KEYSPACE"});
   EXPECT_TRUE(keyspace.count("object|encoding"));

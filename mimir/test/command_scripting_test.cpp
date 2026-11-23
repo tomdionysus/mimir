@@ -315,6 +315,79 @@ TEST(CommandScripting, ScriptSubcommandsRefuseWhatTheyDoNotTake) {
   EXPECT_EQ(bed.run({"SCRIPT", "WHAT"}), error("ERR unknown subcommand 'WHAT'. Try SCRIPT HELP."));
 }
 
+// redis.setresp(3), as Valkey 8.1.1 answers it (probed, byte for byte): the
+// script's calls are answered in RESP3 and converted to Lua by its rules, its
+// booleans become RESP3's, and its tables with a double, big_number, map, set
+// or verbatim_string field become those types, for a RESP3 caller, or their
+// RESP2 forms. The setting lasts for its own run.
+TEST(CommandScripting, SetrespThreeAndTheResp3Conversions) {
+  Bed bed;
+  bed.run({"HSET", "h", "f", "v"});
+  bed.run({"ZADD", "z", "1.5", "a", "2", "b"});
+  bed.run({"SADD", "s", "a"});
+  command::Session three = bed.make_session();
+  bed.run_as(three, {"HELLO", "3"});
+  const auto both = [&](const std::string& script, const std::string& resp2, const std::string& resp3) {
+    EXPECT_EQ(bed.run({"EVAL", script, "0"}), resp2) << script;
+    EXPECT_EQ(bed.run_as(three, {"EVAL", script, "0"}), resp3) << script;
+  };
+  // What a script's calls give it.
+  const auto seen = [&](const std::string& script, const std::vector<std::string>& values) {
+    std::vector<std::string> bulks;
+    for (const auto& v : values) bulks.push_back(bulk(v));
+    EXPECT_EQ(bed.run({"EVAL", script, "0"}), array(bulks)) << script;
+  };
+  seen("redis.setresp(3); local r = redis.call('HGETALL','h'); return {type(r), type(r.map), tostring(r.map.f)}", {"table", "table", "v"});
+  seen("redis.setresp(3); local r = redis.call('ZSCORE','z','a'); return {type(r), tostring(r.double)}", {"table", "1.5"});
+  seen("redis.setresp(3); local r = redis.call('SMEMBERS','s'); return {type(r), type(r.set), tostring(r.set.a)}", {"table", "table", "true"});
+  seen(
+      "redis.setresp(3); local r = redis.call('ZRANGE','z',0,-1,'WITHSCORES'); return {type(r[1]), tostring(r[1][1]), type(r[1][2]), tostring(r[1][2].double)}",
+      {"table", "a", "table", "1.5"});
+  seen("redis.setresp(3); local r = redis.call('EXISTS','h'); return {type(r), tostring(r)}", {"number", "1"});
+  // A write is declared: Mimir commits it by agreement on its key.
+  EXPECT_EQ(bed.run({"EVAL", "redis.setresp(3); local r = redis.call('SET',KEYS[1],'v'); return {type(r), tostring(r.ok)}", "1", "k"}),
+            array({bulk("table"), bulk("OK")}));
+  seen("redis.setresp(3); local r = redis.call('HGETALL','nosuch'); return {type(r), type(r.map), tostring(next(r.map))}", {"table", "table", "nil"});
+  EXPECT_EQ(bed.run({"EVAL", "redis.setresp(3); local r = redis.pcall('INCR',KEYS[1]); return {type(r), tostring(r.err)}", "1", "h"}),
+            array({bulk("table"), bulk("WRONGTYPE Operation against a key holding the wrong kind of value")}));
+  EXPECT_EQ(bed.run({"EVAL", "redis.setresp(3); return tostring(redis.call('GET','nosuch'))", "0"}), bulk("nil"));
+  EXPECT_EQ(bed.run({"EVAL", "redis.setresp(2); return tostring(redis.call('GET','nosuch'))", "0"}), bulk("false"));
+  // The next run starts at 2 again.
+  EXPECT_EQ(bed.run({"EVAL", "local r = redis.call('HGETALL','h'); return type(r.map)", "0"}), bulk("nil"));
+
+  // What a script returns.
+  both("return true", ":1\r\n", ":1\r\n");
+  both("return false", "$-1\r\n", "_\r\n");
+  both("redis.setresp(3); return true", ":1\r\n", "#t\r\n");
+  both("redis.setresp(3); return false", ":0\r\n", "#f\r\n");
+  both("redis.setresp(3); return nil", "$-1\r\n", "_\r\n");
+  both("redis.setresp(3); return redis.call('GET','nosuch')", "$-1\r\n", "_\r\n");
+  both("redis.setresp(3); return {1, false, true}", "*3\r\n:1\r\n:0\r\n:1\r\n", "*3\r\n:1\r\n#f\r\n#t\r\n");
+  both("return {double=3.5}", "$3\r\n3.5\r\n", ",3.5\r\n");
+  both("return {double=0.1}", "$3\r\n0.1\r\n", ",0.1\r\n");
+  both("return {double=1e300}", "$6\r\n1e+300\r\n", ",1e+300\r\n");
+  both("return {double=-0.0}", "$2\r\n-0\r\n", ",-0\r\n");
+  both("return {double=1/0}", "$3\r\ninf\r\n", ",inf\r\n");
+  both("return {big_number='123'}", "$3\r\n123\r\n", "(123\r\n");
+  both("return {verbatim_string={format='txt', string='hello'}}", "$5\r\nhello\r\n", "=9\r\ntxt:hello\r\n");
+  both("return {map={a=1}}", "*2\r\n$1\r\na\r\n:1\r\n", "%1\r\n$1\r\na\r\n:1\r\n");
+  both("return {set={a=true}}", "*1\r\n$1\r\na\r\n", "~1\r\n$1\r\na\r\n");
+  both("redis.setresp(3); return redis.call('ZSCORE','z','a')", "$3\r\n1.5\r\n", ",1.5\r\n");
+  both("redis.setresp(3); return redis.call('HGETALL','h')", "*2\r\n$1\r\nf\r\n$1\r\nv\r\n", "%1\r\n$1\r\nf\r\n$1\r\nv\r\n");
+  // A field of another Lua type leaves the table an array (here an empty one).
+  for (const char* script :
+       {"return {double='abc'}", "return {map='notatable'}", "return {set='notatable'}", "return {verbatim_string='x'}", "return {big_number=5}"}) {
+    both(script, "*0\r\n", "*0\r\n");
+  }
+
+  // Its refusals.
+  for (const auto& [script, message] : std::vector<std::pair<std::string, std::string>>{{"redis.setresp(4)", "ERR RESP version must be 2 or 3."},
+                                                                                        {"redis.setresp()", "ERR server.setresp() requires one argument."}}) {
+    EXPECT_EQ(bed.run({"EVAL", script, "0"}), error(message + suffix(command::sha1_hex(script), 1))) << script;
+  }
+  EXPECT_EQ(bed.run({"EVAL", "redis.setresp('3')", "0"}), nil());
+}
+
 TEST(CommandScripting, ScriptsInTransactions) {
   Bed bed;
   EXPECT_EQ(bed.run({"MULTI"}), ok());

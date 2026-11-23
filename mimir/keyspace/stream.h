@@ -53,18 +53,43 @@ struct StreamGroup {
   std::map<std::string, StreamConsumer> consumers;
 };
 
+// One node of Valkey's radix tree: entries appended together into one
+// listpack, under the first's id. Valkey closes a node at node_entries entries
+// or when an entry would bring its listpack to node_bytes (its
+// stream-node-max-entries and stream-node-max-bytes), so its size is kept as
+// Valkey's listpack would have it. A deleted entry keeps its bytes and its
+// count; the node goes with its last live entry.
+struct StreamNode {
+  StreamId master;
+  // The master entry's field names: the node's first entry's.
+  std::vector<std::string> fields;
+  uint64_t bytes = 0;
+  // Appended into it, deleted ones included; and those still live.
+  uint64_t entries = 0;
+  uint64_t live = 0;
+};
+
 struct Stream {
   std::map<StreamId, std::vector<std::string>> entries;
   StreamId last_id;
   StreamId max_deleted;
   uint64_t entries_added = 0;
-  // For approximate trimming: the node, of up to node_entries, each entry was
-  // appended into, as Valkey's radix tree groups them by insertion.
+  // The node each live entry is in, by the node's number (in append order).
   std::map<StreamId, uint64_t> node_of;
-  uint64_t appended = 0;
+  std::map<uint64_t, StreamNode> nodes;
+  uint64_t next_node = 0;
+  // Deleted entries, kept in their node, as Valkey keeps them (flagged in its
+  // listpack), until the node goes: DUMP writes them, and they take their
+  // node's bytes.
+  struct Tombstone {
+    uint64_t node = 0;
+    std::vector<std::string> fields;
+  };
+  std::map<StreamId, Tombstone> tombstones;
   std::map<std::string, StreamGroup> groups;
 
   static constexpr uint64_t node_entries = 100;
+  static constexpr uint64_t node_bytes = 4096;
 
   StreamId first_id() const { return entries.empty() ? StreamId{} : entries.begin()->first; }
   void append(StreamId id, std::vector<std::string> fields);

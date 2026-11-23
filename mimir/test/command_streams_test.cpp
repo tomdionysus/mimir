@@ -186,5 +186,75 @@ TEST(CommandStreams, SetId) {
   EXPECT_EQ(bed.run({"XSETID", "nosuch", "1-0"}), error("ERR no such key"));
 }
 
+// Where a stream's nodes end, as Valkey 8.1.1 ends them (probed, through
+// XINFO STREAM's radix-tree-keys after each append): at 4,096 listpack bytes
+// as well as at 100 entries; a deleted entry keeps its bytes; a restored
+// stream's last node is filled by its bytes; an approximate trim takes whole
+// nodes.
+TEST(CommandStreams, NodesEndByBytesAsValkeysDo) {
+  Bed bed;
+  const auto keys = [&](const std::string& key) {
+    const std::string info = bed.run({"XINFO", "STREAM", key});
+    const size_t at = info.find("radix-tree-keys\r\n:");
+    return at == std::string::npos ? -1 : std::stoi(info.substr(at + 18));
+  };
+  const auto nodes_after = [&](const std::string& key, size_t value_size, int appends) {
+    std::string seen;
+    for (int i = 1; i <= appends; ++i) {
+      bed.run({"XADD", key, std::to_string(i) + "-1", "f", std::string(value_size, 'x')});
+      seen += " " + std::to_string(keys(key));
+    }
+    return seen;
+  };
+  EXPECT_EQ(nodes_after("a", 900, 10), " 1 1 1 1 2 2 2 2 3 3");
+  EXPECT_EQ(nodes_after("b100", 100, 12), " 1 1 1 1 1 1 1 1 1 1 1 1");
+  EXPECT_EQ(nodes_after("b500", 500, 12), " 1 1 1 1 1 1 1 2 2 2 2 2");
+  EXPECT_EQ(nodes_after("b1000", 1000, 12), " 1 1 1 1 2 2 2 2 3 3 3 3");
+  EXPECT_EQ(nodes_after("b1500", 1500, 12), " 1 1 2 2 3 3 4 4 5 5 6 6");
+  EXPECT_EQ(nodes_after("b2000", 2000, 12), " 1 1 2 2 3 3 4 4 5 5 6 6");
+  EXPECT_EQ(nodes_after("b3000", 3000, 12), " 1 2 3 4 5 6 7 8 9 10 11 12");
+  EXPECT_EQ(nodes_after("b5000", 5000, 4), " 1 2 3 4");
+  // Fields other than the first entry's.
+  std::string two;
+  for (int i = 1; i <= 10; ++i) {
+    bed.run({"XADD", "c", std::to_string(i) + "-1", "g" + std::to_string(i), std::string(600, 'x'), "h" + std::to_string(i), "x"});
+    two += " " + std::to_string(keys("c"));
+  }
+  EXPECT_EQ(two, " 1 1 1 1 1 1 2 2 2 2");
+  // A deleted entry keeps its bytes.
+  const std::string k1000(1000, 'x');
+  for (const char* id : {"1-1", "2-1", "3-1"}) bed.run({"XADD", "d", id, "f", k1000});
+  bed.run({"XDEL", "d", "2-1", "3-1"});
+  std::string deleted;
+  for (const char* id : {"4-1", "5-1", "6-1"}) {
+    bed.run({"XADD", "d", id, "f", k1000});
+    deleted += " " + std::to_string(keys("d"));
+  }
+  EXPECT_EQ(deleted, " 1 2 2");
+  // A restored stream's last node is filled by its bytes.
+  const std::string k1500(1500, 'x');
+  bed.run({"XADD", "r", "1-1", "f", k1500});
+  bed.run({"XADD", "r", "2-1", "f", k1500});
+  const std::string dumped = bed.run({"DUMP", "r"});
+  const size_t body = dumped.find("\r\n") + 2;
+  bed.run({"DEL", "r"});
+  EXPECT_EQ(bed.run({"RESTORE", "r", "0", dumped.substr(body, dumped.size() - body - 2)}), ok());
+  std::string restored = " " + std::to_string(keys("r"));
+  for (const char* id : {"3-1", "4-1", "5-1"}) {
+    bed.run({"XADD", "r", id, "f", std::string(500, 'x')});
+    restored += " " + std::to_string(keys("r"));
+  }
+  EXPECT_EQ(restored, " 1 1 1 2");
+  // An approximate trim takes whole nodes, two entries each here.
+  for (int i = 1; i <= 7; ++i) bed.run({"XADD", "t", std::to_string(i) + "-1", "f", k1500});
+  EXPECT_EQ(keys("t"), 4);
+  EXPECT_EQ(bed.run({"XTRIM", "t", "MAXLEN", "~", "5"}), integer(2));
+  EXPECT_EQ(bed.run({"XLEN", "t"}), integer(5));
+  EXPECT_EQ(keys("t"), 3);
+  EXPECT_EQ(bed.run({"XTRIM", "t", "MAXLEN", "~", "2"}), integer(2));
+  EXPECT_EQ(bed.run({"XLEN", "t"}), integer(3));
+  EXPECT_EQ(keys("t"), 2);
+}
+
 }  // namespace
 }  // namespace mimir::test

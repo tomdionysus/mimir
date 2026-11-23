@@ -152,5 +152,51 @@ TEST(CommandHyperLogLog, PfCountCachesItsAnswerInTheValue) {
   EXPECT_EQ(bed.run({"PFCOUNT", "h"}), integer(3));
 }
 
+// PFDEBUG, as Valkey 8.1.1 answers it (probed): DECODE names the sparse
+// form's opcodes, ENCODING the form, TODENSE converts and says whether it
+// did, GETREG converts and gives every register; the key must exist and be a
+// HyperLogLog before the subcommand is looked at.
+TEST(CommandHyperLogLog, Pfdebug) {
+  Bed bed;
+  bed.run({"PFADD", "h", "a", "b", "c"});
+  EXPECT_EQ(bed.run({"PFDEBUG", "ENCODING", "h"}), "+sparse\r\n");
+  EXPECT_EQ(bed.run({"PFDEBUG", "DECODE", "h"}), "+Z:8436 v:1,1 Z:4274 v:2,1 Z:3068 v:1,1 Z:603\r\n");
+  bed.run({"PFADD", "one", "x"});
+  EXPECT_EQ(bed.run({"PFDEBUG", "DECODE", "one"}), "+Z:16374 v:2,1 z:9\r\n");
+  bed.run({"PFADD", "e"});
+  EXPECT_EQ(bed.run({"PFDEBUG", "DECODE", "e"}), "+Z:16384\r\n");
+  std::vector<std::string> twenty{"PFADD", "many"};
+  for (char c = 'a'; c <= 't'; ++c) twenty.emplace_back(1, c);
+  bed.run(twenty);
+  EXPECT_EQ(bed.run({"PFDEBUG", "DECODE", "many"}),
+            "+Z:1094 v:4,1 Z:551 v:1,1 Z:138 v:3,1 Z:2144 v:2,1 Z:253 v:1,1 Z:197 v:2,1 Z:1169 v:6,1 Z:1127 v:1,1 Z:611 v:1,1 Z:1085 v:2,1 z:57 v:1,1 "
+            "Z:574 v:1,1 Z:2002 v:1,1 Z:945 v:1,1 Z:750 v:2,1 Z:509 v:4,1 Z:916 v:2,1 Z:1018 v:1,1 Z:622 v:1,1 Z:603\r\n");
+
+  EXPECT_EQ(bed.run({"PFDEBUG", "TODENSE", "h"}), integer(1));
+  EXPECT_EQ(bed.run({"PFDEBUG", "ENCODING", "h"}), "+dense\r\n");
+  EXPECT_EQ(bed.run({"PFDEBUG", "TODENSE", "h"}), integer(0));
+  EXPECT_EQ(bed.run({"PFDEBUG", "DECODE", "h"}), error("ERR HLL encoding is not sparse"));
+  EXPECT_EQ(bed.run({"PFCOUNT", "h"}), integer(3));
+
+  // GETREG makes a sparse value dense, and answers each register.
+  bed.run({"PFADD", "s2", "a", "b", "c"});
+  std::vector<std::string> registers(hll::registers, integer(0));
+  registers[8436] = integer(1);
+  registers[12711] = integer(2);
+  registers[15780] = integer(1);
+  EXPECT_EQ(bed.run({"PFDEBUG", "GETREG", "s2"}), array(registers));
+  EXPECT_EQ(bed.run({"PFDEBUG", "ENCODING", "s2"}), "+dense\r\n");
+  EXPECT_EQ(bed.run({"PFCOUNT", "s2"}), integer(3));
+
+  bed.run({"SET", "str", "x"});
+  EXPECT_EQ(bed.run({"PFDEBUG", "ENCODING", "str"}), error("WRONGTYPE Key is not a valid HyperLogLog string value."));
+  EXPECT_EQ(bed.run({"PFDEBUG", "GETREG", "nosuch"}), error("ERR The specified key does not exist"));
+  EXPECT_EQ(bed.run({"PFDEBUG", "BOGUS", "nosuch"}), error("ERR The specified key does not exist"));
+  EXPECT_EQ(bed.run({"PFDEBUG", "BOGUS", "h"}), error("ERR Unknown PFDEBUG subcommand 'BOGUS'"));
+  EXPECT_EQ(bed.run({"PFDEBUG", "GETREG", "h", "extra"}), error("ERR wrong number of arguments for 'pfdebug' command"));
+  EXPECT_EQ(bed.run({"PFDEBUG", "GETREG"}), error("ERR wrong number of arguments for 'pfdebug' command"));
+  EXPECT_EQ(bed.run({"EVAL", "return redis.call('PFDEBUG','ENCODING',KEYS[1])", "1", "one"}), "+sparse\r\n");
+}
+
 }  // namespace
 }  // namespace mimir::test

@@ -15,8 +15,12 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <exception>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -58,6 +62,9 @@ struct Run {
   bool read_only;
   std::string name;
   const char* chunk;
+  // redis.setresp: the protocol the script's own calls are answered in, and
+  // whether its booleans are RESP3's. Every run starts at 2.
+  int resp = 2;
 };
 
 constexpr const char* run_key = "mimir.run";
@@ -80,9 +87,20 @@ void push_error(lua_State* L, std::string_view message) {
 // Lua 5.1 raises by longjmp, which must cross no live C++ object: a function
 // that raises pushes its error inside a scope and raises after it closes.
 
+// Pushes {field=value}, the value on the stack's top.
+void wrap_in_field(lua_State* L, const char* field) {
+  lua_newtable(L);
+  lua_insert(L, -2);
+  lua_setfield(L, -2, field);
+}
+
 // One reply, parsed from the bytes Mimir itself wrote, pushed as Lua sees it
-// in RESP2: integers as numbers, bulk strings as strings, nulls as false,
-// status as {ok=}, errors as {err=}, arrays as tables.
+// (Valkey's conversion): integers as numbers, bulk strings as strings, status
+// as {ok=}, errors as {err=}, arrays as tables; a RESP2 null as false. After
+// redis.setresp(3) the replies are RESP3's: a null is nil, a boolean a
+// boolean, a double {double=}, a map {map={k=v}}, a set {set={m=true}}, a
+// big number {big_number=}, verbatim text {verbatim_string={format=,
+// string=}}.
 void push_reply(lua_State* L, std::string_view bytes, size_t& at) {
   const size_t end = bytes.find("\r\n", at);
   const char type = bytes[at];
@@ -122,14 +140,75 @@ void push_reply(lua_State* L, std::string_view bytes, size_t& at) {
       }
       return;
     }
+    case '_':
+      lua_pushnil(L);
+      return;
+    case '#':
+      lua_pushboolean(L, line == "t" ? 1 : 0);
+      return;
+    case ',':
+      lua_pushnumber(L, std::strtod(std::string(line).c_str(), nullptr));
+      wrap_in_field(L, "double");
+      return;
+    case '(':
+      lua_pushlstring(L, line.data(), line.size());
+      wrap_in_field(L, "big_number");
+      return;
+    case '=': {
+      // "fmt:text".
+      const size_t n = static_cast<size_t>(std::stoll(std::string(line)));
+      const std::string_view text = bytes.substr(at, n);
+      at += n + 2;
+      lua_newtable(L);
+      lua_pushlstring(L, text.data(), std::min<size_t>(3, text.size()));
+      lua_setfield(L, -2, "format");
+      const std::string_view body = text.size() > 4 ? text.substr(4) : std::string_view();
+      lua_pushlstring(L, body.data(), body.size());
+      lua_setfield(L, -2, "string");
+      wrap_in_field(L, "verbatim_string");
+      return;
+    }
+    case '%':
+    case '~': {
+      const long long n = std::stoll(std::string(line));
+      lua_newtable(L);
+      for (long long i = 0; i < n; ++i) {
+        push_reply(L, bytes, at);
+        if (type == '%')
+          push_reply(L, bytes, at);
+        else
+          lua_pushboolean(L, 1);
+        // A nil key (a null) cannot be held: the pair is dropped.
+        if (lua_isnil(L, -2))
+          lua_pop(L, 2);
+        else
+          lua_settable(L, -3);
+      }
+      wrap_in_field(L, type == '%' ? "map" : "set");
+      return;
+    }
     default:
       lua_pushboolean(L, 0);
       return;
   }
 }
 
-// The value at `index` as a reply, by Valkey's rules.
-void write_reply(lua_State* L, int index, resp::Reply& reply) {
+// The string field `name` of the table at `t`, if it is a string.
+std::optional<std::string> string_field(lua_State* L, int t, const char* name) {
+  lua_getfield(L, t, name);
+  std::optional<std::string> out;
+  if (lua_type(L, -1) == LUA_TSTRING) {
+    size_t n = 0;
+    const char* s = lua_tolstring(L, -1, &n);
+    out.emplace(s, n);
+  }
+  lua_pop(L, 1);
+  return out;
+}
+
+// The value at `index` as a reply, by Valkey's rules. `resp3_script`: the
+// script asked for RESP3 (redis.setresp(3)), so its booleans are RESP3's.
+void write_reply(lua_State* L, int index, resp::Reply& reply, bool resp3_script) {
   switch (lua_type(L, index)) {
     case LUA_TNUMBER:
       reply.integer(static_cast<int64_t>(lua_tonumber(L, index)));
@@ -141,7 +220,9 @@ void write_reply(lua_State* L, int index, resp::Reply& reply) {
       return;
     }
     case LUA_TBOOLEAN:
-      if (lua_toboolean(L, index))
+      if (resp3_script)
+        reply.boolean(lua_toboolean(L, index) != 0);
+      else if (lua_toboolean(L, index))
         reply.integer(1);
       else
         reply.null();
@@ -164,6 +245,75 @@ void write_reply(lua_State* L, int index, resp::Reply& reply) {
         return;
       }
       lua_pop(L, 1);
+      // The RESP3 types, each only with a field of its own Lua type; a field
+      // of another type leaves the table an array.
+      lua_getfield(L, t, "double");
+      if (lua_type(L, -1) == LUA_TNUMBER) {
+        reply.real(lua_tonumber(L, -1));
+        lua_pop(L, 1);
+        return;
+      }
+      lua_pop(L, 1);
+      if (auto digits = string_field(L, t, "big_number")) {
+        reply.big_number(*digits);
+        return;
+      }
+      lua_getfield(L, t, "map");
+      if (lua_type(L, -1) == LUA_TTABLE) {
+        const int m = lua_gettop(L);
+        size_t pairs = 0;
+        lua_pushnil(L);
+        while (lua_next(L, m)) {
+          ++pairs;
+          lua_pop(L, 1);
+        }
+        reply.map(pairs);
+        lua_pushnil(L);
+        while (lua_next(L, m)) {
+          // The key copied: converting it in place would upset lua_next.
+          lua_pushvalue(L, -2);
+          write_reply(L, -1, reply, resp3_script);
+          lua_pop(L, 1);
+          write_reply(L, -1, reply, resp3_script);
+          lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+        return;
+      }
+      lua_pop(L, 1);
+      lua_getfield(L, t, "set");
+      if (lua_type(L, -1) == LUA_TTABLE) {
+        const int s = lua_gettop(L);
+        size_t members = 0;
+        lua_pushnil(L);
+        while (lua_next(L, s)) {
+          ++members;
+          lua_pop(L, 1);
+        }
+        reply.set(members);
+        lua_pushnil(L);
+        while (lua_next(L, s)) {
+          lua_pushvalue(L, -2);
+          write_reply(L, -1, reply, resp3_script);
+          lua_pop(L, 2);
+        }
+        lua_pop(L, 1);
+        return;
+      }
+      lua_pop(L, 1);
+      lua_getfield(L, t, "verbatim_string");
+      if (lua_type(L, -1) == LUA_TTABLE) {
+        const int v = lua_gettop(L);
+        const auto format = string_field(L, v, "format");
+        const auto text = string_field(L, v, "string");
+        lua_pop(L, 1);
+        if (format && text) {
+          reply.verbatim(*format, *text);
+          return;
+        }
+      } else {
+        lua_pop(L, 1);
+      }
       // An array: up to the first nil.
       int count = 0;
       for (;;) {
@@ -176,7 +326,7 @@ void write_reply(lua_State* L, int index, resp::Reply& reply) {
       reply.array(static_cast<size_t>(count));
       for (int i = 1; i <= count; ++i) {
         lua_rawgeti(L, t, i);
-        write_reply(L, -1, reply);
+        write_reply(L, -1, reply, resp3_script);
         lua_pop(L, 1);
       }
       return;
@@ -242,7 +392,7 @@ bool call_command(lua_State* L, Run& run) {
     push_error(L, "ERR ACL failure in script: " + *denied);
     return false;
   }
-  resp::Reply reply(resp::Protocol::resp2);
+  resp::Reply reply(run.resp == 3 ? resp::Protocol::resp3 : resp::Protocol::resp2);
   try {
     // Under the lock the script's own command holds.
     [&]() DANNAN_NO_THREAD_SAFETY_ANALYSIS { run.outer->database.run_locked(run.session, args, reply); }();
@@ -307,14 +457,21 @@ int lua_true(lua_State* L) {
   return 1;
 }
 
-// Scripts here always see RESP2 replies; asking for 3 is accepted and answers
-// alike, a difference left for the differential gate to name.
+// redis.setresp(2|3): the protocol the script's calls are answered in, for the
+// rest of this run only. A number given as a string is taken, as Lua takes it.
 int lua_setresp(lua_State* L) {
-  const lua_Number version = luaL_checknumber(L, 1);
+  if (lua_gettop(L) != 1) {
+    push_error(L, "ERR server.setresp() requires one argument.");
+    return lua_error(L);
+  }
+  const lua_Number version = lua_tonumber(L, 1);
   if (version != 2 && version != 3) {
     push_error(L, "ERR RESP version must be 2 or 3.");
     return lua_error(L);
   }
+  Run& run = current(L);
+  run.resp = static_cast<int>(version);
+  run.session.protocol = version == 3 ? resp::Protocol::resp3 : resp::Protocol::resp2;
   return 0;
 }
 
@@ -688,7 +845,7 @@ void run_script(Call& call, const std::string& sha, const std::string& body, siz
     lua_settop(L, 0);
     throw CommandError(message);
   }
-  write_reply(L, -1, call.reply);
+  write_reply(L, -1, call.reply, run.resp == 3);
   lua_settop(L, 0);
 }
 
@@ -1015,7 +1172,7 @@ void run_function(Call& call, bool read_only_command) DANNAN_NO_THREAD_SAFETY_AN
     lua_settop(L, 0);
     throw CommandError(message);
   }
-  write_reply(L, -1, call.reply);
+  write_reply(L, -1, call.reply, run.resp == 3);
   lua_settop(L, 0);
 }
 

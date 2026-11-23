@@ -99,6 +99,18 @@ void Reply::boolean(bool value) {
     integer(value ? 1 : 0);
 }
 
+void Reply::big_number(std::string_view digits) {
+  if (_protocol == Protocol::resp3) {
+    // A script gives the digits: a line end inside them would end the reply
+    // early, so it becomes a space, as in an error.
+    _bytes.push_back('(');
+    for (const char c : digits) _bytes.push_back(c == '\r' || c == '\n' ? ' ' : c);
+    _bytes.append("\r\n");
+  } else {
+    bulk(digits);
+  }
+}
+
 void Reply::verbatim(std::string_view format, std::string_view text) {
   if (_protocol == Protocol::resp3) {
     header('=', static_cast<int64_t>(format.size() + 1 + text.size()));

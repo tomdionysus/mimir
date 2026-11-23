@@ -8,6 +8,9 @@
 #include "mimir/keyspace/stream.h"
 
 #include <charconv>
+#include <iterator>
+
+#include "mimir/keyspace/rdb.h"
 
 namespace mimir::keyspace {
 
@@ -37,16 +40,68 @@ std::optional<StreamId> parse_stream_id(std::string_view text, uint64_t missing_
 }
 
 void Stream::append(StreamId id, std::vector<std::string> fields) {
+  using rdb::listpack_element_size;
+  using rdb::listpack_integer_size;
+  // Valkey's test, before the entry goes in: the node's bytes and the entry's
+  // fields and values, as they are, against node_bytes; or a full node.
+  uint64_t raw = 0;
+  for (const auto& f : fields) raw += f.size();
+  auto last = nodes.empty() ? nodes.end() : std::prev(nodes.end());
+  if (last == nodes.end() || last->second.bytes + raw >= node_bytes || last->second.entries >= node_entries) {
+    StreamNode made;
+    made.master = id;
+    for (size_t f = 0; f + 1 < fields.size(); f += 2) made.fields.push_back(fields[f]);
+    // The header and end, then the master entry: the live and deleted counts
+    // (one and none; at most node_entries, they keep their size), the field
+    // count and names, and its terminator.
+    made.bytes = 7 + listpack_integer_size(1) + listpack_integer_size(0) + listpack_integer_size(static_cast<int64_t>(made.fields.size()));
+    for (const auto& name : made.fields) made.bytes += listpack_element_size(name);
+    made.bytes += listpack_integer_size(0);
+    last = nodes.emplace(next_node++, std::move(made)).first;
+  }
+  StreamNode& node = last->second;
+  const size_t count = fields.size() / 2;
+  bool same = count == node.fields.size();
+  for (size_t f = 0; same && f < count; ++f) same = fields[2 * f] == node.fields[f];
+  // The entry: its flags, its id as differences from the master's, its values
+  // (with their fields and count when they are not the master's), and the
+  // count of its elements.
+  uint64_t bytes = listpack_integer_size(same ? 2 : 0) + listpack_integer_size(static_cast<int64_t>(id.ms - node.master.ms)) +
+                   listpack_integer_size(static_cast<int64_t>(id.seq - node.master.seq));
+  if (same) {
+    for (size_t f = 0; f < count; ++f) bytes += listpack_element_size(fields[2 * f + 1]);
+    bytes += listpack_integer_size(static_cast<int64_t>(count + 3));
+  } else {
+    bytes += listpack_integer_size(static_cast<int64_t>(count));
+    for (const auto& f : fields) bytes += listpack_element_size(f);
+    bytes += listpack_integer_size(static_cast<int64_t>(2 * count + 4));
+  }
+  node.bytes += bytes;
+  ++node.entries;
+  ++node.live;
+  node_of.emplace(id, last->first);
   entries.emplace(id, std::move(fields));
-  node_of.emplace(id, appended / node_entries);
-  ++appended;
   last_id = id;
   ++entries_added;
 }
 
 bool Stream::remove(StreamId id) {
-  if (entries.erase(id) == 0) return false;
-  node_of.erase(id);
+  auto entry = entries.find(id);
+  if (entry == entries.end()) return false;
+  if (auto at = node_of.find(id); at != node_of.end()) {
+    const uint64_t number = at->second;
+    node_of.erase(at);
+    auto node = nodes.find(number);
+    if (node != nodes.end() && --node->second.live == 0) {
+      // A node whose last live entry goes is removed, as Valkey removes it,
+      // its deleted entries with it.
+      nodes.erase(node);
+      for (auto it = tombstones.begin(); it != tombstones.end();) it = it->second.node == number ? tombstones.erase(it) : std::next(it);
+    } else {
+      tombstones.emplace(id, Tombstone{number, std::move(entry->second)});
+    }
+  }
+  entries.erase(entry);
   if (id > max_deleted) max_deleted = id;
   return true;
 }

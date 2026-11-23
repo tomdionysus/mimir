@@ -74,6 +74,13 @@ Best kept in
 .BR \-\-notify\-keyspace\-events " \fIletters\fR (notify.keyspace_events)"
 Valkey's keyspace notification classes.
 .TP
+.B latency.tracking
+Whether each command's run is timed for LATENCY HISTOGRAM, as Valkey's
+latency-tracking; on by default. Set it to false in the file, or
+.B MIMIR_LATENCY_TRACKING=false
+in the environment, to turn it off; CONFIG SET latency-tracking changes it
+while the node runs.
+.TP
 .BR \-\-cluster\-key " \fIfile\fR, " \-\-cluster\-state " \fIdir\fR (cluster.key, cluster.state)"
 The cluster's shared key file and this node's state directory.
 .TP

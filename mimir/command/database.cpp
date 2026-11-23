@@ -227,12 +227,25 @@ std::string one_line(std::string text) {
   return text;
 }
 
+// One command's run, recorded for LATENCY HISTOGRAM as it ends, under the
+// database's lock (declared after the lock is taken, so it ends first).
+struct LatencyRun {
+  Database& database;
+  std::string name;
+  dannan::contract::TimePoint started;
+  bool counted = true;
+  ~LatencyRun() DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+    if (counted) database.record_latency_locked(name, started);
+  }
+};
+
 }  // namespace
 
 Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings settings)
     : _wall(wall),
       _settings(std::move(settings)),
       _started_ms(wall.unix_ms()),
+      _time(_settings.time ? *_settings.time : dannan::contract::steady_time_source()),
       _random(std::random_device{}()),
       _scripting(ScriptingNames{_settings.server_name, _settings.compatible_version, _settings.redis_version}) {
   // Every write commits by agreement (ruling 34): a database without the
@@ -267,7 +280,9 @@ Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings set
              {"lua-time-limit", "5000"},
              {"busy-reply-threshold", "5000"},
              {"slowlog-log-slower-than", "10000"},
-             {"slowlog-max-len", "128"}};
+             {"slowlog-max-len", "128"},
+             {"latency-tracking", _settings.latency_tracking ? "yes" : "no"},
+             {"latency-tracking-info-percentiles", "50 99 99.9"}};
   dannan::contract::Lock lock(_mutex);
   bind_listeners();
   for (const std::string& line : _settings.users) {
@@ -277,6 +292,19 @@ Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings set
     throw std::invalid_argument("notify keyspace events: not Valkey's letters: " + _settings.notify_keyspace_events);
   _settings.agreements->on_committed(
       [this](size_t db, const std::string& key, const std::string& version, const cluster::Record& record) { install_committed(db, key, version, record); });
+}
+
+void Database::record_latency_locked(const std::string& name, dannan::contract::TimePoint started) {
+  const auto tracking = _config.find("latency-tracking");
+  if (tracking == _config.end() || tracking->second != "yes") return;
+  const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(_time.now() - started).count();
+  // Valkey's bounds: a run is at least 1,024 ns and at most a second.
+  const uint64_t ns = static_cast<uint64_t>(std::clamp<int64_t>(elapsed, 1024, 1'000'000'000));
+  size_t step = 0;
+  while (step + 1 < latency_steps && ns > latency_step_ns(step)) ++step;
+  auto& histogram = _latency[name];
+  ++histogram.calls;
+  ++histogram.steps[step];
 }
 
 void Database::welcome_locked(Session& session) {
@@ -781,6 +809,9 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
     }
     _touched.clear();
     ++session.commands;
+    // Its run is timed from here, its refusals past, as Valkey times a command
+    // it calls; one held to run again is counted when it does.
+    LatencyRun timed{*this, session.last_command, _time.now()};
     // The database the command ran in, before it may change it (SELECT).
     const size_t db = session.db;
     // Every write naming a key commits by agreement, on every node, a
@@ -873,6 +904,7 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
           executed.wait = id;
           executed.wait_seconds = 0;
           executed.postponed = true;
+          timed.counted = false;
           after.fn = [this, id, sha] { find_script(id, sha); };
           return executed;
         }
@@ -895,6 +927,7 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
             executed.wait = id;
             executed.wait_seconds = 0;
             executed.postponed = true;
+            timed.counted = false;
             return executed;
           }
         }
@@ -2074,6 +2107,9 @@ void Database::run_locked(Session& session, const std::vector<std::string>& args
   call.db = db;
   look_up_keys(*spec, args, db);
   feed_monitors(session, *spec, args, db);
+  // Timed as its own command, as Valkey times each a transaction or a script
+  // calls.
+  const auto started = _time.now();
   try {
     spec->handler(call);
   } catch (const CommandError& e) {
@@ -2081,6 +2117,7 @@ void Database::run_locked(Session& session, const std::vector<std::string>& args
     reply = resp::Reply(session.protocol);
     reply.error(e.what());
   }
+  record_latency_locked(Acl::full_name(args), started);
   // Each command's events go out as it ends, inside a transaction or a script
   // as outside, as Valkey sends them.
   publish_events();

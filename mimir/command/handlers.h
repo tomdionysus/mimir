@@ -71,6 +71,7 @@ namespace hyperloglog {
 void pfadd(Call&);
 void pfcount(Call&);
 void pfmerge(Call&);
+void pfdebug(Call&);
 }  // namespace hyperloglog
 
 namespace streams {

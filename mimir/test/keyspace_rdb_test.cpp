@@ -396,7 +396,8 @@ TEST(KeyspaceRdb, ARestoredStreamFillsItsLastNode) {
   auto back = rdb::restore(rdb::dump(Entry{stream, std::nullopt}));
   ASSERT_TRUE(std::holds_alternative<Entry>(back));
   auto& restored = std::get<Stream>(std::get<Entry>(back).value);
-  EXPECT_EQ(restored.appended, 150u);
+  ASSERT_EQ(restored.nodes.size(), 2u);
+  EXPECT_EQ(restored.nodes.at(1).entries, 50u);
   restored.append(StreamId{151, 0}, {"f", "v"});
   EXPECT_EQ(restored.node_of.at(StreamId{151, 0}), 1u);
   EXPECT_EQ(restored.node_of.at(StreamId{150, 0}), 1u);
@@ -408,6 +409,81 @@ TEST(KeyspaceRdb, ARestoredStreamFillsItsLastNode) {
   auto& restored_full = std::get<Stream>(std::get<Entry>(again).value);
   restored_full.append(StreamId{101, 0}, {"f", "v"});
   EXPECT_EQ(restored_full.node_of.at(StreamId{101, 0}), 1u);
+}
+
+// DUMP of a stream with deleted entries, byte for byte as Valkey 8.1.1 writes
+// it (probed): each deleted entry stays in its node, flagged, the node's first
+// included, and the node keeps its first entry's id and fields as its master.
+TEST(KeyspaceRdb, AStreamWithDeletedEntriesDumpsAsValkeys) {
+  Stream d;
+  d.append(StreamId{1, 1}, {"a", "1"});
+  d.append(StreamId{2, 1}, {"a", "2"});
+  d.append(StreamId{3, 1}, {"b", "3"});
+  d.remove(StreamId{1, 1});
+  EXPECT_EQ(to_hex(rdb::dump(Entry{d, std::nullopt})),
+            "15011000000000000000010000000000000001c330350735000000160002014000078161020001030100200103010104014014000020050004600540130781620203010601ff"
+            "0203010201010103000b007b33197b336fe04c");
+  d.remove(StreamId{3, 1});
+  EXPECT_EQ(to_hex(rdb::dump(Entry{d, std::nullopt})),
+            "150110000000000000000100000000000000013535000000160001010201010181610200010301000100010101040102010101000102010401010102010001010181620203010601"
+            "ff0103010201030103000b009ee29b639731c125");
+  Stream e;
+  e.append(StreamId{1, 1}, {"field", "value"});
+  e.append(StreamId{1, 2}, {"field", "other"});
+  e.remove(StreamId{1, 2});
+  EXPECT_EQ(to_hex(rdb::dump(Entry{e, std::nullopt})),
+            "1501100000000000000001000000000000000134340000000f00010101010101856669656c640600010201000100018576616c7565060401030100010101856f74686572060401"
+            "ff0101020101010202000b002f8dc0fb28fae270");
+}
+
+// The size a stream keeps for each node is the size of the listpack DUMP
+// writes for it: entries with the master's fields and without, integers of
+// each width among the values and the ids, strings of each length class.
+TEST(KeyspaceRdb, AStreamNodesKeptSizeIsItsListpacks) {
+  Stream stream;
+  const std::vector<std::string> values{"1", "300", "70000", "-5", "9999999999", "x", std::string(70, 'y'), std::string(5000, 'z'), "short"};
+  uint64_t ms = 1;
+  for (size_t i = 0; i < 60; ++i) {
+    const std::string& v = values[i % values.size()];
+    // The sequence starts again, so some differences from the master's are
+    // negative.
+    const StreamId id{ms, i % 7};
+    if (i % 3 == 0)
+      stream.append(id, {"f", v});
+    else
+      stream.append(id, {"g" + std::to_string(i % 4), v, "h", "2"});
+    ms += i % 5 == 0 ? 100000 : 1;
+  }
+  ASSERT_GT(stream.nodes.size(), 2u);
+  // Deleted entries stay in their nodes, the first of a node's included; a
+  // node all of whose entries go goes with them.
+  std::vector<StreamId> ids;
+  for (const auto& [id, fields] : stream.entries) ids.push_back(id);
+  for (size_t i = 0; i < ids.size(); i += 4) stream.remove(ids[i]);
+  const uint64_t last = stream.nodes.rbegin()->first;
+  std::vector<StreamId> in_last;
+  for (const auto& [id, node] : stream.node_of)
+    if (node == last) in_last.push_back(id);
+  for (const auto& id : in_last) stream.remove(id);
+  EXPECT_FALSE(stream.nodes.count(last));
+  for (const auto& [id, tombstone] : stream.tombstones) EXPECT_NE(tombstone.node, last);
+  ASSERT_FALSE(stream.tombstones.empty());
+  auto back = rdb::restore(rdb::dump(Entry{stream, std::nullopt}));
+  ASSERT_TRUE(std::holds_alternative<Entry>(back));
+  const auto& restored = std::get<Stream>(std::get<Entry>(back).value);
+  ASSERT_EQ(restored.nodes.size(), stream.nodes.size());
+  auto kept = stream.nodes.begin();
+  for (const auto& [n, node] : restored.nodes) {
+    EXPECT_EQ(node.bytes, kept->second.bytes) << "node " << n;
+    EXPECT_EQ(node.entries, kept->second.entries) << "node " << n;
+    EXPECT_EQ(node.live, kept->second.live) << "node " << n;
+    EXPECT_EQ(node.master, kept->second.master) << "node " << n;
+    ++kept;
+  }
+  EXPECT_EQ(restored.tombstones.size(), stream.tombstones.size());
+  EXPECT_EQ(restored.entries, stream.entries);
+  // And DUMP again gives the same bytes.
+  EXPECT_EQ(rdb::dump(Entry{restored, std::nullopt}), rdb::dump(Entry{stream, std::nullopt}));
 }
 
 }  // namespace

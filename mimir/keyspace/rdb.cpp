@@ -7,10 +7,12 @@
 
 #include "mimir/keyspace/rdb.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 
 #include "mimir/resp/reply.h"
 
@@ -352,29 +354,43 @@ void dump_zset(std::string& out, const SortedSet& zset) {
 }
 
 void dump_stream(std::string& out, const Stream& stream) {
-  // Each node of live entries as one listpack under its first entry's id.
+  // Each node as Valkey holds it: one listpack, under the id of the entry it
+  // was made for, whose fields are its master fields; its live and deleted
+  // entries in id order, a deleted one flagged.
+  struct Item {
+    StreamId id;
+    const std::vector<std::string>* fields;
+    bool deleted;
+  };
+  std::map<uint64_t, std::vector<Item>> by_node;
+  for (const auto& [id, fields] : stream.entries) {
+    const auto at = stream.node_of.find(id);
+    by_node[at == stream.node_of.end() ? 0 : at->second].push_back(Item{id, &fields, false});
+  }
+  for (const auto& [id, tombstone] : stream.tombstones) by_node[tombstone.node].push_back(Item{id, &tombstone.fields, true});
   std::vector<std::pair<StreamId, std::string>> nodes;
-  auto it = stream.entries.begin();
-  while (it != stream.entries.end()) {
-    const uint64_t node = stream.node_of.count(it->first) ? stream.node_of.at(it->first) : 0;
-    const StreamId master = it->first;
-    const std::vector<std::string>& master_values = it->second;
-    std::vector<std::pair<StreamId, const std::vector<std::string>*>> in_node;
-    while (it != stream.entries.end() && (stream.node_of.count(it->first) ? stream.node_of.at(it->first) : 0) == node) {
-      in_node.emplace_back(it->first, &it->second);
-      ++it;
+  for (auto& [number, items] : by_node) {
+    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.id < b.id; });
+    const auto held = stream.nodes.find(number);
+    const StreamId master = held != stream.nodes.end() ? held->second.master : items.front().id;
+    std::vector<std::string> master_names;
+    if (held != stream.nodes.end()) {
+      master_names = held->second.fields;
+    } else {
+      for (size_t f = 0; f + 1 < items.front().fields->size(); f += 2) master_names.push_back((*items.front().fields)[f]);
     }
+    const auto deleted = static_cast<int64_t>(std::count_if(items.begin(), items.end(), [](const Item& item) { return item.deleted; }));
     Listpack lp;
-    lp.add_integer(static_cast<int64_t>(in_node.size()));
-    lp.add_integer(0);
-    const size_t master_fields = master_values.size() / 2;
+    lp.add_integer(static_cast<int64_t>(items.size()) - deleted);
+    lp.add_integer(deleted);
+    const size_t master_fields = master_names.size();
     lp.add_integer(static_cast<int64_t>(master_fields));
-    for (size_t f = 0; f < master_fields; ++f) lp.add(master_values[2 * f]);
+    for (const auto& name : master_names) lp.add(name);
     lp.add_integer(0);
-    for (const auto& [id, fields] : in_node) {
-      bool same = fields->size() == master_values.size();
-      for (size_t f = 0; same && f < master_fields; ++f) same = (*fields)[2 * f] == master_values[2 * f];
-      lp.add_integer(same ? 2 : 0);
+    for (const auto& [id, fields, gone] : items) {
+      bool same = fields->size() == 2 * master_fields;
+      for (size_t f = 0; same && f < master_fields; ++f) same = (*fields)[2 * f] == master_names[f];
+      lp.add_integer((same ? 2 : 0) | (gone ? 1 : 0));
       lp.add_integer(static_cast<int64_t>(id.ms - master.ms));
       lp.add_integer(static_cast<int64_t>(id.seq - master.seq));
       const size_t count = fields->size() / 2;
@@ -776,15 +792,15 @@ int64_t integer_of(const std::string& text) {
 Entry read_stream(Reader& r, uint8_t type) {
   Stream stream;
   uint64_t node = 0;
-  // The last node's entries, deleted ones included: an append fills it until
-  // it holds node_entries, as Valkey's does after a RESTORE.
-  uint64_t last_filled = 0;
   for (uint64_t nodes = r.count(); nodes > 0; --nodes, ++node) {
     const std::string key = r.string();
     if (key.size() != 16) throw Malformed{};
     Reader key_reader(key);
     const StreamId master = key_reader.id_raw();
-    const auto lp = read_listpack(r.string());
+    // Each node as Valkey holds it after a RESTORE: its listpack as it came,
+    // so an append fills the last one by Valkey's test.
+    const std::string listpack = r.string();
+    const auto lp = read_listpack(listpack);
     // The master entry: count, deleted, the master fields, then a zero.
     size_t at = 0;
     const auto next = [&]() -> const std::string& {
@@ -795,9 +811,15 @@ Entry read_stream(Reader& r, uint8_t type) {
     const int64_t deleted = integer_of(next());
     const int64_t master_count = integer_of(next());
     if (live < 0 || deleted < 0 || master_count < 0 || static_cast<uint64_t>(master_count) > lp.size()) throw Malformed{};
-    last_filled = static_cast<uint64_t>(live) + static_cast<uint64_t>(deleted);
     std::vector<std::string> master_fields;
     for (int64_t f = 0; f < master_count; ++f) master_fields.push_back(next());
+    StreamNode held;
+    held.master = master;
+    held.fields = master_fields;
+    held.bytes = listpack.size();
+    held.entries = static_cast<uint64_t>(live) + static_cast<uint64_t>(deleted);
+    held.live = static_cast<uint64_t>(live);
+    stream.nodes.emplace(node, std::move(held));
     if (integer_of(next()) != 0) throw Malformed{};
     int64_t seen = 0;
     while (at < lp.size()) {
@@ -816,16 +838,20 @@ Entry read_stream(Reader& r, uint8_t type) {
         if (count < 0 || static_cast<uint64_t>(count) > lp.size()) throw Malformed{};
         for (int64_t f = 0; f < 2 * count; ++f) fields.push_back(next());
       }
-      next();                   // lp-count
-      if (flags & 1) continue;  // a deleted entry
-      if (stream.entries.count(id)) throw Malformed{};
+      next();  // lp-count
+      if (stream.entries.count(id) || stream.tombstones.count(id)) throw Malformed{};
+      if (flags & 1) {
+        // A deleted entry, kept in its node as Valkey keeps it.
+        stream.tombstones.emplace(id, Stream::Tombstone{node, std::move(fields)});
+        continue;
+      }
       stream.entries.emplace(id, std::move(fields));
       stream.node_of.emplace(id, node);
       ++seen;
     }
     if (seen != live) throw Malformed{};
   }
-  stream.appended = node == 0 ? 0 : (node - 1) * Stream::node_entries + std::min(last_filled, Stream::node_entries);
+  stream.next_node = node;
   const uint64_t length = r.length();
   if (length != stream.entries.size()) throw Malformed{};
   stream.last_id.ms = r.length();
@@ -1027,6 +1053,19 @@ std::optional<std::string> lzf_decompress(std::string_view in, size_t length) {
   }
   if (out.size() != length) return std::nullopt;
   return out;
+}
+
+// An empty listpack is its header and end, seven bytes; what one element adds.
+size_t listpack_element_size(std::string_view element) {
+  Listpack lp;
+  lp.add(element);
+  return lp.bytes() - 7;
+}
+
+size_t listpack_integer_size(int64_t value) {
+  Listpack lp;
+  lp.add_integer(value);
+  return lp.bytes() - 7;
 }
 
 std::string dump(const Entry& entry) {

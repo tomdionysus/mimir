@@ -258,5 +258,73 @@ TEST(CommandStreamGroups, ABlockedGroupReadIsWokenByAnAdd) {
   EXPECT_EQ(bed.run({"XPENDING", "s", "g"}), array({integer(1), bulk("4-0"), bulk("4-0"), array({array({bulk("c"), bulk("1")})})}));
 }
 
+// XINFO STREAM key FULL [COUNT n], as Valkey 8.1.1 answers it (probed): the
+// stream's figures, its entries, and each group with its pending entries and
+// its consumers, theirs too; COUNT bounds the entries and each pending list
+// (10 by default, 0 or less for all).
+TEST(CommandStreamGroups, InfoStreamFull) {
+  Bed bed;
+  bed.run({"XADD", "s", "1-1", "a", "1"});
+  bed.run({"XADD", "s", "2-1", "b", "2"});
+  bed.run({"XADD", "s", "3-1", "c", "3"});
+  bed.run({"XDEL", "s", "2-1"});
+  bed.run({"XGROUP", "CREATE", "s", "g", "0"});
+  bed.run({"XGROUP", "CREATE", "s", "h", "3-1"});
+  const int64_t t = static_cast<int64_t>(bed.wall.unix_ms());
+  bed.run({"XREADGROUP", "GROUP", "g", "alice", "COUNT", "2", "STREAMS", "s", ">"});
+  bed.wall.advance(10ms);
+  bed.run({"XREADGROUP", "GROUP", "g", "bob", "COUNT", "5", "STREAMS", "s", ">"});
+  bed.wall.advance(10ms);
+  bed.run({"XGROUP", "CREATECONSUMER", "s", "g", "carol"});
+
+  const auto group_pending = [&](const std::string& id) { return array({bulk(id), bulk("alice"), integer(t), integer(1)}); };
+  const auto own_pending = [&](const std::string& id) { return array({bulk(id), integer(t), integer(1)}); };
+  const auto idle = [](const std::string& name, int64_t seen) {
+    return array({bulk("name"), bulk(name), bulk("seen-time"), integer(seen), bulk("active-time"), integer(-1), bulk("pel-count"), integer(0), bulk("pending"),
+                  array({})});
+  };
+  const auto full = [&](std::vector<std::string> entries, std::vector<std::string> ids) {
+    std::vector<std::string> pending_g, pending_alice;
+    for (const auto& id : ids) {
+      pending_g.push_back(group_pending(id));
+      pending_alice.push_back(own_pending(id));
+    }
+    const std::string alice = array({bulk("name"), bulk("alice"), bulk("seen-time"), integer(t), bulk("active-time"), integer(t), bulk("pel-count"), integer(2),
+                                     bulk("pending"), array(pending_alice)});
+    const std::string g =
+        array({bulk("name"), bulk("g"), bulk("last-delivered-id"), bulk("3-1"), bulk("entries-read"), integer(3), bulk("lag"), integer(0), bulk("pel-count"),
+               integer(2), bulk("pending"), array(pending_g), bulk("consumers"), array({alice, idle("bob", t + 10), idle("carol", t + 20)})});
+    const std::string h = array({bulk("name"), bulk("h"), bulk("last-delivered-id"), bulk("3-1"), bulk("entries-read"), nil(), bulk("lag"), integer(0),
+                                 bulk("pel-count"), integer(0), bulk("pending"), array({}), bulk("consumers"), array({})});
+    return array({bulk("length"), integer(2), bulk("radix-tree-keys"), integer(1), bulk("radix-tree-nodes"), integer(2), bulk("last-generated-id"), bulk("3-1"),
+                  bulk("max-deleted-entry-id"), bulk("2-1"), bulk("entries-added"), integer(3), bulk("recorded-first-entry-id"), bulk("1-1"), bulk("entries"),
+                  array(entries), bulk("groups"), array({g, h})});
+  };
+  const std::string all = full({entry("1-1", {"a", "1"}), entry("3-1", {"c", "3"})}, {"1-1", "3-1"});
+  EXPECT_EQ(bed.run({"XINFO", "STREAM", "s", "FULL"}), all);
+  EXPECT_EQ(bed.run({"XINFO", "STREAM", "s", "FULL", "COUNT", "0"}), all);
+  EXPECT_EQ(bed.run({"XINFO", "STREAM", "s", "FULL", "COUNT", "-1"}), all);
+  EXPECT_EQ(bed.run({"XINFO", "STREAM", "s", "FULL", "COUNT", "1"}), full({entry("1-1", {"a", "1"})}, {"1-1"}));
+
+  const std::string wrong = error("ERR unknown subcommand or wrong number of arguments for 'STREAM'. Try XINFO HELP.");
+  EXPECT_EQ(bed.run({"XINFO", "STREAM", "s", "FULL", "COUNT", "x"}), error("ERR value is not an integer or out of range"));
+  for (const std::vector<std::string>& args : {std::vector<std::string>{"XINFO", "STREAM", "s", "FULL", "COUNT"},
+                                               {"XINFO", "STREAM", "s", "FULL", "BOGUS"},
+                                               {"XINFO", "STREAM", "s", "BOGUS"},
+                                               {"XINFO", "STREAM", "s", "FULL", "COUNT", "1", "extra"}}) {
+    EXPECT_EQ(bed.run(args), wrong) << args.back();
+  }
+  EXPECT_EQ(bed.run({"XINFO", "STREAM", "nosuch", "FULL"}), error("ERR no such key"));
+
+  // An empty stream with a group, in RESP3: maps, and a null entries-read.
+  bed.run({"XGROUP", "CREATE", "e", "g", "$", "MKSTREAM"});
+  bed.run({"HELLO", "3"});
+  EXPECT_EQ(bed.run({"XINFO", "STREAM", "e", "FULL"}),
+            "%9\r\n$6\r\nlength\r\n:0\r\n$15\r\nradix-tree-keys\r\n:0\r\n$16\r\nradix-tree-nodes\r\n:1\r\n$17\r\nlast-generated-id\r\n$3\r\n0-0\r\n"
+            "$20\r\nmax-deleted-entry-id\r\n$3\r\n0-0\r\n$13\r\nentries-added\r\n:0\r\n$23\r\nrecorded-first-entry-id\r\n$3\r\n0-0\r\n"
+            "$7\r\nentries\r\n*0\r\n$6\r\ngroups\r\n*1\r\n%7\r\n$4\r\nname\r\n$1\r\ng\r\n$17\r\nlast-delivered-id\r\n$3\r\n0-0\r\n"
+            "$12\r\nentries-read\r\n_\r\n$3\r\nlag\r\n:0\r\n$9\r\npel-count\r\n:0\r\n$7\r\npending\r\n*0\r\n$9\r\nconsumers\r\n*0\r\n");
+}
+
 }  // namespace
 }  // namespace mimir::test

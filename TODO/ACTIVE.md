@@ -17,7 +17,9 @@ order of the stages.
   lines gcov misattributes and defensive branches; keep it there as code
   lands (the maintainer, 2026-11-20: "~100% code coverage on all code").
 - The maintainer, 2026-11-22: after the coverage squash, the Valkey gaps
-  next (item 1), with no release first.
+  next (item 1), with no release first; stream nodes matched to Valkey's
+  exactly; LATENCY HISTOGRAM's tracking configurable; once
+  `feature/valkey-gaps` is squashed, release 0.1.1.
 - The registrar on the four build servers runs the 0.1.0 package (see
   "Running").
 - The maintainer resumed work on 2026-11-22 ("continue autonomously"); the
@@ -31,24 +33,37 @@ order of the stages.
    `mimir-dev:trixie` image on a build server, the tree rsynced with
    `--checksum` and no times, `build/dev-run.sh`; node-d's resolver drops
    lookups now and then, so a container there is given public resolvers):
-   XINFO STREAM key FULL [COUNT n]; a stream node closed at
-   stream-node-max-bytes (4096) as well as by entries, which DUMP's bytes
-   and approximate trims show; LATENCY HISTOGRAM's per-command histograms
-   (Valkey tracks them by default); redis.setresp(3) changing a script's
-   conversions; PFDEBUG (also item 4).
+   all done on `feature/valkey-gaps`: XINFO STREAM key FULL [COUNT n];
+   redis.setresp(3) and the RESP3 script conversions; PFDEBUG; stream
+   nodes closed at 4,096 bytes as well as 100 entries, with deleted
+   entries kept in their nodes as Valkey keeps them (DUMP byte for byte);
+   LATENCY HISTOGRAM behind latency-tracking (on by default; the node's
+   latency.tracking and CONFIG SET change it). Left: the branch's
+   sanitizer gate, its squash, and release 0.1.1. Not done, recorded: INFO
+   has no latencystats section (latency-tracking-info-percentiles is only
+   CONFIG's), and CONFIG SET of stream-node-max-bytes and
+   stream-node-max-entries is taken but changes nothing (the nodes keep
+   Valkey's defaults).
 2. **CONFIG SET cluster-wide**: a setting that must hold on every node
    (notify-keyspace-events first) becomes cluster state by agreement, as ACL
    users and function libraries did (no special node).
 3. **Stage 3's gates** (3.10 below): the differential against a cluster of
    three; Dannan's SimNodes with Mimir's actors under faults, checked with
    `dannan::sim_checkers` (exported since Dannan 0.10.0).
-4. Small things owed from stage 2: MEMORY STATS; PFDEBUG; acllog-max-len
+4. Small things owed from stage 2: MEMORY STATS; acllog-max-len
    fixed at 128; ACL DRYRUN checks a subcommand against its container's
    arity.
 5. In the next minor (0.2.0), never mid-release: the two flags that break
    the stack's settings rule (Dannan's `docs/config.md`: key `a.b` is
    `--a-b` and `MIMIR_A_B`) become `--listen-host` (now `--listen`) and
-   `--listen-port` (now `--port`).
+   `--listen-port` (now `--port`). With it, the node's cluster settings
+   move onto Dannan 0.11.0's shared reader (`dannan/config/node_settings.h`:
+   `add_node_settings(reader, "MIMIR")`, `node_config(settings)`), whose
+   names the maintainer fixed under `cluster.`: Mimir's cluster.listen,
+   cluster.port and cluster.advertise become cluster.listen.address,
+   cluster.listen.port and cluster.listen.advertise; cluster.key,
+   cluster.bootstrap, cluster.state, cluster.name and cluster.domain keep
+   theirs; cluster.genesis and the cluster of one stay Mimir's.
 
 ## Waiting on others
 
@@ -63,6 +78,14 @@ order of the stages.
 - Dagda: contract v2, for persistence (stage 5, ruling 43: Mimir writes no
   durable file of its own).
 - Lugh: principal events and status scope, for the Lugh plugin.
+- The dashboard, when Dannan's HTTP core lands: its UI on Lugh's shared
+  shell, @lugh/admin-ui (source in Lugh's lugh/ui, on develop at 05ebbaf
+  and in Lugh's next tag; depended on by file path at a Lugh tag, compiled
+  by Mimir's Vite, reset.css then admin.css at the root, with React 19,
+  react-dom and react-router 7). It gives DataTable (sorted, filtered,
+  paged by an opaque cursor), DetailPanel, useEvents (SSE with back-off),
+  StatusPill and SignIn (password, Lugh with PKCE, or both). Mimir builds
+  its own number tile with a sparkline and its monospace editor.
 - The maintainer: `decided` for a merging write (the design's
   "Durability", Proposed), to be asked when stage 4 starts.
 - Until replica sets ship, Dannan's operator rule holds: never retire a

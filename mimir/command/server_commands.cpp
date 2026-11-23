@@ -127,16 +127,22 @@ void config(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
         throw CommandError("ERR CONFIG SET failed (possibly related to argument '" + call.args[i] +
                            "') - Invalid event class character. Use 'Ag$lshzxeKEtmdn'.");
       }
+      if (name == "latency-tracking" && !iequals(call.args[i + 1], "yes") && !iequals(call.args[i + 1], "no")) {
+        throw CommandError("ERR CONFIG SET failed (possibly related to argument '" + call.args[i] + "') - argument must be 'yes' or 'no'");
+      }
     }
     for (size_t i = 2; i < call.args.size(); i += 2) {
       const std::string name = lower(call.args[i]);
       if (name == "notify-keyspace-events")
         call.database.set_notify_flags_locked(call.args[i + 1]);
+      else if (name == "latency-tracking")
+        settings[name] = lower(call.args[i + 1]);
       else
         settings[name] = call.args[i + 1];
     }
     call.reply.simple("OK");
   } else if (sub == "resetstat") {
+    call.database.reset_latency_locked();
     call.reply.simple("OK");
   } else if (sub == "rewrite") {
     throw CommandError("ERR The server is running without a config file");
@@ -324,8 +330,10 @@ void module(Call& call) {
 
 void pfselftest(Call& call) { call.reply.simple("OK"); }
 
-// Latency monitoring is off, as Valkey's is by default: nothing is sampled.
-void latency(Call& call) {
+// Latency monitoring of events is off, as Valkey's is by default: nothing is
+// sampled. Each command's latency is tracked (HISTOGRAM). Called under the
+// database's lock, as every handler is.
+void latency(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   if (help::reply_help(call, "latency")) return;
   const std::string sub = lower(call.args[1]);
   const size_t argc = call.args.size();
@@ -346,8 +354,41 @@ void latency(Call& call) {
                         "Latency monitoring is disabled in this Mimir node. You may use \"CONFIG SET latency-monitor-threshold <milliseconds>.\" in order "
                         "to enable it, once Mimir samples latency.");
   } else if (sub == "histogram") {
-    // Per-command latency tracking is not kept: no command has a histogram.
-    call.reply.map(0);
+    // Every command run since the last CONFIG RESETSTAT, or those named: a
+    // command with subcommands names each of them that ran; one not known,
+    // or never run, nothing.
+    const auto& all = call.database.latency_locked();
+    std::vector<const std::pair<const std::string, Database::LatencyHistogram>*> chosen;
+    if (argc == 2) {
+      for (const auto& entry : all) chosen.push_back(&entry);
+    } else {
+      for (size_t i = 2; i < argc; ++i) {
+        const std::string name = lower(call.args[i]);
+        if (const auto exact = all.find(name); exact != all.end()) chosen.push_back(&*exact);
+        const std::string container = name + "|";
+        for (auto it = all.lower_bound(container); it != all.end() && it->first.compare(0, container.size(), container) == 0; ++it) chosen.push_back(&*it);
+      }
+    }
+    call.reply.map(chosen.size());
+    for (const auto* entry : chosen) {
+      const auto& histogram = entry->second;
+      call.reply.bulk(entry->first);
+      call.reply.map(2);
+      call.reply.bulk("calls");
+      call.reply.integer(static_cast<int64_t>(histogram.calls));
+      call.reply.bulk("histogram_usec");
+      // Each step that holds a run, with how many ran within it, cumulatively.
+      size_t holding = 0;
+      for (const uint64_t count : histogram.steps) holding += count ? 1 : 0;
+      call.reply.map(holding);
+      uint64_t cumulative = 0;
+      for (size_t step = 0; step < Database::latency_steps; ++step) {
+        if (!histogram.steps[step]) continue;
+        cumulative += histogram.steps[step];
+        call.reply.integer(static_cast<int64_t>(Database::latency_step_ns(step) / 1000));
+        call.reply.integer(static_cast<int64_t>(cumulative));
+      }
+    }
   } else {
     throw CommandError("ERR unknown subcommand '" + call.args[1] + "'. Try LATENCY HELP.");
   }

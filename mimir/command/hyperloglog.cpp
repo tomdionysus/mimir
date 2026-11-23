@@ -9,6 +9,11 @@
 // representation (keyspace/hll.h). Registers only ever grow, so PFADD and
 // PFMERGE are joins: they merge in the cluster without agreement.
 
+#include <algorithm>
+#include <optional>
+#include <string>
+#include <string_view>
+
 #include "mimir/command/args.h"
 #include "mimir/command/database.h"
 #include "mimir/command/handlers.h"
@@ -105,6 +110,64 @@ void pfmerge(Call& call) {
   call.keys.put(call.args[1], keyspace::Entry{hll::encode(merged, dense), expires_at});
   call.notify('$', "pfadd", call.args[1]);
   call.reply.simple("OK");
+}
+
+namespace {
+
+// A sparse value's opcodes as PFDEBUG DECODE names them: "Z:n" a long run of
+// zeros, "z:n" a short one, "v:value,n" a run of one value; none for a body
+// that is not sparse opcodes.
+std::optional<std::string> decode_sparse(std::string_view value) {
+  std::string out;
+  for (size_t at = hll::header_size; at < value.size(); ++at) {
+    const auto byte = static_cast<uint8_t>(value[at]);
+    if (!out.empty()) out.push_back(' ');
+    if ((byte & 0xc0) == 0x00) {
+      out += "z:" + std::to_string((byte & 0x3f) + 1);
+    } else if ((byte & 0xc0) == 0x40) {
+      if (++at >= value.size()) return std::nullopt;
+      out += "Z:" + std::to_string((((byte & 0x3f) << 8) | static_cast<uint8_t>(value[at])) + 1);
+    } else {
+      out += "v:" + std::to_string(((byte >> 2) & 0x1f) + 1) + "," + std::to_string((byte & 0x03) + 1);
+    }
+  }
+  return out;
+}
+
+// `value` made dense, its cached cardinality kept as Valkey keeps it.
+void make_dense(std::string& value) {
+  std::string dense = hll::encode(registers_of(value), true);
+  std::copy(value.begin() + 8, value.begin() + hll::header_size, dense.begin() + 8);
+  value = std::move(dense);
+}
+
+}  // namespace
+
+// PFDEBUG GETREG|DECODE|ENCODING|TODENSE key: the key is checked first, then
+// the subcommand, as Valkey checks them.
+void pfdebug(Call& call) {
+  std::string* value = hll_value(call.keys, call.args[2]);
+  if (!value) throw CommandError("ERR The specified key does not exist");
+  const std::string sub = lower(call.args[1]);
+  if (sub == "getreg") {
+    if (!hll::is_dense(*value)) make_dense(*value);
+    const hll::Registers regs = registers_of(*value);
+    call.reply.array(hll::registers);
+    for (const uint8_t r : regs) call.reply.integer(r);
+  } else if (sub == "decode") {
+    if (hll::is_dense(*value)) throw CommandError("ERR HLL encoding is not sparse");
+    const auto decoded = decode_sparse(*value);
+    if (!decoded) throw CommandError(corrupt);
+    call.reply.simple(*decoded);
+  } else if (sub == "encoding") {
+    call.reply.simple(hll::is_dense(*value) ? "dense" : "sparse");
+  } else if (sub == "todense") {
+    const bool converted = !hll::is_dense(*value);
+    if (converted) make_dense(*value);
+    call.reply.integer(converted ? 1 : 0);
+  } else {
+    throw CommandError("ERR Unknown PFDEBUG subcommand '" + call.args[1] + "'");
+  }
 }
 
 }  // namespace mimir::command::hyperloglog

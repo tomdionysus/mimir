@@ -54,6 +54,8 @@ class Reply {
   void real(double value);
   // RESP2: 1 or 0.
   void boolean(bool value);
+  // RESP3 "(": the digits as given. RESP2: a bulk string.
+  void big_number(std::string_view digits);
   // RESP3 "=": `format` is three characters ("txt"). RESP2: a bulk string.
   void verbatim(std::string_view format, std::string_view text);
 

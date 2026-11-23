@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <deque>
@@ -71,6 +72,12 @@ struct DatabaseSettings {
   // notify-keyspace-events at start, in Valkey's letters ("Khgx"); empty:
   // off, as Valkey's default. Refused at construction when not valid.
   std::string notify_keyspace_events;
+  // latency-tracking at start: each command's runs timed into its histogram,
+  // LATENCY HISTOGRAM's answer. On by default, as Valkey's; CONFIG SET
+  // changes it.
+  bool latency_tracking = true;
+  // The monotonic clock commands are timed by; none: the steady clock.
+  const dannan::contract::TimeSource* time = nullptr;
   // SHUTDOWN's way to stop the node (ruling 31), called on the command's
   // thread under the database's lock: it must only post the stop. None: a
   // client cannot stop this node.
@@ -170,6 +177,24 @@ class Database {
   // until it commits.
   std::map<int64_t, Session*>& sessions_locked() DANNAN_REQUIRES(_mutex) { return _scratch_acl ? _no_sessions : _sessions; }
   std::map<std::string, std::string>& config_locked() DANNAN_REQUIRES(_mutex) { return _config; }
+  // LATENCY HISTOGRAM: per command's full name ("get", "config|get"), how
+  // many runs were timed and how many fell in each step, as Valkey's HDR
+  // histogram reports them: step i holds runs up to latency_step_ns(i)
+  // nanoseconds (1,031, 2,063, 4,127 ...), shown as that over a thousand
+  // microseconds. A run is counted at least 1,024 ns and at most a second.
+  static constexpr size_t latency_steps = 21;
+  struct LatencyHistogram {
+    uint64_t calls = 0;
+    std::array<uint64_t, latency_steps> steps{};
+  };
+  static uint64_t latency_step_ns(size_t step) noexcept { return (uint64_t{1024} << step) + (uint64_t{8} << step) - 1; }
+  const std::map<std::string, LatencyHistogram>& latency_locked() DANNAN_REQUIRES(_mutex) { return _latency; }
+  // CONFIG RESETSTAT.
+  void reset_latency_locked() DANNAN_REQUIRES(_mutex) { _latency.clear(); }
+  // A run of `name` that started at `started`, counted while latency-tracking
+  // is on.
+  void record_latency_locked(const std::string& name, dannan::contract::TimePoint started) DANNAN_REQUIRES(_mutex);
+  dannan::contract::TimePoint latency_now() const noexcept { return _time.now(); }
   size_t waiting_locked() DANNAN_REQUIRES(_mutex) { return _waiters.size(); }
   // The databases, for SELECT, MOVE, SWAPDB, COPY ... DB, FLUSHALL and INFO.
   // Fixed at construction, so read without the lock.
@@ -464,6 +489,7 @@ class Database {
   const dannan::contract::WallClock& _wall;
   const DatabaseSettings _settings;
   const uint64_t _started_ms;
+  const dannan::contract::TimeSource& _time;
   PubSub _pubsub;
   std::atomic<int64_t> _next_client{1};
   dannan::contract::Mutex _mutex;
@@ -479,6 +505,7 @@ class Database {
   std::map<int64_t, Session*> _sessions DANNAN_GUARDED_BY(_mutex);
   // Settings CONFIG SET may change, as text.
   std::map<std::string, std::string> _config DANNAN_GUARDED_BY(_mutex);
+  std::map<std::string, LatencyHistogram> _latency DANNAN_GUARDED_BY(_mutex);
   // Per key, the sessions watching it.
   std::unordered_map<std::string, std::vector<Session*>> _watchers DANNAN_GUARDED_BY(_mutex);
   Scripting _scripting DANNAN_GUARDED_BY(_mutex);
