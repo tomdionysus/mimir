@@ -31,7 +31,8 @@ order of the stages.
 ## Next, in order (none waits on anyone)
 
 1. **Stage 3's gates** (3.10 below): the differential against a cluster of
-   three; Dannan's SimNodes with Mimir's actors under faults, checked with
+   three is done (`MIMIR_DIFF_NODES=3`, in the gate's release step). Left:
+   Dannan's SimNodes with Mimir's actors under faults, checked with
    `dannan::sim_checkers` (exported since Dannan 0.10.0).
 2. Small things owed from stage 2: MEMORY STATS; acllog-max-len
    fixed at 128; ACL DRYRUN checks a subcommand against its container's
@@ -126,8 +127,8 @@ Still to do:
    to every node today); ACL SETUSER and DELUSER inside MULTI are refused
    in a cluster; a flush, SWAPDB and SORT ... STORE name the keys of this
    node's view until the atomic commit.
-10. **Gates**: the differential against a cluster of one and of three;
-    SimNodes under faults, checked for linearizability (SimNodes needs
+10. **Gates**: the differential against a cluster of one and of three
+    (done, 2026-11-23); SimNodes under faults, checked for linearizability (SimNodes needs
     `DANNAN_TEST_TEMP_ROOT` defined by Mimir's tests); then the registrar
     moved to one four-node cluster.
 

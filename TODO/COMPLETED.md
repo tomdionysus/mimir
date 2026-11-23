@@ -2,6 +2,20 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-23: The differential gate against a cluster of three
+
+- `tools/differential.sh` with `MIMIR_DIFF_NODES=n`: each case against a
+  fresh cluster of n founders on loopback (built as the client gate's
+  Cluster fixture builds one), each case talking to the next node in turn;
+  ready when a write through every node commits (in database 15, written
+  and deleted). The gate's release step runs it on one node and on three.
+- Run once on node-a (-j2, nice 19) at a2e48e3: release 442; on one node
+  238 differing replies, on three 237, reply for reply the same but for
+  random choices (RANDOMKEY's pick, the known random SPOP, which accounts
+  for 238 against 237). All 35 cases ran (12, 12 and 11 on nodes 0 to 2),
+  every cluster took writes. No command answers differently on a cluster
+  of three.
+
 ## 2026-11-23: AthenaSIP's driver scripts in the differential gate
 
 - `Differential.AthenaSipScripts`: the five scripts of AthenaSIP's redis://
