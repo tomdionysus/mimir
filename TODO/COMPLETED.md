@@ -2,6 +2,21 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-23: AthenaSIP's driver scripts in the differential gate
+
+- `Differential.AthenaSipScripts`: the five scripts of AthenaSIP's redis://
+  driver, byte for byte from its `docs/redis-scripts.md` (each body's SHA1
+  pinned, SCRIPT LOAD checked on both servers), against Valkey 8.1.1 and
+  Mimir. The lease (taken, renewed, refused), the counter (with and without
+  a window, over a non-number), the call index on one key and the presence
+  delete of nothing all match. As expected: the call index on two keys is
+  refused (ruling 35), and so is presence_put even for a new record, since
+  its SADD names an index key the script does not declare.
+- Run once on node-a (-j2, nice 19) at a5a0b8d: release 442; the
+  differential 237 differing replies, the 233 before and these four (two
+  ruling 35 refusals counted, the SMEMBERS that follows one, the
+  undeclared key).
+
 ## 2026-11-23: CONFIG SET cluster-wide, with Valkey's encodings (feature/config-cluster, squashed)
 
 - The maintainer, 2026-11-23: the behaviour settings are cluster-wide, by

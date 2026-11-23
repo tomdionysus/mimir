@@ -17,9 +17,9 @@ order of the stages.
   lines gcov misattributes and defensive branches; keep it there as code
   lands (the maintainer, 2026-11-20: "~100% code coverage on all code").
 - CONFIG SET cluster-wide with Valkey's exact, sticky encodings is on
-  develop (2026-11-23, squashed; COMPLETED.md has the gate). Next: the
-  AthenaSIP scripts as differential cases (see "Waiting on others"), then
-  the ordered work below.
+  develop (2026-11-23, squashed; COMPLETED.md has the gate), and
+  AthenaSIP's driver scripts are differential cases. Next: the ordered
+  work below.
 - The maintainer, 2026-11-22: the Valkey gaps after the coverage squash,
   stream nodes matched to Valkey's exactly, LATENCY HISTOGRAM's tracking
   configurable, then release 0.1.1: all done.
@@ -85,8 +85,9 @@ order of the stages.
   and wait, as every multi-key write does, on Dannan's atomic commit
   (ruling 35). The scripts verbatim (JSON-quoted bodies, KEYS counts,
   example KEYS and ARGV) are AthenaSIP's `docs/redis-scripts.md`, kept
-  exact by its own test; next after this feature, they become differential
-  cases against Valkey (the multi-key ones as ruling 35 refusals).
+  exact by its own test; they are `Differential.AthenaSipScripts`
+  (2026-11-23). When AthenaSIP rewrites the presence scripts to declare
+  every key, the case is updated from its document.
 - The maintainer: `decided` for a merging write (the design's
   "Durability", Proposed), to be asked when stage 4 starts.
 - Until replica sets ship, Dannan's operator rule holds: never retire a

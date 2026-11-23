@@ -1990,6 +1990,88 @@ TEST_F(Differential, ScriptingSandbox) {
   });
 }
 
+// AthenaSIP's redis:// driver's five scripts, byte for byte as it sends them
+// (its docs/redis-scripts.md, kept exact by its own test). The lease and the
+// counter touch their one declared key; the call index writes every key it
+// is given (ruling 35 refuses more than one); the presence scripts touch
+// index keys they do not declare (ruling 36 refuses them).
+TEST_F(Differential, AthenaSipScripts) {
+  const std::string lease =
+      "\n    local held = redis.call('GET', KEYS[1])\n    if not held then redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2]) return 1 end\n    if held == "
+      "ARGV[1] then redis.call('EXPIRE', KEYS[1], ARGV[2]) return 1 end\n    return 0\n  ";
+  const std::string counter_add =
+      "\n    local value = redis.call('INCRBY', KEYS[1], ARGV[1])\n    local lapses = redis.call('TTL', KEYS[1])\n    if tonumber(ARGV[2]) > 0 and lapses < 0 then "
+      "redis.call('EXPIRE', KEYS[1], ARGV[2]) end\n    if value == 0 and lapses < 0 and tonumber(ARGV[2]) == 0 then redis.call('DEL', KEYS[1]) end\n    return "
+      "value\n  ";
+  const std::string call_index =
+      "\n    for _, key in ipairs(KEYS) do\n      if ARGV[2] == '1' then redis.call('SADD', key, ARGV[1]) else redis.call('SREM', key, ARGV[1]) end\n    "
+      "end\n    return #KEYS\n  ";
+  const std::string presence_put =
+      "\n    local old = redis.call('GET', KEYS[1])\n    if old then\n      local was = cjson.decode(old)\n      if was.aor ~= ARGV[4] then redis.call('SREM', "
+      "ARGV[6] .. was.aor, ARGV[3]) end\n      if was.node_id ~= '' and was.node_id ~= ARGV[5] then redis.call('SREM', ARGV[7] .. was.node_id, ARGV[8]) "
+      "end\n    end\n    redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])\n    redis.call('SADD', ARGV[6] .. ARGV[4], ARGV[3])\n    if ARGV[5] ~= '' then "
+      "redis.call('SADD', ARGV[7] .. ARGV[5], ARGV[8]) end\n    return 1\n  ";
+  const std::string presence_delete =
+      "\n    local old = redis.call('GET', KEYS[1])\n    if old then\n      local was = cjson.decode(old)\n      redis.call('SREM', ARGV[1] .. was.aor, "
+      "ARGV[3])\n      if was.node_id ~= '' then redis.call('SREM', ARGV[2] .. was.node_id, ARGV[4]) end\n      redis.call('DEL', KEYS[1])\n    end\n    "
+      "return 1\n  ";
+  const std::string trunk = "athena:lease:trunk:acme";
+  const std::string calls = "athena:counter:calls:example.com";
+  const std::string window = "athena:counter:window:example.com";
+  const std::string alice = "athena:index:subscriber-calls:sip:alice@example.com";
+  const std::string bob = "athena:index:subscriber-calls:sip:bob@example.com";
+  const std::string record = "athena:presence:subscription:sub-1";
+  const std::string record_json =
+      "{\"kind\":\"subscription\",\"id\":\"sub-1\",\"aor\":\"sip:alice@example.com\",\"node_id\":\"node-a\",\"content_type\":\"\",\"body\":\"\","
+      "\"expires_at\":1795000000}";
+  // The bodies are AthenaSIP's, byte for byte: their SHA1s, from its document.
+  const std::vector<std::pair<std::string, std::string>> bodies = {{lease, "aa68c74b8050595e4c8684066000f062786a8265"},
+                                                                   {counter_add, "1dfef6102c1be8fa05abb6c10006b577ec6979ec"},
+                                                                   {call_index, "bbc1606200c4561e23c182897499eeec60ddcdb6"},
+                                                                   {presence_put, "4883c7cf1a050d5bd5cdf71b53c838e3b5f122f7"},
+                                                                   {presence_delete, "2e9921e4b0b00b0f849652d1308256e671211b8c"}};
+  for (const auto& [body, sha] : bodies) {
+    EXPECT_EQ(_valkey->call({"SCRIPT", "LOAD", body}), "$40\r\n" + sha + "\r\n");
+    EXPECT_EQ(_mimir->call({"SCRIPT", "LOAD", body}), "$40\r\n" + sha + "\r\n");
+  }
+  same({"SCRIPT", "FLUSH"});
+  script({
+      // A lease taken, renewed by its holder, refused to another.
+      {"EVAL", lease, "1", trunk, "node-a", "120"},
+      {"TTL", trunk},
+      {"EVAL", lease, "1", trunk, "node-a", "60"},
+      {"TTL", trunk},
+      {"EVAL", lease, "1", trunk, "node-b", "120"},
+      {"GET", trunk},
+      // A counter with no window: back to nothing, it goes.
+      {"EVAL", counter_add, "1", calls, "1", "0"},
+      {"EVAL", counter_add, "1", calls, "2", "0"},
+      {"EVAL", counter_add, "1", calls, "-3", "0"},
+      {"EXISTS", calls},
+      // A counter whose window starts with its first add and stays.
+      {"EVAL", counter_add, "1", window, "5", "60"},
+      {"TTL", window},
+      {"EVAL", counter_add, "1", window, "1", "30"},
+      {"TTL", window},
+      {"EVAL", counter_add, "1", window, "-6", "0"},
+      {"EXISTS", window},
+      // A counter over a value that is not a number.
+      {"SET", "athena:counter:bad", "x"},
+      {"EVAL", counter_add, "1", "athena:counter:bad", "1", "0"},
+      // The call index: one subscriber, then two.
+      {"EVAL", call_index, "1", alice, "call-1@example.com", "1"},
+      {"SMEMBERS", alice},
+      {"EVAL", call_index, "2", alice, bob, "call-2@example.com", "1"},
+      {"EVAL", call_index, "1", alice, "call-1@example.com", "0"},
+      {"SMEMBERS", alice},
+      // Presence: a delete of nothing touches only its record.
+      {"EVAL", presence_delete, "1", record, "athena:index:presence:subscription:", "athena:index:presence-node:", "sub-1", "subscription:sub-1"},
+      {"EVAL", presence_put, "1", record, record_json, "3600", "sub-1", "sip:alice@example.com", "node-a", "athena:index:presence:subscription:",
+       "athena:index:presence-node:", "subscription:sub-1"},
+      {"EXISTS", record},
+  });
+}
+
 TEST_F(Differential, ScriptingLibraries) {
   script({
       {"EVAL", "return cjson.encode({1, 2, {a=1}})", "0"},
