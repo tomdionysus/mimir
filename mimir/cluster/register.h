@@ -74,6 +74,9 @@ struct Record {
   // How many writes have committed to the key: WATCH's evidence that nothing
   // wrote it between the WATCH and the EXEC.
   uint64_t serial = 0;
+  // A list value held as a quicklist, not a listpack: DUMP's bytes cannot
+  // tell a quicklist of one node from a listpack.
+  bool quicklist = false;
 
   bool empty() const noexcept { return !payload && applied.empty(); }
   // The reply recorded for operation `id`, if it was applied here.

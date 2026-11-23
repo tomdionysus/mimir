@@ -250,6 +250,8 @@ void search_generic(Call& call, size_t key_at, unsigned kind) {
   if (returned) {
     SortedSet made;
     for (size_t i = 0; i < returned; ++i) made.set(found[i].member, store_dist ? found[i].distance / conversion : static_cast<double>(found[i].score));
+    // Its encoding as its size gives, as Valkey's store makes it.
+    made.settle_new([&call]() DANNAN_NO_THREAD_SAFETY_ANALYSIS { return call.database.limits_locked(); }());
     call.keys.put(*store, keyspace::Entry{std::move(made), std::nullopt});
     call.notify('z', (kind & search) ? "geosearchstore" : "georadiusstore", *store);
   } else if (call.keys.erase(*store)) {

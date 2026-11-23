@@ -35,6 +35,10 @@ std::string* hll_value(keyspace::Keyspace& keys, std::string_view key) {
   return value;
 }
 
+// The agreed hll-sparse-max-bytes. Called under the database's lock, as every
+// handler is.
+size_t sparse_limit(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS { return call.database.limits_locked().hll_sparse_max_bytes; }
+
 hll::Registers registers_of(const std::string& value) {
   auto regs = hll::decode(value);
   if (!regs) throw CommandError(corrupt);
@@ -60,8 +64,9 @@ void pfadd(Call& call) {
     }
   }
   if (grew) {
-    // A dense value stays dense, as Valkey's never goes back.
-    *value = hll::encode(regs, hll::is_dense(*value));
+    // A dense value stays dense, as Valkey's never goes back; a sparse one
+    // past the agreed hll-sparse-max-bytes becomes dense.
+    *value = hll::encode(regs, hll::is_dense(*value), sparse_limit(call));
     changed = true;
   }
   if (changed) call.notify('$', "pfadd", call.args[1]);
@@ -107,7 +112,7 @@ void pfmerge(Call& call) {
   }
   keyspace::Entry* existing = call.keys.find(call.args[1]);
   const std::optional<uint64_t> expires_at = existing ? existing->expires_at : std::nullopt;
-  call.keys.put(call.args[1], keyspace::Entry{hll::encode(merged, dense), expires_at});
+  call.keys.put(call.args[1], keyspace::Entry{hll::encode(merged, dense, sparse_limit(call)), expires_at});
   call.notify('$', "pfadd", call.args[1]);
   call.reply.simple("OK");
 }

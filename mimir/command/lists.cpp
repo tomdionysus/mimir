@@ -40,10 +40,32 @@ void drop_if_empty(Call& call, std::string_view key, const List& list) {
   call.notify('g', "del", key);
 }
 
+// The agreed encoding limits. Called under the database's lock, as every
+// handler is.
+keyspace::Limits limits_of(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS { return call.database.limits_locked(); }
+
+// After elements went: an emptied key goes; a list left may turn back into a
+// listpack, as Valkey's does once small.
+void after_removal(Call& call, std::string_view key, List& list) {
+  if (list.empty()) {
+    drop_if_empty(call, key, list);
+    return;
+  }
+  list.settle(true, limits_of(call));
+}
+
 // A pop's event, then the emptied key's.
-void popped(Call& call, std::string_view key, const List& list, bool left) {
+void popped(Call& call, std::string_view key, List& list, bool left) {
   call.notify('l', left ? "lpop" : "rpop", key);
-  drop_if_empty(call, key, list);
+  after_removal(call, key, list);
+}
+
+// What an element adds to a listpack's size when it is checked before going
+// in: its length, or nothing when it moves from another list as an integer.
+size_t added_bytes(const std::string& element, bool moved) {
+  if (moved)
+    if (const auto value = parse_integer(element); value && std::to_string(*value) == element) return 0;
+  return element.size();
 }
 
 // A blocking command's source list: another type is WRONGTYPE, as for any
@@ -95,24 +117,17 @@ void push(Call& call, bool left, bool only_if_exists) {
     }
     list = &list_or_create(call.keys, key);
   }
-  for (size_t i = 2; i < call.args.size(); ++i) {
-    if (left)
-      list->push_front(call.args[i]);
-    else
-      list->push_back(call.args[i]);
-  }
+  // Valkey checks every value before the first goes in.
+  const keyspace::Limits limits = limits_of(call);
+  size_t bytes = 0;
+  for (size_t i = 2; i < call.args.size(); ++i) bytes += call.args[i].size();
+  list->grow(bytes, call.args.size() - 2, limits);
+  for (size_t i = 2; i < call.args.size(); ++i) list->push(left, call.args[i], limits);
   call.notify('l', left ? "lpush" : "rpush", key);
   call.reply.integer(static_cast<int64_t>(list->size()));
 }
 
-std::string take(List& list, bool left) {
-  std::string out = std::move(left ? list.front() : list.back());
-  if (left)
-    list.pop_front();
-  else
-    list.pop_back();
-  return out;
-}
+std::string take(List& list, bool left) { return list.pop(left); }
 
 void pop(Call& call, bool left) {
   const std::string& key = call.args[1];
@@ -159,10 +174,9 @@ bool move(Call& call, bool from_left, bool to_left, bool blocking = false) {
   // The push is announced before the pop, and an emptied source after both,
   // in Valkey's order.
   List& to = source == destination ? *from : list_or_create(call.keys, destination);
-  if (to_left)
-    to.push_front(std::move(element));
-  else
-    to.push_back(std::move(element));
+  const keyspace::Limits limits = limits_of(call);
+  to.grow(added_bytes(element, true), 1, limits);
+  to.push(to_left, std::move(element), limits);
   call.notify('l', to_left ? "lpush" : "rpush", destination);
   popped(call, source, *from, from_left);
   return true;
@@ -267,9 +281,14 @@ void lset(Call& call) {
   const int64_t index = integer_argument(call.args[2]);
   List* list = list_value(call.keys, call.args[1]);
   if (!list) throw CommandError("ERR no such key");
+  // Valkey checks the value as an addition before it looks at the index, and
+  // the list as shrunk after.
+  const keyspace::Limits limits = limits_of(call);
+  list->grow(call.args[3].size(), 1, limits);
   auto at = absolute(index, list->size());
   if (!at) throw CommandError("ERR index out of range");
-  (*list)[*at] = call.args[3];
+  list->replace(*at, call.args[3], limits);
+  list->settle(true, limits);
   call.notify('l', "lset", call.args[1]);
   call.reply.simple("OK");
 }
@@ -287,9 +306,12 @@ void linsert(Call& call) {
     call.reply.integer(0);
     return;
   }
-  for (auto it = list->begin(); it != list->end(); ++it) {
-    if (*it == call.args[3]) {
-      list->insert(after ? std::next(it) : it, call.args[4]);
+  // Valkey checks the value as an addition before it looks for the pivot.
+  const keyspace::Limits limits = limits_of(call);
+  list->grow(call.args[4].size(), 1, limits);
+  for (size_t i = 0; i < list->size(); ++i) {
+    if ((*list)[i] == call.args[3]) {
+      list->insert(i, after, call.args[4], limits);
       call.notify('l', "linsert", call.args[1]);
       call.reply.integer(static_cast<int64_t>(list->size()));
       return;
@@ -311,18 +333,18 @@ void lrem(Call& call) {
   const uint64_t limit = count == 0 ? UINT64_MAX : (count < 0 ? 0 - static_cast<uint64_t>(count) : static_cast<uint64_t>(count));
   uint64_t removed = 0;
   if (count >= 0) {
-    for (auto it = list->begin(); it != list->end() && removed < limit;) {
-      if (*it == element) {
-        it = list->erase(it);
+    for (size_t i = 0; i < list->size() && removed < limit;) {
+      if ((*list)[i] == element) {
+        list->erase(i);
         ++removed;
       } else {
-        ++it;
+        ++i;
       }
     }
   } else {
     for (size_t i = list->size(); i > 0 && removed < limit; --i) {
       if ((*list)[i - 1] == element) {
-        list->erase(list->begin() + static_cast<std::ptrdiff_t>(i - 1));
+        list->erase(i - 1);
         ++removed;
       }
     }
@@ -330,7 +352,7 @@ void lrem(Call& call) {
   call.reply.integer(static_cast<int64_t>(removed));
   if (removed == 0) return;
   call.notify('l', "lrem", call.args[1]);
-  drop_if_empty(call, call.args[1], *list);
+  after_removal(call, call.args[1], *list);
 }
 
 void ltrim(Call& call) {
@@ -339,14 +361,16 @@ void ltrim(Call& call) {
   List* list = list_value(call.keys, call.args[1]);
   if (list) {
     auto span = range(start, stop, list->size());
+    // From the head, then the tail, as Valkey trims.
     if (!span) {
-      list->clear();
+      list->erase_range(0, list->size());
     } else {
-      list->erase(list->begin() + static_cast<std::ptrdiff_t>(span->second + 1), list->end());
-      list->erase(list->begin(), list->begin() + static_cast<std::ptrdiff_t>(span->first));
+      const size_t tail = list->size() - span->second - 1;
+      list->erase_range(0, span->first);
+      list->erase_range(list->size() - tail, tail);
     }
     call.notify('l', "ltrim", call.args[1]);
-    drop_if_empty(call, call.args[1], *list);
+    after_removal(call, call.args[1], *list);
   }
   call.reply.simple("OK");
 }

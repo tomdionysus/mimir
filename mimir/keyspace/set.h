@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "mimir/keyspace/limits.h"
 #include "mimir/keyspace/scan_order.h"
 
 // A set's members. Valkey answers a small set's members in an order clients
@@ -29,11 +30,6 @@ namespace mimir::keyspace {
 
 class Set {
  public:
-  // Valkey's set-max-intset-entries, set-max-listpack-entries and -value.
-  static constexpr size_t max_intset = 512;
-  static constexpr size_t max_listpack = 128;
-  static constexpr size_t max_listpack_value = 64;
-
   enum class Shape : uint8_t { integers, small, large };
 
   Set() = default;
@@ -42,8 +38,10 @@ class Set {
   Set(Set&&) noexcept = default;
   Set& operator=(Set&&) noexcept = default;
 
-  // Adds `member`; whether it is new.
-  bool add(std::string_view member);
+  // Adds `member`; whether it is new. The shape changes as Valkey's encoding
+  // would under `limits` (the agreed set-max-intset-entries,
+  // set-max-listpack-entries and -value).
+  bool add(std::string_view member, const Limits& limits = Limits{});
   bool contains(std::string_view member) const { return _index.count(member) > 0; }
   // Removes `member`; whether it was present.
   bool erase(std::string_view member);
@@ -51,6 +49,10 @@ class Set {
   size_t size() const noexcept { return _members.size(); }
   bool empty() const noexcept { return _members.empty(); }
   Shape shape() const noexcept { return _shape; }
+  // The shape a payload was dumped in, for the cluster's own records, which
+  // keep it whatever the size. Precondition: the members fit it (integers
+  // only for `integers`).
+  void keep_shape(Shape shape) noexcept { _shape = shape; }
   // The members in the order Valkey would answer them (above).
   std::vector<std::string_view> ordered() const;
   // SSCAN's page of a large set: up to `count` members from `cursor`, and the

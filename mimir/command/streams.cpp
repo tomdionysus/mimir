@@ -32,6 +32,10 @@ Stream* stream_value(keyspace::Keyspace& keys, std::string_view key) {
   return &std::get<Stream>(entry->value);
 }
 
+// The agreed encoding limits. Called under the database's lock, as every
+// handler is.
+keyspace::Limits limits_of(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS { return call.database.limits_locked(); }
+
 StreamId id_argument(std::string_view text, uint64_t missing_seq) {
   auto id = keyspace::parse_stream_id(text, missing_seq);
   if (!id) throw CommandError(invalid_id);
@@ -105,7 +109,7 @@ Trim parse_trim(Call& call, size_t& i) {
 
 // Removes from the oldest as the trim says; how many went. Approximate trims
 // remove whole nodes only, as Valkey's do, and at most `limit` entries.
-uint64_t apply_trim(Stream& stream, const Trim& trim) {
+uint64_t apply_trim(Stream& stream, const Trim& trim, const keyspace::Limits& limits) {
   const auto over = [&](const StreamId& id) { return trim.by_length ? stream.entries.size() > trim.length : id < trim.minid; };
   uint64_t removed = 0;
   if (!trim.approximate) {
@@ -115,8 +119,9 @@ uint64_t apply_trim(Stream& stream, const Trim& trim) {
     }
     return removed;
   }
-  // Valkey's default for an approximate trim: a hundred nodes' worth.
-  const uint64_t limit = trim.limit ? (*trim.limit == 0 ? UINT64_MAX : *trim.limit) : Stream::node_entries * 100;
+  // Valkey's default for an approximate trim: a hundred nodes' worth, by the
+  // agreed stream-node-max-entries.
+  const uint64_t limit = trim.limit ? (*trim.limit == 0 ? UINT64_MAX : *trim.limit) : limits.stream_node_max_entries * 100;
   while (!stream.entries.empty()) {
     // The oldest node's live entries.
     const uint64_t node = stream.node_of.at(stream.entries.begin()->first);
@@ -205,9 +210,10 @@ void xadd(Call& call) {
     }
   }
   if (!stream) stream = &std::get<Stream>(call.keys.put(key, keyspace::Entry{Stream{}, std::nullopt}).value);
-  stream->append(id, std::vector<std::string>(call.args.begin() + static_cast<std::ptrdiff_t>(i), call.args.end()));
+  const keyspace::Limits limits = limits_of(call);
+  stream->append(id, std::vector<std::string>(call.args.begin() + static_cast<std::ptrdiff_t>(i), call.args.end()), limits);
   call.notify('t', "xadd", key);
-  if (trim && apply_trim(*stream, *trim) > 0) call.notify('t', "xtrim", key);
+  if (trim && apply_trim(*stream, *trim, limits) > 0) call.notify('t', "xtrim", key);
   call.reply.bulk(id.text());
 }
 
@@ -272,7 +278,7 @@ void xtrim(Call& call) {
   Trim trim = parse_trim(call, i);
   if (i != call.args.size()) throw CommandError(syntax_error);
   Stream* stream = stream_value(call.keys, call.args[1]);
-  const uint64_t removed = stream ? apply_trim(*stream, trim) : 0;
+  const uint64_t removed = stream ? apply_trim(*stream, trim, limits_of(call)) : 0;
   if (removed) call.notify('t', "xtrim", call.args[1]);
   call.reply.integer(static_cast<int64_t>(removed));
 }

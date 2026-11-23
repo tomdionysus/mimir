@@ -54,12 +54,16 @@ std::vector<const Set*> sets_of(Call& call, size_t first, size_t last) {
 
 enum class Op { inter, onion, diff };
 
-Set compute(const std::vector<const Set*>& sets, Op op) {
+// The agreed encoding limits. Called under the database's lock, as every
+// handler is.
+keyspace::Limits limits_of(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS { return call.database.limits_locked(); }
+
+Set compute(const std::vector<const Set*>& sets, Op op, const keyspace::Limits& limits) {
   Set result;
   if (sets.empty()) return result;
   if (op == Op::onion) {
     for (const Set* set : sets)
-      for (auto member : set->ordered()) result.add(member);
+      for (auto member : set->ordered()) result.add(member, limits);
     return result;
   }
   if (op == Op::inter) {
@@ -69,25 +73,25 @@ Set compute(const std::vector<const Set*>& sets, Op op) {
     for (auto member : smallest->ordered()) {
       bool everywhere = true;
       for (const Set* set : sets) everywhere = everywhere && set->contains(member);
-      if (everywhere) result.add(member);
+      if (everywhere) result.add(member, limits);
     }
     return result;
   }
   for (auto member : sets.front()->ordered()) {
     bool elsewhere = false;
     for (size_t i = 1; i < sets.size() && !elsewhere; ++i) elsewhere = sets[i]->contains(member);
-    if (!elsewhere) result.add(member);
+    if (!elsewhere) result.add(member, limits);
   }
   return result;
 }
 
 void combine(Call& call, Op op) {
-  Set result = compute(sets_of(call, 1, call.args.size()), op);
+  Set result = compute(sets_of(call, 1, call.args.size()), op, limits_of(call));
   reply_set(call.reply, result);
 }
 
 void combine_store(Call& call, Op op) {
-  Set result = compute(sets_of(call, 2, call.args.size()), op);
+  Set result = compute(sets_of(call, 2, call.args.size()), op, limits_of(call));
   const std::string& destination = call.args[1];
   call.reply.integer(static_cast<int64_t>(result.size()));
   if (result.empty()) {
@@ -110,8 +114,9 @@ void removed_from(Call& call, std::string_view event, const std::string& key, co
 
 void sadd(Call& call) {
   Set& set = set_or_create(call.keys, call.args[1]);
+  const keyspace::Limits limits = limits_of(call);
   int64_t added = 0;
-  for (size_t i = 2; i < call.args.size(); ++i) added += set.add(call.args[i]) ? 1 : 0;
+  for (size_t i = 2; i < call.args.size(); ++i) added += set.add(call.args[i], limits) ? 1 : 0;
   if (added) call.notify('s', "sadd", call.args[1]);
   call.reply.integer(added);
 }
@@ -243,7 +248,7 @@ void smove(Call& call) {
     return;
   }
   removed_from(call, "srem", source, *from);
-  if (set_or_create(call.keys, destination).add(member)) call.notify('s', "sadd", destination);
+  if (set_or_create(call.keys, destination).add(member, limits_of(call))) call.notify('s', "sadd", destination);
   call.reply.integer(1);
 }
 
@@ -270,7 +275,7 @@ void sintercard(Call& call) {
       throw CommandError(syntax_error);
     }
   }
-  Set result = compute(sets_of(call, 2, end), Op::inter);
+  Set result = compute(sets_of(call, 2, end), Op::inter, limits_of(call));
   uint64_t size = result.size();
   if (limit > 0 && size > limit) size = limit;
   call.reply.integer(static_cast<int64_t>(size));

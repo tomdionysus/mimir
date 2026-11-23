@@ -48,9 +48,10 @@ bool looks_valid(std::string_view bytes) noexcept;
 bool is_dense(std::string_view bytes) noexcept;
 // The registers; none when the body is corrupt (INVALIDOBJ).
 std::optional<Registers> decode(std::string_view bytes);
-// `registers` encoded sparse when it fits and no value exceeds 32, unless
-// `dense`; the cached cardinality marked stale.
-std::string encode(const Registers& registers, bool dense);
+// `registers` encoded sparse when it fits in `sparse_max` bytes (the agreed
+// hll-sparse-max-bytes) and no value exceeds 32, unless `dense`; the cached
+// cardinality marked stale.
+std::string encode(const Registers& registers, bool dense, size_t sparse_max = sparse_max_bytes);
 // The estimate over `registers`.
 uint64_t estimate(const Registers& registers);
 // The cached cardinality, when valid.

@@ -291,7 +291,8 @@ void dump(Call& call) {
   call.reply.bulk(keyspace::rdb::dump(*entry));
 }
 
-void restore(Call& call) {
+// Called under the database's lock, as every handler is.
+void restore(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
   const std::string& key = call.args[1];
   bool replace = false;
   bool absttl = false;
@@ -317,7 +318,9 @@ void restore(Call& call) {
   if (!replace && call.keys.find(key)) throw CommandError("BUSYKEY Target key name already exists.");
   const int64_t ttl = integer_argument(call.args[2]);
   if (ttl < 0) throw CommandError("ERR Invalid TTL value, must be >= 0");
-  auto restored = keyspace::rdb::restore(call.args[3]);
+  // Loaded as Valkey loads it: each value in the encoding its size gives it.
+  const keyspace::Limits limits = call.database.limits_locked();
+  auto restored = keyspace::rdb::restore(call.args[3], &limits);
   if (auto* refusal = std::get_if<keyspace::rdb::Refusal>(&restored)) {
     throw CommandError(*refusal == keyspace::rdb::Refusal::checksum ? "ERR DUMP payload version or checksum are wrong" : "ERR Bad data format");
   }

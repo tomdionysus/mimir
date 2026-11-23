@@ -11,6 +11,11 @@
 // replicas, nothing evicted yet.
 
 #include <charconv>
+#include <cstdint>
+#include <optional>
+#include <set>
+#include <string>
+#include <string_view>
 
 #include "mimir/command/args.h"
 #include "mimir/command/database.h"
@@ -22,8 +27,6 @@ namespace mimir::command::server {
 
 namespace {
 
-bool fits_listpack(size_t count, size_t longest) { return count <= 128 && longest <= 64; }
-
 // The encoding Valkey would report for a value of this shape.
 std::string_view encoding_of(const keyspace::Entry& entry) {
   switch (entry.type()) {
@@ -32,18 +35,12 @@ std::string_view encoding_of(const keyspace::Entry& entry) {
       if (s.size() <= 20 && parse_integer(s)) return "int";
       return s.size() <= 44 ? "embstr" : "raw";
     }
-    case keyspace::Type::list: {
-      const auto& l = std::get<keyspace::List>(entry.value);
-      size_t bytes = 0;
-      for (const auto& e : l) bytes += e.size() + 11;
-      return bytes <= 8192 ? "listpack" : "quicklist";
-    }
-    case keyspace::Type::hash: {
-      const auto& h = std::get<keyspace::Hash>(entry.value);
-      size_t longest = 0;
-      for (const auto& [f, v] : h) longest = std::max({longest, f.size(), v.size()});
-      return fits_listpack(h.size(), longest) ? "listpack" : "hashtable";
-    }
+    case keyspace::Type::list:
+      // As its encoding is, which converts both ways as Valkey's does.
+      return std::get<keyspace::List>(entry.value).quicklist() ? "quicklist" : "listpack";
+    case keyspace::Type::hash:
+      // As its encoding is: a listpack until a write made it a hash table.
+      return std::get<keyspace::Hash>(entry.value).table() ? "hashtable" : "listpack";
     case keyspace::Type::set:
       switch (std::get<keyspace::Set>(entry.value).shape()) {
         case keyspace::Set::Shape::integers:
@@ -54,12 +51,9 @@ std::string_view encoding_of(const keyspace::Entry& entry) {
           return "hashtable";
       }
       break;
-    case keyspace::Type::zset: {
-      const auto& z = std::get<keyspace::SortedSet>(entry.value);
-      size_t longest = 0;
-      for (size_t r = 0; r < z.size(); ++r) longest = std::max(longest, z.at(r).member.size());
-      return fits_listpack(z.size(), longest) ? "listpack" : "skiplist";
-    }
+    case keyspace::Type::zset:
+      // As its encoding is: a listpack until a new member made it a skiplist.
+      return std::get<keyspace::SortedSet>(entry.value).skiplist() ? "skiplist" : "listpack";
     case keyspace::Type::stream:
       return "stream";
   }
@@ -91,6 +85,61 @@ uint64_t usage_of(const std::string& key, const keyspace::Entry& entry) {
       },
       entry.value);
   return bytes;
+}
+
+// A memory value as Valkey reads one: digits, then nothing or a unit (b, k,
+// kb, m, mb, g, gb; k is 1000, kb 1024), in any case.
+std::optional<uint64_t> memory_value(std::string_view text) {
+  size_t digits = 0;
+  while (digits < text.size() && text[digits] >= '0' && text[digits] <= '9') ++digits;
+  if (digits == 0) return std::nullopt;
+  uint64_t number = 0;
+  if (std::from_chars(text.data(), text.data() + digits, number).ec != std::errc()) return std::nullopt;
+  const std::string unit = lower(text.substr(digits));
+  uint64_t scale = 0;
+  if (unit.empty() || unit == "b")
+    scale = 1;
+  else if (unit == "k")
+    scale = 1000;
+  else if (unit == "kb")
+    scale = 1024;
+  else if (unit == "m")
+    scale = 1000 * 1000;
+  else if (unit == "mb")
+    scale = 1024 * 1024;
+  else if (unit == "g")
+    scale = 1000 * 1000 * 1000;
+  else if (unit == "gb")
+    scale = 1024ull * 1024 * 1024;
+  else
+    return std::nullopt;
+  if (number > UINT64_MAX / scale) return std::nullopt;
+  return number * scale;
+}
+
+// Valkey's checks for the numeric settings (probed), in its words: none when
+// `value` is good, made then as CONFIG GET answers it.
+std::optional<std::string> checked_setting(const std::string& name, std::string& value) {
+  static const std::set<std::string_view> counts = {
+      "set-max-intset-entries",    "set-max-listpack-entries", "set-max-listpack-value", "hash-max-listpack-entries",
+      "zset-max-listpack-entries", "stream-node-max-entries",  "lua-time-limit",         "busy-reply-threshold"};
+  static const std::set<std::string_view> memory = {"hash-max-listpack-value", "zset-max-listpack-value", "hll-sparse-max-bytes", "stream-node-max-bytes"};
+  if (counts.count(name)) {
+    const auto parsed = parse_integer(value);
+    if (!parsed) return "argument couldn't be parsed into an integer";
+    if (*parsed < 0) return "argument must be between 0 and 9223372036854775807 inclusive";
+    value = std::to_string(*parsed);
+  } else if (memory.count(name)) {
+    const auto parsed = memory_value(value);
+    if (!parsed) return "argument must be a memory value";
+    value = std::to_string(*parsed);
+  } else if (name == "list-max-listpack-size") {
+    const auto parsed = parse_integer(value);
+    if (!parsed) return "argument couldn't be parsed into an integer";
+    if (*parsed < INT32_MIN || *parsed > INT32_MAX) return "argument must be between -2147483648 and 2147483647 inclusive";
+    value = std::to_string(*parsed);
+  }
+  return std::nullopt;
 }
 
 }  // namespace
@@ -130,15 +179,24 @@ void config(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
       if (name == "latency-tracking" && !iequals(call.args[i + 1], "yes") && !iequals(call.args[i + 1], "no")) {
         throw CommandError("ERR CONFIG SET failed (possibly related to argument '" + call.args[i] + "') - argument must be 'yes' or 'no'");
       }
+      std::string value = call.args[i + 1];
+      if (auto why = checked_setting(name, value)) throw CommandError("ERR CONFIG SET failed (possibly related to argument '" + call.args[i] + "') - " + *why);
     }
     for (size_t i = 2; i < call.args.size(); i += 2) {
       const std::string name = lower(call.args[i]);
-      if (name == "notify-keyspace-events")
-        call.database.set_notify_flags_locked(call.args[i + 1]);
-      else if (name == "latency-tracking")
-        settings[name] = lower(call.args[i + 1]);
-      else
-        settings[name] = call.args[i + 1];
+      std::string value = call.args[i + 1];
+      checked_setting(name, value);
+      if (name == "notify-keyspace-events") {
+        call.database.set_notify_flags_locked(value);
+      } else if (name == "latency-tracking") {
+        settings[name] = lower(value);
+      } else if (name == "lua-time-limit" || name == "busy-reply-threshold") {
+        // One setting under two names, as Valkey's.
+        settings["lua-time-limit"] = value;
+        settings["busy-reply-threshold"] = value;
+      } else {
+        settings[name] = value;
+      }
     }
     call.reply.simple("OK");
   } else if (sub == "resetstat") {

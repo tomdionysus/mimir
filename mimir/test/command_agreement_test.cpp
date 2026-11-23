@@ -565,6 +565,105 @@ TEST(CommandAgreement, UsersChangeByAgreementAndReachEveryNode) {
   EXPECT_EQ(here.run({"ACL", "USERS"}), "*1\r\n$7\r\ndefault\r\n");
 }
 
+// CONFIG SET of a behaviour setting commits by agreement on the settings'
+// register and reaches every node; one that describes only its node stays
+// there (the maintainer, 2026-11-23).
+TEST(CommandAgreement, BehaviourSettingsChangeByAgreementAndReachEveryNode) {
+  AgreementBed here;
+  const auto get = [](AgreementBed& bed, const std::string& name) { return bed.run({"CONFIG", "GET", name}); };
+  const auto answer = [](const std::string& name, const std::string& value) {
+    return "*2\r\n$" + std::to_string(name.size()) + "\r\n" + name + "\r\n$" + std::to_string(value.size()) + "\r\n" + value + "\r\n";
+  };
+  EXPECT_EQ(here.run({"CONFIG", "SET", "notify-keyspace-events", "KEA", "hash-max-listpack-entries", "5"}), "+OK\r\n");
+  EXPECT_EQ(here.registers->system_proposals, 1);
+  const cluster::Record settings = here.registers->record(0xffff, "config");
+  ASSERT_TRUE(settings.payload);
+  EXPECT_EQ(get(here, "notify-keyspace-events"), answer("notify-keyspace-events", "AKE"));
+  EXPECT_EQ(get(here, "hash-max-listpack-entries"), answer("hash-max-listpack-entries", "5"));
+
+  // Another node hears of the commit: its settings, and what they change,
+  // become the same.
+  AgreementBed there;
+  EXPECT_EQ(get(there, "hash-max-listpack-entries"), answer("hash-max-listpack-entries", "512"));
+  there.registers->commit_elsewhere(0xffff, "config", settings);
+  EXPECT_EQ(get(there, "notify-keyspace-events"), answer("notify-keyspace-events", "AKE"));
+  EXPECT_EQ(get(there, "hash-max-listpack-entries"), answer("hash-max-listpack-entries", "5"));
+
+  // A per-node setting is this node's alone: no agreement, and not carried.
+  EXPECT_EQ(here.run({"CONFIG", "SET", "hz", "20"}), "+OK\r\n");
+  EXPECT_EQ(here.registers->system_proposals, 1);
+  // Named beside a behaviour setting, it is checked with it and kept here.
+  EXPECT_EQ(here.run({"CONFIG", "SET", "slowlog-max-len", "64", "lua-time-limit", "100"}), "+OK\r\n");
+  EXPECT_EQ(here.registers->system_proposals, 2);
+  EXPECT_EQ(get(here, "slowlog-max-len"), answer("slowlog-max-len", "64"));
+  EXPECT_EQ(get(here, "lua-time-limit"), answer("lua-time-limit", "100"));
+  there.registers->commit_elsewhere(0xffff, "config", here.registers->record(0xffff, "config"));
+  EXPECT_EQ(get(there, "lua-time-limit"), answer("lua-time-limit", "100"));
+  EXPECT_EQ(get(there, "slowlog-max-len"), answer("slowlog-max-len", "128"));
+  EXPECT_EQ(get(there, "hz"), answer("hz", "10"));
+
+  // A change refused, or inside MULTI, changes nothing.
+  const cluster::Record before = here.registers->record(0xffff, "config");
+  EXPECT_EQ(here.run({"CONFIG", "SET", "notify-keyspace-events", "KEq"}),
+            "-ERR CONFIG SET failed (possibly related to argument 'notify-keyspace-events') - Invalid event class character. Use 'Ag$lshzxeKEtmdn'.\r\n");
+  EXPECT_EQ(here.run({"CONFIG", "SET", "hz", "5", "lua-time-limit", "1", "latency-tracking", "maybe"}),
+            "-ERR CONFIG SET failed (possibly related to argument 'latency-tracking') - argument must be 'yes' or 'no'\r\n");
+  EXPECT_EQ(here.registers->record(0xffff, "config").payload, before.payload);
+  EXPECT_EQ(get(here, "notify-keyspace-events"), answer("notify-keyspace-events", "AKE"));
+  EXPECT_EQ(get(here, "hz"), answer("hz", "20"));
+  EXPECT_EQ(here.run({"MULTI"}), "+OK\r\n");
+  EXPECT_EQ(here.run({"CONFIG", "SET", "lua-time-limit", "7"}), "+QUEUED\r\n");
+  EXPECT_EQ(here.run({"EXEC"}), "-ERR in a cluster CONFIG SET of a cluster-wide setting commits on its own, not inside MULTI\r\n");
+  EXPECT_EQ(get(here, "lua-time-limit"), answer("lua-time-limit", "100"));
+
+  // A record that is not one refuses the next change.
+  here.registers->record(0xffff, "config").payload = std::string("not a record");
+  EXPECT_EQ(here.run({"CONFIG", "SET", "lua-time-limit", "9"}), "-ERR the settings' stored record cannot be read\r\n");
+}
+
+// With A, CONFIG GET shows no n, as Valkey 8.1.1's does (probed: KEAnm
+// answers AKEm), yet the class is taken; the agreed settings must carry it,
+// or every node loses "new" (the differential gate's finding).
+TEST(CommandAgreement, TheNewClassSurvivesTheAgreedSettings) {
+  const auto listen = [](AgreementBed& bed, Session& listener, std::vector<std::string>& pushed) {
+    listener.id = bed.database->next_client_id();
+    listener.push = [&pushed](std::string bytes) { pushed.push_back(std::move(bytes)); };
+    bed.database->welcome(listener);
+    std::string out;
+    bed.database->execute(listener, {"SUBSCRIBE", "__keyevent@0__:new"}, out);
+  };
+  const auto heard = [](const std::vector<std::string>& pushed, const std::string& key) {
+    for (const auto& bytes : pushed)
+      if (bytes.find("__keyevent@0__:new") != std::string::npos && bytes.find("\r\n" + key + "\r\n") != std::string::npos) return true;
+    return false;
+  };
+  AgreementBed here;
+  Session here_listener;
+  std::vector<std::string> here_pushed;
+  listen(here, here_listener, here_pushed);
+  EXPECT_EQ(here.run({"CONFIG", "SET", "notify-keyspace-events", "KEAnm"}), "+OK\r\n");
+  EXPECT_EQ(here.run({"CONFIG", "GET", "notify-keyspace-events"}), "*2\r\n$22\r\nnotify-keyspace-events\r\n$4\r\nAKEm\r\n");
+  EXPECT_EQ(here.run({"SET", "a", "1"}), "+OK\r\n");
+  here.settle();
+  EXPECT_TRUE(heard(here_pushed, "a"));
+
+  AgreementBed there;
+  Session there_listener;
+  std::vector<std::string> there_pushed;
+  listen(there, there_listener, there_pushed);
+  there.registers->commit_elsewhere(0xffff, "config", here.registers->record(0xffff, "config"));
+  EXPECT_EQ(there.run({"SET", "b", "1"}), "+OK\r\n");
+  there.settle();
+  EXPECT_TRUE(heard(there_pushed, "b"));
+
+  // A later change of another setting keeps it.
+  EXPECT_EQ(here.run({"CONFIG", "SET", "lua-time-limit", "100"}), "+OK\r\n");
+  there.registers->commit_elsewhere(0xffff, "config", here.registers->record(0xffff, "config"));
+  EXPECT_EQ(there.run({"SET", "c", "1"}), "+OK\r\n");
+  there.settle();
+  EXPECT_TRUE(heard(there_pushed, "c"));
+}
+
 TEST(CommandAgreement, FunctionLibrariesChangeByAgreementAndReachEveryNode) {
   const std::string code = "#!lua name=lib\nserver.register_function('hello', function() return 'hi' end)";
   AgreementBed here;

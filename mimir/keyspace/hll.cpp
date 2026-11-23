@@ -184,7 +184,7 @@ std::optional<Registers> decode(std::string_view bytes) {
   return out;
 }
 
-std::string encode(const Registers& regs, bool dense) {
+std::string encode(const Registers& regs, bool dense, size_t sparse_max) {
   std::string header("HYLL", 4);
   header.append(12, '\0');
   bool fits = !dense;
@@ -226,7 +226,7 @@ std::string encode(const Registers& regs, bool dense) {
       }
       r += run;
     }
-    if (out.size() <= sparse_max_bytes) {
+    if (out.size() <= sparse_max) {
       out[15] = static_cast<char>(0x80);
       return out;
     }

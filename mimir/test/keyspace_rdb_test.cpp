@@ -103,6 +103,17 @@ void expect_payload(const std::string& payload, size_t length, std::string_view 
   EXPECT_EQ(to_hex(payload.substr(payload.size() - 8)), crc);
 }
 
+// A list as one RPUSH of `elements` makes it, under Valkey's default limits.
+List pushed(std::vector<std::string> elements) {
+  const Limits limits;
+  List list;
+  size_t bytes = 0;
+  for (const auto& e : elements) bytes += e.size();
+  list.grow(bytes, elements.size(), limits);
+  for (auto& e : elements) list.push(false, std::move(e), limits);
+  return list;
+}
+
 List restored_list(const std::string& payload) {
   auto back = rdb::restore(payload);
   if (!std::holds_alternative<Entry>(back)) return {};
@@ -164,8 +175,8 @@ TEST(KeyspaceRdb, ListsOfLargerElementsAsValkeyDumpsThem) {
     EXPECT_EQ(to_hex(payload), hex);
     EXPECT_EQ(restored_list(payload), list);
   };
-  check(List{"10000000", "5000000000", "-100000"}, "1201021c1c0000000300f38096980005f400f2052a0100000009f26079fe04ff0b004138cc56cba35eaa");
-  check(List{std::string(100, 'x')}, "120102c310406e086e0000000100e06478e05a000166ff0b0007efd7ac9f6462af");
+  check(pushed({"10000000", "5000000000", "-100000"}), "1201021c1c0000000300f38096980005f400f2052a0100000009f26079fe04ff0b004138cc56cba35eaa");
+  check(pushed({std::string(100, 'x')}), "120102c310406e086e0000000100e06478e05a000166ff0b0007efd7ac9f6462af");
   // LZF of a run: a prefix, `repeats` back-references e0ff00, a suffix.
   const auto run = [](std::string_view prefix, int repeats, std::string_view suffix) {
     std::string hex(prefix);
@@ -173,17 +184,17 @@ TEST(KeyspaceRdb, ListsOfLargerElementsAsValkeyDumpsThem) {
     hex += suffix;
     return hex;
   };
-  check(List{std::string(5000, 'y')}, run("120102c3404a539607961300000100f08820060079", 18, "e0ee0002278dff0b0073e66a840eb77e77"));
-  check(List{std::string(20000, 'w')}, run("120101c340ea8000004e20017777", 75, "e0bb000177770b008119c55180ec84ba"));
-  check(List{std::string(8192, 'u'), "tail"},
+  check(pushed({std::string(5000, 'y')}), run("120102c3404a539607961300000100f08820060079", 18, "e0ee0002278dff0b0073e66a840eb77e77"));
+  check(pushed({std::string(20000, 'w')}), run("120101c340ea8000004e20017777", 75, "e0bb000177770b008119c55180ec84ba"));
+  check(pushed({std::string(8192, 'u'), "tail"}),
         run("120202c34070600e070e2000000100f00020060075", 31, "a000024085ff020d0d0000000100847461696c05ff0b00c87bdeefe6c146d5"));
-  check(List{std::string(8193, 'u'), "tail"}, run("120201c340656001017575", 31, "6000017575020d0d0000000100847461696c05ff0b007abd70e7dfc6914b"));
+  check(pushed({std::string(8193, 'u'), "tail"}), run("120201c340656001017575", 31, "6000017575020d0d0000000100847461696c05ff0b007abd70e7dfc6914b"));
 
-  const List huge{std::string(2200000, 'v')};
+  const List huge = pushed({std::string(2200000, 'v')});
   const std::string huge_payload = rdb::dump(Entry{huge, std::nullopt});
   expect_payload(huge_payload, 25032, "120101c380000061b080002191c00176", "5e3f73ad4ea1c83f");
   EXPECT_EQ(restored_list(huge_payload), huge);
-  const List lettered{letters(20000)};
+  const List lettered = pushed({letters(20000)});
   const std::string lettered_payload = rdb::dump(Entry{lettered, std::nullopt});
   expect_payload(lettered_payload, 18845, "120101c380000049858000004e201f74", "3f427e343d02c615");
   EXPECT_EQ(restored_list(lettered_payload), lettered);
@@ -320,9 +331,9 @@ TEST(KeyspaceRdb, EveryTypeRoundTrips) {
   dannan::test::SteppedWall wall;
   std::vector<Entry> values;
   values.push_back(string_entry(std::string(5000, 'x') + "tail"));
-  List big;
-  for (int i = 0; i < 3000; ++i) big.push_back("element-" + std::to_string(i));
-  values.push_back(Entry{big, std::nullopt});
+  std::vector<std::string> elements;
+  for (int i = 0; i < 3000; ++i) elements.push_back("element-" + std::to_string(i));
+  values.push_back(Entry{pushed(std::move(elements)), std::nullopt});
   Hash wide;
   for (int i = 0; i < 300; ++i) wide.set("field" + std::to_string(i), std::to_string(i * 7));
   values.push_back(Entry{wide, std::nullopt});

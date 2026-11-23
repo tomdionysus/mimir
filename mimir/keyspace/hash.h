@@ -44,6 +44,11 @@ class Hash {
 
   size_t size() const noexcept { return _items.size(); }
   bool empty() const noexcept { return _items.empty(); }
+  // Valkey's encoding: a listpack until a write takes the hash past the
+  // agreed limits (Limits), then a hash table for good, as Valkey's never
+  // goes back. OBJECT ENCODING and DUMP follow it.
+  bool table() const noexcept { return _table; }
+  void make_table() noexcept { _table = true; }
   const_iterator begin() const noexcept { return _items.begin(); }
   const_iterator end() const noexcept { return _items.end(); }
 
@@ -65,6 +70,7 @@ class Hash {
   // Keys view the field names held in `_items`, whose nodes never move.
   std::unordered_map<std::string_view, Entry> _index;
   ScanOrder<const_iterator> _order;
+  bool _table = false;
 };
 
 }  // namespace mimir::keyspace

@@ -1,6 +1,6 @@
 # Mimir - Active Work
 
-Last updated: 2026-11-22. `COMPLETED.md` is the record, with gate counts. The
+Last updated: 2026-11-23. `COMPLETED.md` is the record, with gate counts. The
 design is `TODO/2026-11-15-mimir-design.md`: the maintainer's rulings (1 to
 44), the two classes of command, agreement in Dannan, durability, and the
 order of the stages.
@@ -16,6 +16,10 @@ order of the stages.
   2026-11-22; COMPLETED.md has its fixes and gate). What is left is mostly
   lines gcov misattributes and defensive branches; keep it there as code
   lands (the maintainer, 2026-11-20: "~100% code coverage on all code").
+- CONFIG SET cluster-wide with Valkey's exact, sticky encodings is on
+  develop (2026-11-23, squashed; COMPLETED.md has the gate). Next: the
+  AthenaSIP scripts as differential cases (see "Waiting on others"), then
+  the ordered work below.
 - The maintainer, 2026-11-22: the Valkey gaps after the coverage squash,
   stream nodes matched to Valkey's exactly, LATENCY HISTOGRAM's tracking
   configurable, then release 0.1.1: all done.
@@ -26,27 +30,20 @@ order of the stages.
 
 ## Next, in order (none waits on anyone)
 
-1. **CONFIG SET cluster-wide**: a setting that must hold on every node
-   becomes cluster state by agreement, as ACL users and function libraries
-   did (no special node). The maintainer, 2026-11-23, which: the behaviour
-   settings, cluster-wide: notify-keyspace-events, the encoding thresholds
-   (*-max-listpack-*, set-max-intset-entries, hll-sparse-max-bytes,
-   stream-node-max-*), lua-time-limit and busy-reply-threshold. Per node:
-   latency-tracking, slowlog-*, hz, timeout, maxclients.
-2. **Stage 3's gates** (3.10 below): the differential against a cluster of
+1. **Stage 3's gates** (3.10 below): the differential against a cluster of
    three; Dannan's SimNodes with Mimir's actors under faults, checked with
    `dannan::sim_checkers` (exported since Dannan 0.10.0).
-3. Small things owed from stage 2: MEMORY STATS; acllog-max-len
+2. Small things owed from stage 2: MEMORY STATS; acllog-max-len
    fixed at 128; ACL DRYRUN checks a subcommand against its container's
    arity. And from the Valkey gaps: INFO has no latencystats section
-   (latency-tracking-info-percentiles is only CONFIG's); CONFIG SET of
-   stream-node-max-bytes and stream-node-max-entries is taken but changes
-   nothing (the nodes keep Valkey's defaults). Probe and test first, as
+   (latency-tracking-info-percentiles is only CONFIG's). The script time
+   limits (lua-time-limit, busy-reply-threshold) are agreed and checked but
+   bound nothing until scripts can be interrupted. Probe and test first, as
    the coverage work did (`build/cov-probe*.sh`; the kept `mimir-dev:trixie`
    image, the tree rsynced with `--checksum` and no times,
    `build/dev-run.sh`; node-d's resolver drops lookups now and then, so a
    container there is given public resolvers).
-4. In the next minor (0.2.0), never mid-release: the two flags that break
+3. In the next minor (0.2.0), never mid-release: the two flags that break
    the stack's settings rule (Dannan's `docs/config.md`: key `a.b` is
    `--a-b` and `MIMIR_A_B`) become `--listen-host` (now `--listen`) and
    `--listen-port` (now `--port`). With it, the node's cluster settings
@@ -72,13 +69,24 @@ order of the stages.
   durable file of its own).
 - Lugh: principal events and status scope, for the Lugh plugin.
 - The dashboard, when Dannan's HTTP core lands: its UI on Lugh's shared
-  shell, @lugh/admin-ui (source in Lugh's lugh/ui, on develop at 05ebbaf
-  and in Lugh's next tag; depended on by file path at a Lugh tag, compiled
+  shell, @lugh/admin-ui (source in Lugh's lugh/ui, tagged in Lugh 0.6.0
+  on Dannan 0.11.0, 2026-11-23; depended on by file path at that tag, compiled
   by Mimir's Vite, reset.css then admin.css at the root, with React 19,
   react-dom and react-router 7). It gives DataTable (sorted, filtered,
   paged by an opaque cursor), DetailPanel, useEvents (SSE with back-off),
   StatusPill and SignIn (password, Lugh with PKCE, or both). Mimir builds
   its own number tile with a sparkline and its monospace editor.
+- AthenaSIP's redis:// driver (its audit, 2026-11-23, in its tree at
+  `TODO/2026-11-23-redis-scripts-audit.md`): PING, GET, MGET, SET [EX],
+  EXISTS, DEL, SADD, SREM, SMEMBERS and EVAL; its five scripts use GET,
+  SET EX, EXPIRE, INCRBY, TTL, DEL, SADD, SREM and cjson.decode. Two
+  (`lease`, `counter_add`) run on Mimir today; the call index and the two
+  presence scripts (to be rewritten to declare every key) are multi-key
+  and wait, as every multi-key write does, on Dannan's atomic commit
+  (ruling 35). The scripts verbatim (JSON-quoted bodies, KEYS counts,
+  example KEYS and ARGV) are AthenaSIP's `docs/redis-scripts.md`, kept
+  exact by its own test; next after this feature, they become differential
+  cases against Valkey (the multi-key ones as ruling 35 refusals).
 - The maintainer: `decided` for a merging write (the design's
   "Durability", Proposed), to be asked when stage 4 starts.
 - Until replica sets ship, Dannan's operator rule holds: never retire a

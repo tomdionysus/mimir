@@ -48,7 +48,6 @@ enum : uint8_t {
 enum : uint8_t { enc_int8 = 0, enc_int16 = 1, enc_int32 = 2, enc_lzf = 3 };
 
 constexpr size_t max_string = 512u * 1024u * 1024u;
-constexpr size_t list_node_bytes = 8192;
 
 // Anything that does not parse: caught where a payload is read.
 struct Malformed {};
@@ -187,12 +186,6 @@ class Listpack {
     e.append(s);
     finish_entry(e);
   }
-  // The bytes the listpack takes with `s` added, before adding it.
-  size_t size_with(std::string_view s) const {
-    Listpack probe;
-    probe.add(s);
-    return bytes() + probe._body.size();
-  }
   size_t bytes() const noexcept { return 6 + _body.size() + 1; }
   size_t count() const noexcept { return _count; }
   std::string take() const {
@@ -236,34 +229,32 @@ class Listpack {
   size_t _count = 0;
 };
 
-bool fits_listpack(size_t count, size_t longest) { return count <= 128 && longest <= 64; }
-
 void put_id_raw(std::string& out, const StreamId& id) {
   put_be(out, id.ms, 8);
   put_be(out, id.seq, 8);
 }
 
 void dump_list(std::string& out, const List& list) {
-  // Nodes of at most 8 KB of listpack, as Valkey's quicklist holds a list
-  // built by pushes; an element over 8 KB is a plain node of its own.
+  // As Valkey writes it: a listpack as one packed node; a quicklist node by
+  // node, each packed or plain, as its history made them.
   enum : uint8_t { plain_node = 1, packed_node = 2 };
   std::vector<std::pair<uint8_t, std::string>> nodes;
-  Listpack node;
-  const auto close_node = [&] {
-    if (node.count() == 0) return;
+  if (!list.quicklist()) {
+    Listpack node;
+    for (const auto& element : list) node.add(element);
     nodes.emplace_back(packed_node, node.take());
-    node = Listpack();
-  };
-  for (const auto& element : list) {
-    if (element.size() > list_node_bytes) {
-      close_node();
-      nodes.emplace_back(plain_node, element);
-      continue;
+  } else {
+    size_t at = 0;
+    for (const auto& held : list.nodes()) {
+      if (held.plain) {
+        nodes.emplace_back(plain_node, list[at++]);
+        continue;
+      }
+      Listpack node;
+      for (size_t i = 0; i < held.count; ++i) node.add(list[at++]);
+      nodes.emplace_back(packed_node, node.take());
     }
-    if (node.count() > 0 && node.size_with(element) > list_node_bytes) close_node();
-    node.add(element);
   }
-  close_node();
   out.push_back(static_cast<char>(type_list_quicklist_2));
   put_length(out, nodes.size());
   for (const auto& [container, bytes] : nodes) {
@@ -273,9 +264,8 @@ void dump_list(std::string& out, const List& list) {
 }
 
 void dump_hash(std::string& out, const Hash& hash) {
-  size_t longest = 0;
-  for (const auto& [f, v] : hash) longest = std::max({longest, f.size(), v.size()});
-  if (fits_listpack(hash.size(), longest)) {
+  // As its encoding is: a listpack until it became a hash table.
+  if (!hash.table()) {
     Listpack lp;
     for (const auto& [f, v] : hash) {
       lp.add(f);
@@ -329,9 +319,8 @@ void dump_set(std::string& out, const Set& set) {
 }
 
 void dump_zset(std::string& out, const SortedSet& zset) {
-  size_t longest = 0;
-  for (size_t r = 0; r < zset.size(); ++r) longest = std::max(longest, zset.at(r).member.size());
-  if (fits_listpack(zset.size(), longest)) {
+  // As its encoding is: a listpack until it became a skiplist.
+  if (!zset.skiplist()) {
     Listpack lp;
     for (size_t r = 0; r < zset.size(); ++r) {
       lp.add(zset.at(r).member);
@@ -695,46 +684,78 @@ double parse_score(const std::string& text) {
   return score;
 }
 
-Entry read_list(Reader& r, uint8_t type) {
+Entry read_list(Reader& r, uint8_t type, const Limits* load) {
+  const Limits defaults;
+  const Limits& limits = load ? *load : defaults;
   List list;
-  if (type == type_list) {
-    for (uint64_t n = r.count(); n > 0; --n) list.push_back(r.string());
-  } else if (type == type_list_ziplist) {
-    for (auto& e : read_ziplist(r.string())) list.push_back(std::move(e));
+  if (type == type_list || type == type_list_ziplist) {
+    // The older forms: each element pushed at the tail of a quicklist, made a
+    // listpack if it fits whole.
+    std::vector<std::string> elements;
+    if (type == type_list)
+      for (uint64_t n = r.count(); n > 0; --n) elements.push_back(r.string());
+    else
+      elements = read_ziplist(r.string());
+    list = List::new_quicklist();
+    for (auto& e : elements) list.push(false, std::move(e), limits);
+    list.settle(false, limits);
   } else {
-    for (uint64_t nodes = r.count(); nodes > 0; --nodes) {
+    // A quicklist keeps the payload's nodes; a client's RESTORE makes a
+    // single node that fits a listpack, as Valkey's load does, and the
+    // cluster's records say which it was (Database).
+    std::vector<std::vector<std::string>> nodes;
+    std::vector<bool> plain;
+    for (uint64_t count = r.count(); count > 0; --count) {
       uint64_t container = 2;
       if (type == type_list_quicklist_2) container = r.length();
       const std::string bytes = r.string();
       if (container == 1) {
-        list.push_back(bytes);
+        nodes.push_back({bytes});
+        plain.push_back(true);
       } else if (container == 2 || type == type_list_quicklist) {
         auto elements = type == type_list_quicklist ? read_ziplist(bytes) : read_listpack(bytes);
         if (elements.empty()) throw Malformed{};
-        for (auto& e : elements) list.push_back(std::move(e));
+        nodes.push_back(std::move(elements));
+        plain.push_back(false);
       } else {
         throw Malformed{};
       }
     }
+    list = List::from_nodes(std::move(nodes), plain);
+    if (load) list.settle(false, *load);
   }
   if (list.empty()) throw Malformed{};
   return Entry{std::move(list), std::nullopt};
 }
 
-Entry read_set(Reader& r, uint8_t type) {
+Entry read_set(Reader& r, uint8_t type, const Limits* load) {
+  // A client's RESTORE adds each member under the agreed limits, as Valkey
+  // loads a set; the cluster's own records keep the shape they were dumped in,
+  // whatever the size.
+  Limits unbounded;
+  unbounded.set_max_intset_entries = unbounded.set_max_listpack_entries = unbounded.set_max_listpack_value = SIZE_MAX;
+  const Limits& limits = load ? *load : unbounded;
   Set set;
   if (type == type_set) {
-    for (uint64_t n = r.count(); n > 0; --n) set.add(r.string());
+    for (uint64_t n = r.count(); n > 0; --n) set.add(r.string(), limits);
   } else if (type == type_set_intset) {
-    for (int64_t v : read_intset(r.string())) set.add(std::to_string(v));
+    for (int64_t v : read_intset(r.string())) set.add(std::to_string(v), limits);
   } else {
-    for (const auto& m : read_listpack(r.string())) set.add(m);
+    for (const auto& m : read_listpack(r.string())) set.add(m, limits);
   }
   if (set.empty()) throw Malformed{};
+  if (!load) {
+    if (type == type_set)
+      set.keep_shape(Set::Shape::large);
+    else if (type == type_set_listpack)
+      set.keep_shape(Set::Shape::small);
+    else if (set.shape() != Set::Shape::integers)
+      throw Malformed{};
+  }
   return Entry{std::move(set), std::nullopt};
 }
 
-Entry read_zset(Reader& r, uint8_t type) {
+Entry read_zset(Reader& r, uint8_t type, const Limits* load) {
   SortedSet zset;
   if (type == type_zset || type == type_zset_2) {
     for (uint64_t n = r.count(); n > 0; --n) {
@@ -762,10 +783,16 @@ Entry read_zset(Reader& r, uint8_t type) {
     for (size_t i = 0; i < elements.size(); i += 2) zset.set(elements[i], parse_score(elements[i + 1]));
   }
   if (zset.empty()) throw Malformed{};
+  // The record's own payload keeps its encoding; a client's RESTORE loads it
+  // as Valkey's does, by size.
+  if (load)
+    zset.settle_new(*load);
+  else if (type == type_zset || type == type_zset_2)
+    zset.make_skiplist();
   return Entry{std::move(zset), std::nullopt};
 }
 
-Entry read_hash(Reader& r, uint8_t type) {
+Entry read_hash(Reader& r, uint8_t type, const Limits* load) {
   Hash hash;
   if (type == type_hash) {
     for (uint64_t n = r.count(); n > 0; --n) {
@@ -780,6 +807,15 @@ Entry read_hash(Reader& r, uint8_t type) {
     }
   }
   if (hash.empty()) throw Malformed{};
+  // The record's own payload keeps its encoding; a client's RESTORE loads it
+  // as Valkey's does, a listpack if it fits whatever it was dumped as.
+  bool table = type == type_hash;
+  if (load) {
+    size_t longest = 0;
+    for (const auto& [f, v] : hash) longest = std::max({longest, f.size(), v.size()});
+    table = hash.size() > load->hash_max_listpack_entries || longest > load->hash_max_listpack_value;
+  }
+  if (table) hash.make_table();
   return Entry{std::move(hash), std::nullopt};
 }
 
@@ -1095,7 +1131,7 @@ std::string dump(const Entry& entry) {
   return out;
 }
 
-std::variant<Entry, Refusal> restore(std::string_view payload) {
+std::variant<Entry, Refusal> restore(std::string_view payload, const Limits* load) {
   auto body = verified_body(payload);
   if (!body) return Refusal::checksum;
   try {
@@ -1110,23 +1146,23 @@ std::variant<Entry, Refusal> restore(std::string_view payload) {
       case type_list_ziplist:
       case type_list_quicklist:
       case type_list_quicklist_2:
-        entry = read_list(r, type);
+        entry = read_list(r, type, load);
         break;
       case type_set:
       case type_set_intset:
       case type_set_listpack:
-        entry = read_set(r, type);
+        entry = read_set(r, type, load);
         break;
       case type_zset:
       case type_zset_2:
       case type_zset_ziplist:
       case type_zset_listpack:
-        entry = read_zset(r, type);
+        entry = read_zset(r, type, load);
         break;
       case type_hash:
       case type_hash_ziplist:
       case type_hash_listpack:
-        entry = read_hash(r, type);
+        entry = read_hash(r, type, load);
         break;
       case type_stream_listpacks:
       case type_stream_listpacks_2:

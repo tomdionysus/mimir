@@ -179,6 +179,60 @@ TEST(CommandSets, Classes) {
   for (const char* name : {"spop", "smove", "sinterstore", "sunionstore", "sdiffstore"}) EXPECT_EQ(command::find_spec(name)->cls, Class::agreement) << name;
 }
 
+// A set's encoding as Valkey 8.1.1's changes (probed): intset, listpack and
+// hash table, one way only as writes take it past the agreed limits, kept
+// through the cluster's own records; a client's RESTORE loads by size.
+TEST(CommandSets, EncodingsChangeAsValkeysDo) {
+  Bed bed;
+  const auto encoding = [&bed](const std::string& key) { return bed.run({"OBJECT", "ENCODING", key}); };
+  const auto payload = [&bed](const std::string& key) {
+    const std::string dumped = bed.run({"DUMP", key});
+    const size_t at = dumped.find("\r\n") + 2;
+    return dumped.substr(at, dumped.size() - at - 2);
+  };
+  const auto many = [&bed](const std::string& key, int count, const std::string& prefix) {
+    std::vector<std::string> sadd{"SADD", key};
+    for (int i = 1; i <= count; ++i) sadd.push_back(prefix + std::to_string(i));
+    bed.run(sadd);
+  };
+  many("ints", 513, "");
+  EXPECT_EQ(encoding("ints"), bulk("hashtable"));
+  bed.run({"SADD", "s1", "1", "2", "3"});
+  EXPECT_EQ(encoding("s1"), bulk("intset"));
+  bed.run({"SADD", "s1", "a"});
+  EXPECT_EQ(encoding("s1"), bulk("listpack"));
+  bed.run({"SREM", "s1", "a"});
+  EXPECT_EQ(encoding("s1"), bulk("listpack"));
+  many("strings", 129, "x");
+  EXPECT_EQ(encoding("strings"), bulk("hashtable"));
+  std::vector<std::string> srem{"SREM", "strings"};
+  for (int i = 1; i <= 128; ++i) srem.push_back("x" + std::to_string(i));
+  bed.run(srem);
+  EXPECT_EQ(encoding("strings"), bulk("hashtable"));
+  EXPECT_EQ(static_cast<int>(static_cast<unsigned char>(payload("strings")[0])), 0x02);
+  EXPECT_EQ(bed.run({"RESTORE", "restored", "0", payload("strings")}), ok());
+  EXPECT_EQ(encoding("restored"), bulk("listpack"));
+  bed.run({"SADD", "long", std::string(65, 'x')});
+  EXPECT_EQ(encoding("long"), bulk("hashtable"));
+  many("two_hundred", 200, "");
+  EXPECT_EQ(encoding("two_hundred"), bulk("intset"));
+  bed.run({"SADD", "two_hundred", "z"});
+  EXPECT_EQ(encoding("two_hundred"), bulk("hashtable"));
+  bed.run({"SADD", "a", "1", "2", "3"});
+  bed.run({"SADD", "b", "x", "y"});
+  bed.run({"SUNIONSTORE", "union", "a", "b"});
+  EXPECT_EQ(encoding("union"), bulk("listpack"));
+  bed.run({"SINTERSTORE", "inter", "a", "a"});
+  EXPECT_EQ(encoding("inter"), bulk("intset"));
+  // The agreed limits.
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "set-max-listpack-entries", "2"}), ok());
+  bed.run({"SADD", "three", "a", "b", "c"});
+  EXPECT_EQ(encoding("three"), bulk("hashtable"));
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "set-max-listpack-entries", "128", "set-max-intset-entries", "2"}), ok());
+  bed.run({"SADD", "three_ints", "1", "2", "3"});
+  EXPECT_EQ(encoding("three_ints"), bulk("listpack"));
+}
+
 TEST(CommandSets, RandMemberMoveAndScanEdges) {
   Bed bed;
   bed.run({"SADD", "s", "a"});

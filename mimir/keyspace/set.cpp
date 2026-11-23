@@ -40,16 +40,17 @@ Set& Set::operator=(const Set& other) {
   return *this;
 }
 
-bool Set::add(std::string_view member) {
+bool Set::add(std::string_view member, const Limits& limits) {
   if (_index.count(member)) return false;
-  // The one-way changes of shape, as Valkey's encodings change.
-  if (_shape == Shape::integers && (!as_integer(member) || _members.size() + 1 > max_intset)) {
-    bool fits_small = _members.size() + 1 <= max_listpack && member.size() <= max_listpack_value;
+  // The one-way changes of shape, as Valkey's encodings change, by the
+  // agreed limits.
+  if (_shape == Shape::integers && (!as_integer(member) || _members.size() + 1 > limits.set_max_intset_entries)) {
+    bool fits_small = _members.size() + 1 <= limits.set_max_listpack_entries && member.size() <= limits.set_max_listpack_value;
     _shape = fits_small ? Shape::small : Shape::large;
     // The members keep the intset's sorted order, and what is added later comes
     // after them, as Valkey's conversion copies them (the differential gate's finding).
     _members.sort([](const std::string& a, const std::string& b) { return *as_integer(a) < *as_integer(b); });
-  } else if (_shape == Shape::small && (_members.size() + 1 > max_listpack || member.size() > max_listpack_value)) {
+  } else if (_shape == Shape::small && (_members.size() + 1 > limits.set_max_listpack_entries || member.size() > limits.set_max_listpack_value)) {
     _shape = Shape::large;
   }
   _members.emplace_back(member);

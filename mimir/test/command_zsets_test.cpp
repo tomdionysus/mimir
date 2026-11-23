@@ -316,6 +316,65 @@ TEST(CommandZsets, Classes) {
   }
 }
 
+// A sorted set's encoding as Valkey 8.1.1's changes (probed): a new member
+// past the agreed limits makes it a skiplist for good, a score update never
+// does; a store's result takes the encoding its size gives; a client's
+// RESTORE loads by size.
+TEST(CommandZsets, EncodingsChangeAsValkeysDo) {
+  Bed bed;
+  const auto encoding = [&bed](const std::string& key) { return bed.run({"OBJECT", "ENCODING", key}); };
+  const auto payload = [&bed](const std::string& key) {
+    const std::string dumped = bed.run({"DUMP", key});
+    const size_t at = dumped.find("\r\n") + 2;
+    return dumped.substr(at, dumped.size() - at - 2);
+  };
+  std::vector<std::string> zadd{"ZADD", "big"};
+  for (int i = 1; i <= 129; ++i) {
+    zadd.push_back(std::to_string(i));
+    zadd.push_back("m" + std::to_string(i));
+  }
+  bed.run(zadd);
+  EXPECT_EQ(encoding("big"), bulk("skiplist"));
+  bed.run({"ZRANGESTORE", "all", "big", "0", "-1"});
+  EXPECT_EQ(encoding("all"), bulk("skiplist"));
+  bed.run({"ZRANGESTORE", "two", "big", "0", "1"});
+  EXPECT_EQ(encoding("two"), bulk("listpack"));
+  bed.run({"ZINTERSTORE", "inter", "2", "big", "big"});
+  EXPECT_EQ(encoding("inter"), bulk("skiplist"));
+  bed.run({"ZDIFFSTORE", "diff", "2", "big", "two"});
+  EXPECT_EQ(encoding("diff"), bulk("listpack"));
+  bed.run({"ZPOPMIN", "big", "127"});
+  EXPECT_EQ(encoding("big"), bulk("skiplist"));
+  EXPECT_EQ(static_cast<int>(static_cast<unsigned char>(payload("big")[0])), 0x05);
+  EXPECT_EQ(bed.run({"RESTORE", "restored", "0", payload("big")}), ok());
+  EXPECT_EQ(encoding("restored"), bulk("listpack"));
+  bed.run({"ZADD", "long", "1", std::string(70, 'x'), "2", "b"});
+  EXPECT_EQ(encoding("long"), bulk("skiplist"));
+  bed.run({"ZRANGESTORE", "short", "long", "1", "1"});
+  EXPECT_EQ(encoding("short"), bulk("listpack"));
+  bed.run({"ZADD", "inc", "1", "a"});
+  bed.run({"ZINCRBY", "inc", "1", std::string(70, 'x')});
+  EXPECT_EQ(encoding("inc"), bulk("skiplist"));
+  bed.run({"GEOADD", "geo", "13.361389", "38.115556", std::string(70, 'x')});
+  EXPECT_EQ(encoding("geo"), bulk("skiplist"));
+
+  // A lowered limit: only a new member converts.
+  bed.run({"ZADD", "z", "1", "a", "2", "b", "3", "c"});
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "zset-max-listpack-entries", "2"}), ok());
+  bed.run({"ZADD", "z", "9", "a"});
+  bed.run({"ZINCRBY", "z", "1", "b"});
+  EXPECT_EQ(encoding("z"), bulk("listpack"));
+  bed.run({"ZREM", "z", "c"});
+  EXPECT_EQ(encoding("z"), bulk("listpack"));
+  bed.run({"ZADD", "z", "4", "d"});
+  EXPECT_EQ(encoding("z"), bulk("skiplist"));
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "zset-max-listpack-entries", "128", "zset-max-listpack-value", "3"}), ok());
+  bed.run({"ZADD", "y", "1", "a"});
+  bed.run({"ZADD", "y", "2", "abcd"});
+  EXPECT_EQ(encoding("y"), bulk("skiplist"));
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "zset-max-listpack-value", "64"}), ok());
+}
+
 TEST(CommandZsets, RandMemberWithoutACountOrWithNone) {
   Bed bed;
   bed.run({"ZADD", "z", "1", "a"});

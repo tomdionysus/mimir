@@ -73,7 +73,8 @@ std::unique_ptr<SortedSet::Node> SortedSet::copy(const Node* node) {
   return made;
 }
 
-SortedSet::SortedSet(const SortedSet& other) : _root(copy(other._root.get())), _scores(other._scores), _seed(other._seed), _order(other._order) {}
+SortedSet::SortedSet(const SortedSet& other)
+    : _root(copy(other._root.get())), _scores(other._scores), _seed(other._seed), _order(other._order), _skiplist(other._skiplist) {}
 
 SortedSet& SortedSet::operator=(const SortedSet& other) {
   if (this == &other) return *this;
@@ -81,7 +82,22 @@ SortedSet& SortedSet::operator=(const SortedSet& other) {
   _scores = other._scores;
   _seed = other._seed;
   _order = other._order;
+  _skiplist = other._skiplist;
   return *this;
+}
+
+bool SortedSet::insert_member(std::string_view member, double score, const Limits& limits) {
+  const bool created = set(member, score);
+  // Only a new member converts: past the entry limit, or longer than the
+  // value limit. A score updated never does.
+  if (created && !_skiplist && (size() > limits.zset_max_listpack_entries || member.size() > limits.zset_max_listpack_value)) _skiplist = true;
+  return created;
+}
+
+void SortedSet::settle_new(const Limits& limits) {
+  size_t longest = 0;
+  for (const auto& [member, entry] : _scores) longest = std::max(longest, member.size());
+  _skiplist = size() > limits.zset_max_listpack_entries || longest > limits.zset_max_listpack_value;
 }
 
 SortedSet::SortedSet() = default;

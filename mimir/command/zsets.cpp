@@ -42,6 +42,10 @@ SortedSet& zset_or_create(keyspace::Keyspace& keys, std::string_view key) {
   return std::get<SortedSet>(keys.put(key, keyspace::Entry{SortedSet{}, std::nullopt}).value);
 }
 
+// The agreed encoding limits. Called under the database's lock, as every
+// handler is.
+keyspace::Limits limits_of(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS { return call.database.limits_locked(); }
+
 // After a change to `key`: its event, then an emptied key's going.
 void changed(Call& call, std::string_view event, std::string_view key, const SortedSet& zset) {
   call.notify('z', event, key);
@@ -572,6 +576,7 @@ void combine_store(Call& call, SetOp op, std::string_view name) {
   }
   SortedSet made;
   for (const auto& [member, score] : combined.items) made.set(member, score);
+  made.settle_new(limits_of(call));
   call.keys.put(call.args[1], keyspace::Entry{std::move(made), std::nullopt});
   call.notify('z', op == SetOp::onion ? "zunionstore" : op == SetOp::inter ? "zinterstore" : "zdiffstore", call.args[1]);
 }
@@ -632,6 +637,7 @@ void zadd(Call& call) {
     return;
   }
   SortedSet& zset = existing ? *existing : zset_or_create(call.keys, call.args[1]);
+  const keyspace::Limits limits = limits_of(call);
   int64_t added = 0;
   int64_t updated = 0;
   std::optional<double> incr_result;
@@ -656,7 +662,7 @@ void zadd(Call& call) {
       if (incr) incr_result = score;
     } else {
       if (xx) continue;
-      zset.set(member, score);
+      zset.insert_member(member, score, limits);
       ++added;
       if (incr) incr_result = score;
     }
@@ -681,7 +687,7 @@ void zincrby(Call& call) {
     discard_if_empty(call, call.args[1], zset);
     throw CommandError("ERR resulting score is not a number (NaN)");
   }
-  zset.set(call.args[3], next);
+  zset.insert_member(call.args[3], next, limits_of(call));
   call.notify('z', "zincr", call.args[1]);
   call.reply.real(next);
 }
@@ -758,6 +764,7 @@ void zrangestore(Call& call) {
   SortedSet made;
   if (source)
     for (const auto* item : select(*source, call.args[3], call.args[4], request)) made.set(item->member, item->score);
+  made.settle_new(limits_of(call));
   call.reply.integer(static_cast<int64_t>(made.size()));
   if (made.empty()) {
     if (call.keys.erase(call.args[1])) call.notify('g', "del", call.args[1]);

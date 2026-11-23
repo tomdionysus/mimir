@@ -208,8 +208,12 @@ void sort_generic(Call& call, bool read_only) {
     if (call.keys.erase(*store)) call.notify('g', "del", *store);
     return;
   }
-  keyspace::List stored;
-  for (auto& value : out) stored.push_back(value ? std::move(*value) : std::string());
+  // Built as Valkey's SORT builds it: a quicklist filled at the tail, made a
+  // listpack after if it fits whole.
+  const keyspace::Limits limits = [&call]() DANNAN_NO_THREAD_SAFETY_ANALYSIS { return call.database.limits_locked(); }();
+  keyspace::List stored = keyspace::List::new_quicklist();
+  for (auto& value : out) stored.push(false, value ? std::move(*value) : std::string(), limits);
+  stored.settle(false, limits);
   call.keys.put(*store, keyspace::Entry{std::move(stored), std::nullopt});
   call.notify('l', "sortstore", *store);
 }

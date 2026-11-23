@@ -35,11 +35,42 @@ Hash& hash_or_create(keyspace::Keyspace& keys, std::string_view key) {
   return std::get<Hash>(keys.put(key, keyspace::Entry{Hash{}, std::nullopt}).value);
 }
 
+// Valkey's conversions of a listpack hash to a hash table, by the agreed
+// limits (probed). Before HSET, HMSET or HSETNX: an argument longer than the
+// value limit, or more new fields than the entry limit.
+void convert_before(Hash& hash, const std::vector<std::string>& args, size_t first, const keyspace::Limits& limits) {
+  if (hash.table()) return;
+  if ((args.size() - first) / 2 > limits.hash_max_listpack_entries) {
+    hash.make_table();
+    return;
+  }
+  for (size_t i = first; i < args.size(); ++i)
+    if (args[i].size() > limits.hash_max_listpack_value) {
+      hash.make_table();
+      return;
+    }
+}
+
+// Any field set: a field or value longer than the value limit, then more
+// fields than the entry limit (an overwrite included, once a limit has come
+// down). HDEL never converts.
+bool set_field(Hash& hash, std::string_view field, std::string value, const keyspace::Limits& limits) {
+  if (!hash.table() && (field.size() > limits.hash_max_listpack_value || value.size() > limits.hash_max_listpack_value)) hash.make_table();
+  const bool created = hash.set(field, std::move(value));
+  if (!hash.table() && hash.size() > limits.hash_max_listpack_entries) hash.make_table();
+  return created;
+}
+
+// Called under the database's lock, as every handler is.
+keyspace::Limits limits_of(Call& call) DANNAN_NO_THREAD_SAFETY_ANALYSIS { return call.database.limits_locked(); }
+
 void set_pairs(Call& call, std::string_view name, bool count_new) {
   if (call.args.size() % 2 != 0) throw CommandError("ERR wrong number of arguments for '" + std::string(name) + "' command");
   Hash& hash = hash_or_create(call.keys, call.args[1]);
+  const keyspace::Limits limits = limits_of(call);
+  convert_before(hash, call.args, 2, limits);
   int64_t created = 0;
-  for (size_t i = 2; i < call.args.size(); i += 2) created += hash.set(call.args[i], call.args[i + 1]) ? 1 : 0;
+  for (size_t i = 2; i < call.args.size(); i += 2) created += set_field(hash, call.args[i], call.args[i + 1], limits) ? 1 : 0;
   call.notify('h', "hset", call.args[1]);
   if (count_new)
     call.reply.integer(created);
@@ -54,11 +85,15 @@ void hmset(Call& call) { set_pairs(call, "hmset", false); }
 
 void hsetnx(Call& call) {
   Hash& hash = hash_or_create(call.keys, call.args[1]);
+  // Valkey converts before it looks: a long value converts the hash even
+  // when the field is there already.
+  const keyspace::Limits limits = limits_of(call);
+  convert_before(hash, std::vector<std::string>(call.args.begin(), call.args.begin() + 4), 2, limits);
   if (hash.get(call.args[2])) {
     call.reply.integer(0);
     return;
   }
-  hash.set(call.args[2], call.args[3]);
+  set_field(hash, call.args[2], call.args[3], limits);
   call.notify('h', "hset", call.args[1]);
   call.reply.integer(1);
 }
@@ -154,7 +189,7 @@ void hincrby(Call& call) {
   if ((by < 0 && current < 0 && by < LLONG_MIN - current) || (by > 0 && current > 0 && by > LLONG_MAX - current)) {
     throw CommandError("ERR increment or decrement would overflow");
   }
-  hash.set(call.args[2], format_integer(current + by));
+  set_field(hash, call.args[2], format_integer(current + by), limits_of(call));
   call.notify('h', "hincrby", call.args[1]);
   call.reply.integer(current + by);
 }
@@ -175,7 +210,7 @@ void hincrbyfloat(Call& call) {
   if (std::isnan(next) || std::isinf(next)) throw CommandError("ERR increment would produce NaN or Infinity");
   std::string text = format_long_double(next);
   call.reply.bulk(text);
-  hash_or_create(call.keys, call.args[1]).set(call.args[2], std::move(text));
+  set_field(hash_or_create(call.keys, call.args[1]), call.args[2], std::move(text), limits_of(call));
   call.notify('h', "hincrbyfloat", call.args[1]);
 }
 

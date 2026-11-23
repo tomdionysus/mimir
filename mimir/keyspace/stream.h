@@ -16,6 +16,8 @@
 #include <string_view>
 #include <vector>
 
+#include "mimir/keyspace/limits.h"
+
 // A stream: an append-only log of entries, each a list of field-value pairs
 // under an id of milliseconds and a sequence number, kept in id order, with
 // the bookkeeping Valkey keeps beside it (the last id given, the largest id
@@ -54,9 +56,9 @@ struct StreamGroup {
 };
 
 // One node of Valkey's radix tree: entries appended together into one
-// listpack, under the first's id. Valkey closes a node at node_entries entries
-// or when an entry would bring its listpack to node_bytes (its
-// stream-node-max-entries and stream-node-max-bytes), so its size is kept as
+// listpack, under the first's id. Valkey closes a node at
+// stream-node-max-entries entries or when an entry would bring its listpack
+// to stream-node-max-bytes (the agreed Limits), so its size is kept as
 // Valkey's listpack would have it. A deleted entry keeps its bytes and its
 // count; the node goes with its last live entry.
 struct StreamNode {
@@ -88,11 +90,10 @@ struct Stream {
   std::map<StreamId, Tombstone> tombstones;
   std::map<std::string, StreamGroup> groups;
 
-  static constexpr uint64_t node_entries = 100;
-  static constexpr uint64_t node_bytes = 4096;
-
   StreamId first_id() const { return entries.empty() ? StreamId{} : entries.begin()->first; }
-  void append(StreamId id, std::vector<std::string> fields);
+  // Appends an entry, in a new node when the last is full by the agreed
+  // stream-node-max-entries or stream-node-max-bytes.
+  void append(StreamId id, std::vector<std::string> fields, const Limits& limits = Limits{});
   bool remove(StreamId id);
 };
 

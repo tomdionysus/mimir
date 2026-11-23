@@ -186,6 +186,21 @@ TEST(CommandStreams, SetId) {
   EXPECT_EQ(bed.run({"XSETID", "nosuch", "1-0"}), error("ERR no such key"));
 }
 
+// The agreed stream-node-max-entries and -bytes end a node.
+TEST(CommandStreams, TheNodeLimitsAreTheAgreedOnes) {
+  Bed bed;
+  const auto keys = [&](const std::string& key) {
+    const std::string info = bed.run({"XINFO", "STREAM", key});
+    return std::stoi(info.substr(info.find("radix-tree-keys\r\n:") + 18));
+  };
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "stream-node-max-entries", "2"}), ok());
+  for (const char* id : {"1-1", "2-1", "3-1"}) bed.run({"XADD", "a", id, "f", "v"});
+  EXPECT_EQ(keys("a"), 2);
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "stream-node-max-entries", "100", "stream-node-max-bytes", "64"}), ok());
+  for (const char* id : {"1-1", "2-1", "3-1"}) bed.run({"XADD", "b", id, "f", std::string(30, 'x')});
+  EXPECT_EQ(keys("b"), 3);
+}
+
 // Where a stream's nodes end, as Valkey 8.1.1 ends them (probed, through
 // XINFO STREAM's radix-tree-keys after each append): at 4,096 listpack bytes
 // as well as at 100 entries; a deleted entry keeps its bytes; a restored

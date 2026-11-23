@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "mimir/keyspace/keyspace.h"
+#include "mimir/keyspace/limits.h"
 
 // DUMP's and RESTORE's serialisation: one value in the RDB encoding Valkey 8
 // writes (RDB version 11), so a payload moves between Mimir and Valkey either
@@ -52,8 +53,11 @@ std::string dump(const Entry& entry);
 // Why a payload was refused: RESTORE's two errors.
 enum class Refusal { checksum, format };
 
-// RESTORE: the value a payload holds, with no expiry, or why not.
-std::variant<Entry, Refusal> restore(std::string_view payload);
+// RESTORE: the value a payload holds, with no expiry, or why not. Without
+// `load`, each value keeps the encoding it was dumped in (the cluster's own
+// records); with it, a client's RESTORE, each is loaded as Valkey loads it,
+// in the encoding those limits give its size.
+std::variant<Entry, Refusal> restore(std::string_view payload, const Limits* load = nullptr);
 
 // FUNCTION DUMP's payload: each library's code; and FUNCTION RESTORE's
 // reading of one.

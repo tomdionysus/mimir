@@ -42,6 +42,28 @@ std::string unknown_command(const std::vector<std::string>& args) {
 constexpr size_t system_db = 0xffff;
 const std::string acl_key = "acl";
 const std::string functions_key = "functions";
+const std::string config_key = "config";
+
+// The settings CONFIG SET changes on every node, by agreement (the
+// maintainer, 2026-11-23): those that change what a command answers.
+constexpr std::string_view cluster_settings[] = {
+    "notify-keyspace-events",  "set-max-intset-entries",    "set-max-listpack-entries", "set-max-listpack-value", "hash-max-listpack-entries",
+    "hash-max-listpack-value", "zset-max-listpack-entries", "zset-max-listpack-value",  "list-max-listpack-size", "hll-sparse-max-bytes",
+    "stream-node-max-entries", "stream-node-max-bytes",     "lua-time-limit",           "busy-reply-threshold"};
+
+// A list restored from a record: a quicklist keeps the payload's nodes; one
+// the record says was a listpack is one again (one node's bytes are the same).
+void keep_list_encoding(keyspace::Entry& entry, const cluster::Record& record) {
+  if (auto* list = std::get_if<keyspace::List>(&entry.value); list && !record.quicklist) list->make_listpack();
+}
+
+// CONFIG SET naming a cluster-wide setting.
+bool changes_config(const std::vector<std::string>& args) {
+  if (args.size() < 4 || !iequals(args[0], "config") || !iequals(args[1], "set")) return false;
+  for (size_t i = 2; i < args.size(); i += 2)
+    if (Database::cluster_setting(lower(args[i]))) return true;
+  return false;
+}
 
 bool changes_users(const std::vector<std::string>& args) {
   return args.size() >= 2 && iequals(args[0], "acl") && (iequals(args[1], "setuser") || iequals(args[1], "deluser"));
@@ -115,6 +137,16 @@ std::string notify_flags_text(uint32_t flags) {
     }
   }
   for (char c : std::string_view("KEm")) {
+    if (flags & notify_bit(c)) out += c;
+  }
+  return out;
+}
+
+// Every class taken, by its letter: what the agreed settings carry, since
+// CONFIG GET's answer drops n beside A, as Valkey's does.
+std::string notify_flags_kept(uint32_t flags) {
+  std::string out;
+  for (char c : notify_letters) {
     if (flags & notify_bit(c)) out += c;
   }
   return out;
@@ -269,7 +301,7 @@ Database::Database(const dannan::contract::WallClock& wall, DatabaseSettings set
              {"set-max-intset-entries", "512"},
              {"set-max-listpack-entries", "128"},
              {"set-max-listpack-value", "64"},
-             {"hash-max-listpack-entries", "128"},
+             {"hash-max-listpack-entries", "512"},
              {"hash-max-listpack-value", "64"},
              {"zset-max-listpack-entries", "128"},
              {"zset-max-listpack-value", "64"},
@@ -358,9 +390,47 @@ void Database::bind_listeners() {
 
 bool Database::valid_notify_flags(std::string_view flags) { return parse_notify_flags(flags).has_value(); }
 
+namespace {
+
+// `into` from the setting `name`, when it is there and a number.
+template <typename T>
+void read_limit(const std::map<std::string, std::string>& config, const char* name, T& into) {
+  const auto found = config.find(name);
+  if (found == config.end()) return;
+  if (const auto value = parse_integer(found->second)) into = static_cast<T>(*value);
+}
+
+}  // namespace
+
+keyspace::Limits Database::limits_locked() {
+  keyspace::Limits limits;
+  read_limit(_config, "set-max-intset-entries", limits.set_max_intset_entries);
+  read_limit(_config, "set-max-listpack-entries", limits.set_max_listpack_entries);
+  read_limit(_config, "set-max-listpack-value", limits.set_max_listpack_value);
+  read_limit(_config, "hash-max-listpack-entries", limits.hash_max_listpack_entries);
+  read_limit(_config, "hash-max-listpack-value", limits.hash_max_listpack_value);
+  read_limit(_config, "zset-max-listpack-entries", limits.zset_max_listpack_entries);
+  read_limit(_config, "zset-max-listpack-value", limits.zset_max_listpack_value);
+  read_limit(_config, "list-max-listpack-size", limits.list_max_listpack_size);
+  read_limit(_config, "hll-sparse-max-bytes", limits.hll_sparse_max_bytes);
+  read_limit(_config, "stream-node-max-entries", limits.stream_node_max_entries);
+  read_limit(_config, "stream-node-max-bytes", limits.stream_node_max_bytes);
+  return limits;
+}
+
+bool Database::cluster_setting(std::string_view name) noexcept {
+  return std::find(std::begin(cluster_settings), std::end(cluster_settings), name) != std::end(cluster_settings);
+}
+
 bool Database::set_notify_flags_locked(std::string_view text) {
   auto flags = parse_notify_flags(text);
   if (!flags) return false;
+  // Speculatively, the setting changes only in its scratch copy; the classes
+  // taken change when it commits.
+  if (_scratch_config) {
+    (*_scratch_config)["notify-keyspace-events"] = notify_flags_kept(*flags);
+    return true;
+  }
   _notify_flags = *flags;
   _config["notify-keyspace-events"] = notify_flags_text(*flags);
   return true;
@@ -830,11 +900,13 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         out.append(reply.bytes());
         return executed;
       }
-      // ACL SETUSER and DELUSER change the users, and FUNCTION's changes the
-      // libraries, which are cluster state: by agreement on their one
-      // register each (rulings 27 and 39).
+      // ACL SETUSER and DELUSER change the users, FUNCTION's changes the
+      // libraries, and CONFIG SET of a cluster-wide setting the settings,
+      // which are cluster state: by agreement on their one register each
+      // (rulings 27 and 39; the maintainer, 2026-11-23).
       const bool users = changes_users(args);
-      if (users || changes_functions(args)) {
+      const bool settings = !users && changes_config(args);
+      if (users || settings || changes_functions(args)) {
         if (!wake) {
           reply.error("ERR this write needs a connection that can wait for its agreement");
           out.append(reply.bytes());
@@ -843,13 +915,14 @@ Executed Database::execute_one(Session& session, const std::vector<std::string>&
         feed_monitors(session, *spec, args, db);
         auto proposal = std::make_shared<Proposal>();
         proposal->acl = users;
-        proposal->functions = !users;
+        proposal->config = settings;
+        proposal->functions = !users && !settings;
         proposal->wait = _next_wait++;
         proposal->session = session;
         proposal->spec = spec;
         proposal->args = args;
         proposal->db = system_db;
-        proposal->key = users ? acl_key : functions_key;
+        proposal->key = users ? acl_key : settings ? config_key : functions_key;
         proposal->operation = _settings.agreements->operation_id();
         proposal->issued_ms = _wall.unix_ms();
         proposal->deadline_ms = proposal->issued_ms + proposal_deadline_ms;
@@ -1185,6 +1258,7 @@ std::optional<std::string> Database::cluster_refusal_locked(const Spec& spec, co
     for (const auto& queued : session.queued) {
       if (changes_users(queued)) return "ERR in a cluster ACL SETUSER and DELUSER commit on their own, not inside MULTI (ruling 27)";
       if (changes_functions(queued)) return "ERR in a cluster FUNCTION's changes commit on their own, not inside MULTI (ruling 39)";
+      if (changes_config(queued)) return "ERR in a cluster CONFIG SET of a cluster-wide setting commits on its own, not inside MULTI";
     }
   }
   // Several keys commit together only where the cluster can commit them so:
@@ -1260,6 +1334,7 @@ Agreements::ChangedKeys Database::speculate_keys(const Proposal& proposal, const
     auto* entry = std::get_if<keyspace::Entry>(&restored);
     if (!entry) return unchanged(encode_result("-ERR this key's stored value cannot be read\r\n", {}));
     entry->expires_at = base.expires_at;
+    keep_list_encoding(*entry, base);
     scratch.put(key, std::move(*entry));
   }
   // Keys that come to be are announced from here on, not those restored.
@@ -1322,6 +1397,7 @@ Agreements::ChangedKeys Database::speculate_keys(const Proposal& proposal, const
     if (const keyspace::Entry* entry = held.at(db)->find(key)) {
       record.payload = keyspace::rdb::dump(*entry);
       record.expires_at = entry->expires_at;
+      if (const auto* list = std::get_if<keyspace::List>(&entry->value)) record.quicklist = list->quicklist();
     }
     if (!cluster::note_applied(record, {proposal.operation, proposal.issued_ms, result}))
       return unchanged(encode_result("-ERR too many writes to this key are in flight; try again\r\n", {}));
@@ -1345,6 +1421,7 @@ void Database::propose(std::shared_ptr<Proposal> proposal) {
         if (proposal->remove_if) return speculate_removal(*proposal, base);
         if (proposal->acl) return speculate_acl(*proposal, base);
         if (proposal->functions) return speculate_functions(*proposal, base);
+        if (proposal->config) return speculate_config(*proposal, base);
         if (proposal->script) return speculate_script(*proposal, base);
         return speculate(*proposal, base);
       },
@@ -1429,6 +1506,15 @@ void Database::decided(const std::shared_ptr<Proposal>& proposal, Agreements::Ou
         if (session && !closing.empty() && session->kill) close_own = session->kill;
       } else if (proposal->functions) {
         install_functions_locked(outcome.version, outcome.record);
+      } else if (proposal->config) {
+        install_config_locked(outcome.version, outcome.record);
+        // The same CONFIG SET's per-node settings, checked in its run, are
+        // this node's own once it has committed.
+        if (!result->reply.empty() && result->reply[0] == '+')
+          for (size_t i = 2; i + 1 < proposal->args.size(); i += 2) {
+            const std::string name = lower(proposal->args[i]);
+            if (!cluster_setting(name)) _config[name] = name == "latency-tracking" ? lower(proposal->args[i + 1]) : proposal->args[i + 1];
+          }
       } else if (proposal->script) {
         // Its body was cached here when it ran.
       } else {
@@ -1671,6 +1757,81 @@ bool Database::install_functions_locked(const std::string& version, const cluste
   return true;
 }
 
+namespace {
+
+// The settings' record: each cluster-wide setting's name then its value, in
+// the users' record's codec. None for bytes that are not one.
+std::optional<std::vector<std::pair<std::string, std::string>>> decode_settings(std::string_view bytes) {
+  const auto lines = decode_lines(bytes);
+  if (!lines || lines->size() % 2 != 0) return std::nullopt;
+  std::vector<std::pair<std::string, std::string>> out;
+  for (size_t i = 0; i < lines->size(); i += 2) out.emplace_back((*lines)[i], (*lines)[i + 1]);
+  return out;
+}
+
+}  // namespace
+
+Agreements::Changed Database::speculate_config(const Proposal& proposal, const cluster::Record& base) {
+  // Applied already, by an attempt an earlier round took: its result again.
+  if (const auto* applied = base.find(proposal.operation)) return {base, applied->reply};
+  dannan::contract::Lock lock(_mutex);
+  // The settings as agreed; before the first change, this node's own.
+  std::map<std::string, std::string> settings = _config;
+  settings["notify-keyspace-events"] = notify_flags_kept(_notify_flags);
+  if (base.payload) {
+    const auto agreed = decode_settings(*base.payload);
+    if (!agreed) return {base, encode_result("-ERR the settings' stored record cannot be read\r\n", {})};
+    for (const auto& [name, value] : *agreed)
+      if (cluster_setting(name)) settings[name] = value;
+  }
+  Session session = proposal.session;
+  resp::Reply reply(session.protocol);
+  const size_t db = std::min(session.db, _dbs.size() - 1);
+  Call call{session, *this, *_dbs[db], reply, proposal.args};
+  call.db = db;
+  _scratch_config = &settings;
+  try {
+    proposal.spec->handler(call);
+  } catch (const CommandError& e) {
+    reply = resp::Reply(session.protocol);
+    reply.error(e.what());
+  }
+  _scratch_config = nullptr;
+  const std::string& bytes = reply.bytes();
+  const bool wrote = !bytes.empty() && bytes[0] != '-';
+  std::vector<std::string> lines;
+  for (const std::string_view name : cluster_settings) {
+    lines.emplace_back(name);
+    lines.push_back(settings[std::string(name)]);
+  }
+  cluster::Record out;
+  out.applied = base.applied;
+  out.serial = base.serial + (wrote ? 1 : 0);
+  out.payload = wrote ? std::optional<std::string>(encode_lines(lines)) : base.payload;
+  std::string result = encode_result(bytes, {}, wrote);
+  if (!cluster::note_applied(out, {proposal.operation, proposal.issued_ms, result}))
+    return {base, encode_result("-ERR too many changes to the settings are in flight; try again\r\n", {})};
+  return {std::move(out), std::move(result)};
+}
+
+bool Database::install_config_locked(const std::string& version, const cluster::Record& record) {
+  // No record yet: every node keeps the settings it started with.
+  if (!record.payload) return false;
+  auto& known = _versions[scoped(system_db, config_key)];
+  if (!known.empty() && version <= known) return false;
+  const auto agreed = decode_settings(*record.payload);
+  if (!agreed) return false;
+  for (const auto& [name, value] : *agreed) {
+    if (!cluster_setting(name)) continue;
+    if (name == "notify-keyspace-events")
+      set_notify_flags_locked(value);
+    else
+      _config[name] = value;
+  }
+  known = version;
+  return true;
+}
+
 void Database::decided_keys(const std::shared_ptr<Proposal>& proposal, Agreements::KeysOutcome outcome) {
   // Whether it took effect is not known: proposed again, it finds its own
   // operation if it did, and is applied once.
@@ -1886,6 +2047,7 @@ void Database::install_committed(size_t db, const std::string& key, const std::s
       std::vector<Session*> closing;
       if (key == acl_key) install_acl_locked(version, record, nullptr, closing);
       if (key == functions_key) install_functions_locked(version, record);
+      if (key == config_key) install_config_locked(version, record);
       return;
     }
     if (db >= _dbs.size()) return;
@@ -2059,6 +2221,7 @@ bool Database::install_locked(size_t db, const std::string& key, const std::stri
     auto restored = keyspace::rdb::restore(*record.payload);
     if (auto* entry = std::get_if<keyspace::Entry>(&restored)) {
       entry->expires_at = record.expires_at;
+      keep_list_encoding(*entry, record);
       // A large hash, set or sorted set keeps the scan numbers its elements
       // had here (ruling 30), so a scan begun before this write goes on.
       if (const keyspace::Entry* before = live.find(key)) {

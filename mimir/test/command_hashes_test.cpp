@@ -163,6 +163,89 @@ TEST(CommandHashes, Classes) {
   for (const char* name : {"hincrby", "hincrbyfloat"}) EXPECT_EQ(command::find_spec(name)->cls, Class::configurable) << name;
 }
 
+// Valkey 8.1.1's hash-max-listpack-entries is 512 (probed): a hash of 200
+// fields is still a listpack, in OBJECT ENCODING and in DUMP's type byte
+// (0x10, a listpack hash; 0x04, a hash table); 513 is a hash table.
+TEST(CommandHashes, AListpackHoldsUpTo512Fields) {
+  Bed bed;
+  EXPECT_EQ(bed.run({"CONFIG", "GET", "hash-max-listpack-entries"}), array({bulk("hash-max-listpack-entries"), bulk("512")}));
+  std::vector<std::string> hset{"HSET", "h"};
+  for (int i = 1; i <= 200; ++i) {
+    hset.push_back("f" + std::to_string(i));
+    hset.push_back("v");
+  }
+  bed.run(hset);
+  EXPECT_EQ(bed.run({"OBJECT", "ENCODING", "h"}), bulk("listpack"));
+  const auto type_byte = [&bed](const std::string& key) {
+    const std::string dumped = bed.run({"DUMP", key});
+    return static_cast<int>(static_cast<unsigned char>(dumped[dumped.find("\r\n") + 2]));
+  };
+  EXPECT_EQ(type_byte("h"), 0x10);
+  for (int i = 201; i <= 513; ++i) bed.run({"HSET", "h", "f" + std::to_string(i), "v"});
+  EXPECT_EQ(bed.run({"OBJECT", "ENCODING", "h"}), bulk("hashtable"));
+  EXPECT_EQ(type_byte("h"), 0x04);
+}
+
+// A hash's encoding as Valkey 8.1.1's changes (probed): a write takes it to a
+// hash table past the agreed limits, and it stays one; a lowered limit
+// converts on the next write, never on a read; a client's RESTORE loads a
+// payload in the encoding its size gives, whatever it was dumped as.
+TEST(CommandHashes, EncodingsChangeAsValkeysDo) {
+  Bed bed;
+  const auto encoding = [&bed](const std::string& key) { return bed.run({"OBJECT", "ENCODING", key}); };
+  const auto payload = [&bed](const std::string& key) {
+    const std::string dumped = bed.run({"DUMP", key});
+    const size_t at = dumped.find("\r\n") + 2;
+    return dumped.substr(at, dumped.size() - at - 2);
+  };
+  const std::string table = bulk("hashtable");
+  const std::string listpack = bulk("listpack");
+  std::vector<std::string> hset{"HSET", "h"};
+  for (int i = 1; i <= 513; ++i) {
+    hset.push_back("f" + std::to_string(i));
+    hset.push_back("v");
+  }
+  bed.run(hset);
+  EXPECT_EQ(encoding("h"), table);
+  std::vector<std::string> hdel{"HDEL", "h"};
+  for (int i = 1; i <= 512; ++i) hdel.push_back("f" + std::to_string(i));
+  bed.run(hdel);
+  EXPECT_EQ(encoding("h"), table);
+  EXPECT_EQ(static_cast<int>(static_cast<unsigned char>(payload("h")[0])), 0x04);
+  const std::string small_table = payload("h");
+
+  bed.run({"HSET", "long_value", "a", std::string(65, 'x')});
+  EXPECT_EQ(encoding("long_value"), table);
+  bed.run({"HSET", "long_field", std::string(65, 'x'), "x"});
+  EXPECT_EQ(encoding("long_field"), table);
+  bed.run({"HSET", "float", "a", "1"});
+  bed.run({"HINCRBYFLOAT", "float", "a", "1.5"});
+  EXPECT_EQ(encoding("float"), listpack);
+  bed.run({"HSET", "nx", "a", "1"});
+  bed.run({"HSETNX", "nx", "b", std::string(70, 'x')});
+  EXPECT_EQ(encoding("nx"), table);
+
+  // A client's RESTORE: a small hash table loads as a listpack.
+  EXPECT_EQ(bed.run({"RESTORE", "restored", "0", small_table}), ok());
+  EXPECT_EQ(encoding("restored"), listpack);
+
+  // A lowered limit: a hash already past it stays a listpack until a write.
+  bed.run({"HSET", "three", "a", "1", "b", "2", "c", "3"});
+  const std::string three = payload("three");
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "hash-max-listpack-entries", "2"}), ok());
+  EXPECT_EQ(encoding("three"), listpack);
+  bed.run({"HGET", "three", "a"});
+  EXPECT_EQ(encoding("three"), listpack);
+  bed.run({"HSET", "three", "a", "9"});
+  EXPECT_EQ(encoding("three"), table);
+  bed.run({"HSET", "fresh", "a", "1", "b", "2", "c", "3"});
+  EXPECT_EQ(encoding("fresh"), table);
+  // And a client's RESTORE of three fields under it loads a hash table.
+  EXPECT_EQ(bed.run({"RESTORE", "loaded", "0", three}), ok());
+  EXPECT_EQ(encoding("loaded"), table);
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "hash-max-listpack-entries", "512"}), ok());
+}
+
 TEST(CommandHashes, RandFieldAndScanRefuseWhatTheyDoNotTake) {
   Bed bed;
   bed.run({"HSET", "h", "f", "v"});

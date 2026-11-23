@@ -194,6 +194,108 @@ TEST(CommandLists, Classes) {
   }
 }
 
+// A list's encoding as Valkey 8.1.1's (probed, DUMP's bytes included): a
+// quicklist's nodes follow its history, and it turns back into a listpack
+// only as a single node within half the agreed limit.
+TEST(CommandLists, EncodingsAndNodesAsValkeys) {
+  Bed bed;
+  const auto encoding = [&bed](const std::string& key) { return bed.run({"OBJECT", "ENCODING", key}); };
+  const auto payload = [&bed](const std::string& key) {
+    const std::string dumped = bed.run({"DUMP", key});
+    const size_t at = dumped.find("\r\n") + 2;
+    return dumped.substr(at, dumped.size() - at - 2);
+  };
+  const auto hex = [&payload](const std::string& key) {
+    static const char digits[] = "0123456789abcdef";
+    std::string out;
+    for (const unsigned char c : payload(key)) {
+      out.push_back(digits[c >> 4]);
+      out.push_back(digits[c & 15]);
+    }
+    return out;
+  };
+  const std::string quicklist = bulk("quicklist");
+  const std::string listpack = bulk("listpack");
+
+  // Under Valkey's default, -2 (8 KB a node): 1,000-byte elements.
+  const std::string k1000(1000, 'x');
+  for (int i = 1; i <= 8; ++i) bed.run({"RPUSH", "lb", k1000});
+  EXPECT_EQ(encoding("lb"), listpack);
+  bed.run({"RPUSH", "lb", k1000});
+  EXPECT_EQ(encoding("lb"), quicklist);
+  for (int i = 1; i <= 4; ++i) bed.run({"RPOP", "lb"});
+  EXPECT_EQ(encoding("lb"), quicklist);
+  bed.run({"RPOP", "lb"});
+  EXPECT_EQ(encoding("lb"), listpack);
+
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "list-max-listpack-size", "4"}), ok());
+  bed.run({"RPUSH", "both", "a", "b", "c", "d", "e", "f", "g", "h", "i"});
+  EXPECT_EQ(encoding("both"), quicklist);
+  EXPECT_EQ(hex("both"),
+            "12030213130000000400816102816202816302816402ff0213130000000400816502816602816702816802ff020a0a0000000100816902ff0b0020bb83b788aea202");
+  bed.run({"LPOP", "both", "4"});
+  bed.run({"RPOP", "both", "3"});
+  EXPECT_EQ(encoding("both"), listpack);
+  EXPECT_EQ(hex("both"), "1201020d0d0000000200816502816602ff0b00695191b19748350c");
+  const std::string one_node = payload("both");
+
+  bed.run({"RPUSH", "tr", "a", "b", "c", "d", "e", "f", "g", "h", "i"});
+  bed.run({"LTRIM", "tr", "3", "4"});
+  EXPECT_EQ(encoding("tr"), quicklist);
+  EXPECT_EQ(hex("tr"), "1202020a0a0000000100816402ff020a0a0000000100816502ff0b007843bd6d83e2c0ac");
+  const std::string two_nodes = payload("tr");
+
+  bed.run({"RPUSH", "four", "a", "b", "c", "d"});
+  bed.run({"LPUSH", "four", "z"});
+  EXPECT_EQ(hex("four"), "1202020a0a0000000100817a02ff0213130000000400816102816202816302816402ff0b009cddfc826e0ff110");
+  for (int i = 0; i < 3; ++i) {
+    bed.run({"RPOP", "four"});
+    EXPECT_EQ(encoding("four"), quicklist) << i;
+  }
+
+  bed.run({"RPUSH", "lr", "a", "x", "b", "x", "c", "x", "d", "x", "e"});
+  bed.run({"LREM", "lr", "0", "x"});
+  EXPECT_EQ(encoding("lr"), quicklist);
+  for (const char* gone : {"a", "b", "c"}) bed.run({"LREM", "lr", "0", gone});
+  EXPECT_EQ(encoding("lr"), quicklist);
+
+  bed.run({"RPUSH", "src", "a", "b", "c", "d", "e"});
+  bed.run({"LMOVE", "src", "dst", "LEFT", "RIGHT"});
+  EXPECT_EQ(encoding("dst"), listpack);
+  // Down to two, in nodes of one and one: not a single node.
+  for (int i = 0; i < 2; ++i) {
+    EXPECT_EQ(encoding("src"), quicklist) << i;
+    bed.run({"LMOVE", "src", "dst", "LEFT", "RIGHT"});
+  }
+  EXPECT_EQ(encoding("src"), quicklist);
+
+  bed.run({"RPUSH", "nums", "3", "1", "2", "4", "5", "6"});
+  bed.run({"SORT", "nums", "STORE", "sorted"});
+  EXPECT_EQ(encoding("sorted"), quicklist);
+  bed.run({"SORT", "nums", "LIMIT", "0", "2", "STORE", "sorted2"});
+  EXPECT_EQ(encoding("sorted2"), listpack);
+
+  bed.run({"RPUSH", "ins", "a", "b", "c", "d"});
+  bed.run({"LINSERT", "ins", "BEFORE", "b", "z"});
+  EXPECT_EQ(encoding("ins"), quicklist);
+  bed.run({"RPUSH", "ins2", "a", "b", "c"});
+  bed.run({"LINSERT", "ins2", "BEFORE", "b", "z"});
+  EXPECT_EQ(encoding("ins2"), listpack);
+  bed.run({"RPUSH", "set3", "a", "b", "c"});
+  bed.run({"LSET", "set3", "0", "q"});
+  EXPECT_EQ(encoding("set3"), listpack);
+  bed.run({"RPUSH", "set4", "a", "b", "c", "d"});
+  bed.run({"LSET", "set4", "0", std::string(10, 'x')});
+  EXPECT_EQ(encoding("set4"), quicklist);
+
+  // A client's RESTORE: one node that fits is a listpack; two nodes are not.
+  EXPECT_EQ(bed.run({"RESTORE", "r1", "0", one_node}), ok());
+  EXPECT_EQ(encoding("r1"), listpack);
+  EXPECT_EQ(bed.run({"RESTORE", "r2", "0", two_nodes}), ok());
+  EXPECT_EQ(encoding("r2"), quicklist);
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "list-max-listpack-size", "-2"}), ok());
+}
+
 TEST(CommandLists, MpopTakesOneCountAndLremOfNothingIsZero) {
   Bed bed;
   bed.run({"RPUSH", "l", "a"});

@@ -21,6 +21,7 @@
 
 #include "dannan/contract/time_source.h"
 #include "mimir/keyspace/hash.h"
+#include "mimir/keyspace/list.h"
 #include "mimir/keyspace/set.h"
 #include "mimir/keyspace/stream.h"
 #include "mimir/keyspace/zset.h"
@@ -42,8 +43,6 @@ enum class Type : uint8_t { string, list, hash, set, zset, stream };
 
 // "string", "list", "hash", "set", "zset", "stream": TYPE's words.
 std::string_view type_name(Type) noexcept;
-
-using List = std::deque<std::string>;
 
 struct Entry {
   // In Type's order: the variant's index is the type.

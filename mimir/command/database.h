@@ -31,6 +31,7 @@
 #include "mimir/command/scripting.h"
 #include "mimir/command/table.h"
 #include "mimir/keyspace/keyspace.h"
+#include "mimir/keyspace/limits.h"
 #include "mimir/resp/reply.h"
 
 // One node's database at the single-node stage: the keyspace and the command
@@ -176,7 +177,13 @@ class Database {
   // None while an ACL change runs speculatively: it closes no connection
   // until it commits.
   std::map<int64_t, Session*>& sessions_locked() DANNAN_REQUIRES(_mutex) { return _scratch_acl ? _no_sessions : _sessions; }
-  std::map<std::string, std::string>& config_locked() DANNAN_REQUIRES(_mutex) { return _config; }
+  // While a CONFIG SET runs speculatively (in a cluster), its own copy.
+  std::map<std::string, std::string>& config_locked() DANNAN_REQUIRES(_mutex) { return _scratch_config ? *_scratch_config : _config; }
+  // Whether `name` (lower case) is a cluster-wide setting: one CONFIG SET
+  // changes on every node, by agreement.
+  static bool cluster_setting(std::string_view name) noexcept;
+  // The encoding thresholds as the settings hold them now.
+  keyspace::Limits limits_locked() DANNAN_REQUIRES(_mutex);
   // LATENCY HISTOGRAM: per command's full name ("get", "config|get"), how
   // many runs were timed and how many fell in each step, as Valkey's HDR
   // histogram reports them: step i holds runs up to latency_step_ns(i)
@@ -311,6 +318,9 @@ class Database {
     // FUNCTION LOAD, DELETE, FLUSH or RESTORE, on the libraries' register
     // (ruling 39).
     bool functions = false;
+    // CONFIG SET of a cluster-wide setting, on the settings' register (the
+    // maintainer, 2026-11-23: the behaviour settings).
+    bool config = false;
     // SCRIPT LOAD, or an EVAL's script shared: on the register of its SHA
     // (ruling 39). An EVAL's has no waiter.
     bool script = false;
@@ -365,6 +375,11 @@ class Database {
   // before the first), and the libraries' record installed as this node's.
   Agreements::Changed speculate_functions(const Proposal& proposal, const cluster::Record& base);
   bool install_functions_locked(const std::string& version, const cluster::Record& record) DANNAN_REQUIRES(_mutex);
+  // A CONFIG SET of a cluster-wide setting: run on the settings the record
+  // holds (this node's before the first), the cluster-wide ones its record;
+  // and the record installed as this node's.
+  Agreements::Changed speculate_config(const Proposal& proposal, const cluster::Record& base);
+  bool install_config_locked(const std::string& version, const cluster::Record& record) DANNAN_REQUIRES(_mutex);
   // A script's change: SCRIPT LOAD run here (it compiles the body, and
   // caches it), the body its register's record.
   Agreements::Changed speculate_script(const Proposal& proposal, const cluster::Record& base);
@@ -547,6 +562,8 @@ class Database {
   Acl* _scratch_acl DANNAN_GUARDED_BY(_mutex) = nullptr;
   // A FUNCTION change's speculative libraries.
   Scripting* _scratch_scripting DANNAN_GUARDED_BY(_mutex) = nullptr;
+  // A CONFIG SET's speculative settings.
+  std::map<std::string, std::string>* _scratch_config DANNAN_GUARDED_BY(_mutex) = nullptr;
   // The scripts this node has shared with the cluster since its last SCRIPT
   // FLUSH, and when that was: a script's register last written before it
   // is not brought back here by EVALSHA.

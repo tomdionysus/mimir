@@ -309,6 +309,45 @@ TEST(CommandServer, LatencyHistogramAsValkeysTracking) {
   EXPECT_EQ(quiet.run({"LATENCY", "HISTOGRAM", "ping"}), array({}));
 }
 
+// CONFIG SET of the encoding thresholds and the script time limits, checked
+// as Valkey 8.1.1 checks them (probed): integers from 0, memory values (with
+// k, kb, m, mb, g, gb), and list-max-listpack-size's 32-bit range; the two
+// script time limits are one setting under two names.
+TEST(CommandServer, NumericSettingsAreCheckedAsValkeys) {
+  Bed bed;
+  const auto failed = [](const std::string& name, const std::string& why) {
+    return error("ERR CONFIG SET failed (possibly related to argument '" + name + "') - " + why);
+  };
+  const auto get = [&bed](const std::string& name) { return bed.run({"CONFIG", "GET", name}); };
+  const auto answer = [](const std::string& name, const std::string& value) { return array({bulk(name), bulk(value)}); };
+  const std::string not_integer = "argument couldn't be parsed into an integer";
+  const std::string not_memory = "argument must be a memory value";
+  for (const char* name : {"set-max-intset-entries", "hash-max-listpack-entries", "stream-node-max-entries", "lua-time-limit"}) {
+    EXPECT_EQ(bed.run({"CONFIG", "SET", name, "abc"}), failed(name, not_integer)) << name;
+    EXPECT_EQ(bed.run({"CONFIG", "SET", name, "1.5"}), failed(name, not_integer)) << name;
+    EXPECT_EQ(bed.run({"CONFIG", "SET", name, "10k"}), failed(name, not_integer)) << name;
+    EXPECT_EQ(bed.run({"CONFIG", "SET", name, "-1"}), failed(name, "argument must be between 0 and 9223372036854775807 inclusive")) << name;
+  }
+  for (const char* name : {"hash-max-listpack-value", "zset-max-listpack-value", "hll-sparse-max-bytes", "stream-node-max-bytes"}) {
+    EXPECT_EQ(bed.run({"CONFIG", "SET", name, "abc"}), failed(name, not_memory)) << name;
+    EXPECT_EQ(bed.run({"CONFIG", "SET", name, "-1"}), failed(name, not_memory)) << name;
+    EXPECT_EQ(bed.run({"CONFIG", "SET", name, "1.5"}), failed(name, not_memory)) << name;
+  }
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "hash-max-listpack-value", "10k"}), ok());
+  EXPECT_EQ(get("hash-max-listpack-value"), answer("hash-max-listpack-value", "10000"));
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "hll-sparse-max-bytes", "2kb"}), ok());
+  EXPECT_EQ(get("hll-sparse-max-bytes"), answer("hll-sparse-max-bytes", "2048"));
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "list-max-listpack-size", "-6"}), ok());
+  EXPECT_EQ(get("list-max-listpack-size"), answer("list-max-listpack-size", "-6"));
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "list-max-listpack-size", "99999999999"}),
+            failed("list-max-listpack-size", "argument must be between -2147483648 and 2147483647 inclusive"));
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "list-max-listpack-size", "x"}), failed("list-max-listpack-size", not_integer));
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "lua-time-limit", "100"}), ok());
+  EXPECT_EQ(get("busy-reply-threshold"), answer("busy-reply-threshold", "100"));
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "busy-reply-threshold", "200"}), ok());
+  EXPECT_EQ(get("lua-time-limit"), answer("lua-time-limit", "200"));
+}
+
 // MEMORY USAGE's estimate grows with what each type of value holds.
 TEST(CommandServer, MemoryUsageGrowsWithEveryType) {
   Bed bed;

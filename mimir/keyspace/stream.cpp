@@ -39,21 +39,25 @@ std::optional<StreamId> parse_stream_id(std::string_view text, uint64_t missing_
   return StreamId{*ms, *seq};
 }
 
-void Stream::append(StreamId id, std::vector<std::string> fields) {
+void Stream::append(StreamId id, std::vector<std::string> fields, const Limits& limits) {
   using rdb::listpack_element_size;
   using rdb::listpack_integer_size;
   // Valkey's test, before the entry goes in: the node's bytes and the entry's
-  // fields and values, as they are, against node_bytes; or a full node.
+  // fields and values, as they are, against stream-node-max-bytes; or a node
+  // full by stream-node-max-entries.
   uint64_t raw = 0;
   for (const auto& f : fields) raw += f.size();
   auto last = nodes.empty() ? nodes.end() : std::prev(nodes.end());
-  if (last == nodes.end() || last->second.bytes + raw >= node_bytes || last->second.entries >= node_entries) {
+  // A limit of zero is none, as Valkey's.
+  const bool too_big = limits.stream_node_max_bytes > 0 && last != nodes.end() && last->second.bytes + raw >= limits.stream_node_max_bytes;
+  const bool too_many = limits.stream_node_max_entries > 0 && last != nodes.end() && last->second.entries >= limits.stream_node_max_entries;
+  if (last == nodes.end() || too_big || too_many) {
     StreamNode made;
     made.master = id;
     for (size_t f = 0; f + 1 < fields.size(); f += 2) made.fields.push_back(fields[f]);
     // The header and end, then the master entry: the live and deleted counts
-    // (one and none; at most node_entries, they keep their size), the field
-    // count and names, and its terminator.
+    // (one and none; up to 127 they keep their size), the field count and
+    // names, and its terminator.
     made.bytes = 7 + listpack_integer_size(1) + listpack_integer_size(0) + listpack_integer_size(static_cast<int64_t>(made.fields.size()));
     for (const auto& name : made.fields) made.bytes += listpack_element_size(name);
     made.bytes += listpack_integer_size(0);

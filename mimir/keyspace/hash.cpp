@@ -13,6 +13,7 @@ Hash& Hash::operator=(const Hash& other) {
   if (this == &other) return *this;
   _index.clear();
   _items = other._items;
+  _table = other._table;
   _order.restart();
   _index.reserve(_items.size());
   for (auto it = _items.begin(); it != _items.end(); ++it) _index.emplace(std::string_view(it->first), Entry{it, _order.next()});

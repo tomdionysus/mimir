@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "mimir/keyspace/limits.h"
 #include "mimir/keyspace/scan_order.h"
 
 // A sorted set: members ordered by score, then by their bytes for equal
@@ -44,6 +45,16 @@ class SortedSet {
 
   // Sets `member`'s score; whether it is new.
   bool set(std::string_view member, double score);
+
+  // Valkey's encoding: a listpack until a new member takes the sorted set
+  // past the agreed limits, then a skiplist for good (ZREM and the pops
+  // never convert back). OBJECT ENCODING and DUMP follow it.
+  bool skiplist() const noexcept { return _skiplist; }
+  void make_skiplist() noexcept { _skiplist = true; }
+  // set(), converting as Valkey's ZADD, ZINCRBY and GEOADD do.
+  bool insert_member(std::string_view member, double score, const Limits& limits);
+  // A sorted set a store command made: its encoding as its size gives.
+  void settle_new(const Limits& limits);
   std::optional<double> score(std::string_view member) const;
   // Removes `member`; whether it was present.
   bool erase(std::string_view member);
@@ -90,6 +101,7 @@ class SortedSet {
   uint64_t _seed = 0x9e3779b97f4a7c15ull;
   // Handles are the members, as `_scores` holds them: its nodes never move.
   ScanOrder<const std::string*> _order;
+  bool _skiplist = false;
 };
 
 }  // namespace mimir::keyspace

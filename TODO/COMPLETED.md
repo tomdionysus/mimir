@@ -2,6 +2,53 @@
 
 The record, newest first. Each entry says what landed, with its gate counts.
 
+## 2026-11-23: CONFIG SET cluster-wide, with Valkey's encodings (feature/config-cluster, squashed)
+
+- The maintainer, 2026-11-23: the behaviour settings are cluster-wide, by
+  agreement on a system register (as ACL users and function libraries):
+  notify-keyspace-events, the encoding thresholds (*-max-listpack-*,
+  set-max-intset-entries, hll-sparse-max-bytes, stream-node-max-*),
+  lua-time-limit and busy-reply-threshold. Per node: latency-tracking,
+  slowlog-*, hz, timeout, maxclients. A CONFIG SET naming both kinds checks
+  all, commits the cluster-wide ones and keeps the rest here; inside MULTI a
+  cluster-wide one is refused.
+- The maintainer, 2026-11-23: the thresholds take effect with exact, sticky
+  encodings. Each probed from Valkey 8.1.1 (`build/enc-probe*.sh`, not in
+  git) and tested first:
+  - Hashes: hash-max-listpack-entries' default corrected to 512 (Mimir had
+    128); converted before a write by argument length or new-field count,
+    never back.
+  - Sets: intset, listpack, hashtable, one way.
+  - Sorted sets: only a new member converts; stores take the encoding by size.
+  - Lists: Valkey's quicklist node model, nodes following history (pushes
+    into the end node or a new one, plain nodes for large elements, splits
+    and merges for LINSERT and LSET, back to a listpack only as one node
+    within half the limit); DUMP writes the nodes, byte for byte as probed;
+    the cluster's records carry the one bit DUMP cannot (a quicklist of one
+    node).
+  - A client's RESTORE loads by size, as Valkey's; the records' own restore
+    keeps the encoding as it was.
+  - HLL's sparse limit and the stream node limits from the agreed settings.
+  - CONFIG SET of the numeric settings refused in Valkey's words; memory
+    units; lua-time-limit and busy-reply-threshold one setting.
+- Found by the differential gate and fixed, test first: the agreed settings
+  were built from CONFIG GET's answer, which drops n beside A (as Valkey's
+  does), so every node lost the new-key events; the settings now carry each
+  class by its letter. Found by the clang gate: the limits read in a lambda
+  the thread-safety analysis could not see under the lock (fixed with a
+  helper; a reference was not enough).
+- Gate, once (a claim per step, -j2, nice 19, one container): node-d at
+  2183eb7: check clean; release 442; the differential 233 differing
+  replies, case for case 0.1.1's, the known random SPOP now matching. node-d
+  stopped answering during ASan (beside another session's ASan build on its
+  3 GB; noted on the board, its power is the maintainer's call), so the rest
+  ran on node-c from a fresh setup at 2183eb7: ASan with UBSan 442, no
+  report; TSan 442, no report; the client gate 9/9 and under ASan 9/9; fuzz
+  300 s per target, no crash (resp_request 7,931,188 runs, resp_reply
+  17,592,086, rdb_restore 2,396,988); clang at 8fdcc6d 442.
+- AthenaSIP's driver audit arrived meanwhile (ACTIVE.md, "Waiting on
+  others"): its scripts become differential cases next.
+
 ## 2026-11-23: Release 0.1.1: the Valkey gaps
 
 - `feature/valkey-gaps`, squashed onto develop as `33329c1`, then 0.1.1 cut

@@ -152,6 +152,17 @@ TEST(CommandHyperLogLog, PfCountCachesItsAnswerInTheValue) {
   EXPECT_EQ(bed.run({"PFCOUNT", "h"}), integer(3));
 }
 
+// The agreed hll-sparse-max-bytes: past it a sparse value becomes dense
+// (probed: seven elements under a limit of 20 bytes).
+TEST(CommandHyperLogLog, TheSparseLimitIsTheAgreedOne) {
+  Bed bed;
+  EXPECT_EQ(bed.run({"PFADD", "p", "a"}), integer(1));
+  EXPECT_EQ(bed.run({"PFDEBUG", "ENCODING", "p"}), "+sparse\r\n");
+  EXPECT_EQ(bed.run({"CONFIG", "SET", "hll-sparse-max-bytes", "20"}), ok());
+  bed.run({"PFADD", "p", "b", "c", "d", "e", "f", "g"});
+  EXPECT_EQ(bed.run({"PFDEBUG", "ENCODING", "p"}), "+dense\r\n");
+}
+
 // PFDEBUG, as Valkey 8.1.1 answers it (probed): DECODE names the sparse
 // form's opcodes, ENCODING the form, TODENSE converts and says whether it
 // did, GETREG converts and gives every register; the key must exist and be a

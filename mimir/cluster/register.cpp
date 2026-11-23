@@ -20,6 +20,9 @@ namespace {
 inline constexpr uint8_t format = 1;
 inline constexpr uint8_t has_payload = 1;
 inline constexpr uint8_t has_expiry = 2;
+// A list held as a quicklist (DUMP's bytes cannot tell one node of a
+// quicklist from a listpack). Records written before it was added lack it.
+inline constexpr uint8_t is_quicklist = 4;
 // Valkey's proto-max-bulk-len: no value or reply is larger.
 inline constexpr size_t max_bulk = 512ull * 1024 * 1024;
 
@@ -57,7 +60,7 @@ std::optional<Bytes> encode(const Record& record) {
   if (record.empty()) return std::nullopt;
   dannan::net::Writer out;
   out.u8(format);
-  out.u8(static_cast<uint8_t>((record.payload ? has_payload : 0) | (record.expires_at ? has_expiry : 0)));
+  out.u8(static_cast<uint8_t>((record.payload ? has_payload : 0) | (record.expires_at ? has_expiry : 0) | (record.quicklist ? is_quicklist : 0)));
   out.u64(record.serial);
   if (record.expires_at) out.u64(*record.expires_at);
   if (record.payload) out.bytes(bytes_of(*record.payload));
@@ -75,8 +78,9 @@ std::optional<Record> decode(std::span<const uint8_t> bytes) {
     dannan::net::Reader in(bytes);
     if (in.u8() != format) return std::nullopt;
     const uint8_t flags = in.u8();
-    if (flags & ~(has_payload | has_expiry)) return std::nullopt;
+    if (flags & ~(has_payload | has_expiry | is_quicklist)) return std::nullopt;
     Record record;
+    record.quicklist = (flags & is_quicklist) != 0;
     record.serial = in.u64();
     if (flags & has_expiry) record.expires_at = in.u64();
     if (flags & has_payload) record.payload = text_of(in.view_bytes(max_bulk));
