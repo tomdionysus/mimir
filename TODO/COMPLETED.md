@@ -37,7 +37,10 @@ The record, newest first. Each entry says what landed, with its gate counts.
   LATENCY's handler for want of the lock annotation every handler carries:
   fixed at 3901a04 (an annotation, no code change), then clang 432 and fuzz
   300 s per target with no crash (resp_request 10,409,538 runs, resp_reply
-  18,875,203, rdb_restore 4,032,458).
+  18,875,203, rdb_restore 4,032,458). The package step at the release
+  commit 8743e47 (node-a, -j2): Dannan's packages at its tag and Mimir's
+  built, lintian clean (it fails on a warning), installed (user, the site's
+  files and modes, `mimir-node 0.1.1`) and purged clean.
 
 ## 2026-11-22: Coverage to 97.9% of lines, and the differences it found (feature/coverage, squashed)
 
